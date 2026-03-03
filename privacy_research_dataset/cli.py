@@ -85,6 +85,20 @@ def _parse_args() -> argparse.Namespace:
     crux.add_argument("--crux-concurrency", type=int, default=20, help="Concurrent CrUX API requests.")
     crux.add_argument("--crux-allow-http", action="store_true", help="Fallback to http origin if https isn't found.")
 
+    llm = p.add_argument_group("LLM semantic cleaning")
+    llm.add_argument(
+        "--openai-api-key", type=str, default=None,
+        help="OpenAI API key for LLM-based policy cleaning (or set OPENAI_API_KEY env var).",
+    )
+    llm.add_argument(
+        "--llm-model", type=str, default="gpt-4o-mini",
+        help="OpenAI model used for semantic cleaning. Default: gpt-4o-mini.",
+    )
+    llm.add_argument(
+        "--no-llm-clean", action="store_true",
+        help="Disable LLM cleaning; write raw trafilatura output as policy.txt.",
+    )
+
     skip = p.add_argument_group("Browsable-only (skip failures)")
     skip.add_argument("--skip-home-fetch-failed", action="store_true", help="Drop sites that fail homepage fetch (do not write to results).")
 
@@ -393,6 +407,20 @@ async def _run(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())
     tracker_radar = TrackerRadarIndex(args.tracker_radar_index) if args.tracker_radar_index else None
     trackerdb = TrackerDbIndex(args.trackerdb_index) if args.trackerdb_index else None
+
+    # --- OpenAI client for LLM semantic cleaning ---
+    openai_client = None
+    if not getattr(args, "no_llm_clean", False):
+        api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if api_key:
+            try:
+                import openai as _openai
+                openai_client = _openai.AsyncOpenAI(api_key=api_key)
+                log(f"LLM semantic cleaning enabled (model: {args.llm_model}).")
+            except ImportError:
+                warn("openai package not installed. Install with: pip install openai. LLM cleaning disabled.")
+        else:
+            warn("No OpenAI API key found. LLM cleaning disabled. Use --openai-api-key or set OPENAI_API_KEY.")
     mapping_mode = (
         "mixed"
         if tracker_radar and trackerdb
@@ -573,6 +601,8 @@ async def _run(args: argparse.Namespace) -> None:
                         run_id=run_id,
                         exclude_same_entity=bool(args.exclude_same_entity),
                         third_party_policy_fetcher=fetch_third_party_policy_cached,
+                        openai_client=openai_client,
+                        llm_model=args.llm_model,
                         stage_callback=lambda stage: emit_event({
                             "type": "site_stage",
                             "run_id": run_id,

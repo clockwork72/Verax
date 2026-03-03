@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import asdict
 from datetime import datetime
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import urlparse, urlunparse
+
+if TYPE_CHECKING:
+    import openai as _openai_t
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -53,82 +55,118 @@ _NON_BROWSABLE_PATTERNS = [
         r"iis windows server",
     )
 ]
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*]\([^)]+\)")
-_INLINE_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_PURE_LINK_LINE_RE = re.compile(
-    r"^\s*(?P<prefix>(?:#{1,6}\s+|[-*•]\s+|\d+\.\s+)?)\[(?P<text>[^\]]+)\]\([^)]+\)\s*$"
-)
-_KEEP_KEYWORDS = (
-    "last updated",
-    "prior version",
-    "definitions",
-    "contact",
-    "rights",
-    "choices do i have",
-)
-_NAV_KEYWORDS = (
-    "sign in",
-    "your account",
-    "account & lists",
-    "your lists",
-    "cart",
-    "returns & orders",
-    "returns and orders",
-    "today's deals",
-    "todays deals",
-    "prime video",
-    "registry",
-    "gift cards",
-    "customer service",
-    "search amazon",
-    "deliver to",
-    "all departments",
-    "select the department",
-    "back to top",
-    "get to know us",
-    "make money with us",
-    "amazon payment products",
-    "let us help you",
-    "privacy preferences",
-    "was this information helpful",
-    "thank you for your feedback",
-    "this information is confusing",
-    "this isn't the information i was looking for",
-    "please select what best describes",
-    "i don't like this policy",
-    "we're unable to respond",
-)
-_SHORT_NAV_TOKENS = (
-    "all",
-    "en",
-    "account",
-    "orders",
-    "recommendations",
-    "browsing history",
-    "watchlist",
-    "cart",
-    "registry",
-    "create a list",
-    "find a list",
-    "content & devices",
-    "subscribe & save items",
-    "memberships & subscriptions",
-    "music library",
-    "find more solutions",
-    "security and privacy",
-    "legal policies",
-    "submit",
-    "yes",
-    "no",
-)
-_FOOTER_TOKENS = (
-    "conditions of use",
-    "privacy notice",
-    "consumer health data privacy disclosure",
-    "your ads privacy choices",
-    "all help topics",
-)
 _POLICY_SCAN_FULL_PAGE_DOMAINS = ("onetrust.com", "cookielaw.org", "cookiepro.com")
+
+# ---------------------------------------------------------------------------
+# LLM-based semantic policy cleaner
+# ---------------------------------------------------------------------------
+
+_LLM_SYSTEM_PROMPT = """\
+You are a privacy policy text extractor for academic research.
+
+You will receive raw text extracted from a privacy policy webpage. This text \
+may contain navigation menus, cookie consent panels, site headers/footers, \
+feedback widgets, and other non-policy content mixed with the actual privacy policy.
+
+Your task: return ONLY the full privacy policy content, preserving it verbatim.
+
+KEEP:
+- All privacy policy sections and their full text
+- Section headings and document structure
+- Effective / last-updated dates
+- Contact details referenced within the policy
+- Legal definitions and terms that are part of the policy
+
+REMOVE:
+- Site navigation menus and header/footer links
+- Cookie consent or preference-center panels (OneTrust, Cookiebot, TrustArc, etc.)
+- Feedback widgets ("Was this helpful?", "Rate this page", star ratings)
+- Page breadcrumbs, language/region selectors, search bars
+- Copyright notices and unrelated boilerplate at the page footer
+- Any content that is clearly NOT part of the privacy policy text
+
+RULES:
+- Do NOT paraphrase, summarize, or alter the policy wording in any way
+- Preserve markdown headings (##, ###) and list structure (-, *, numbered lists)
+- Return ONLY the cleaned policy text — no preamble, explanation, or commentary
+- If the entire input is already clean policy text, return it unchanged
+"""
+
+
+def _chunk_policy_text(text: str, max_chars: int = 60_000) -> list[str]:
+    """Split Markdown policy text at heading boundaries with breadcrumb context.
+
+    Each chunk starts with the heading hierarchy of its position so the LLM
+    has section context even when processing a slice of the full document.
+    Prevents silent output truncation when text exceeds gpt-4o-mini's 16K
+    output-token window.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    lines = text.splitlines(keepends=True)
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    breadcrumb: list[tuple[int, str]] = []  # (heading_level, heading_line)
+
+    for line in lines:
+        m = re.match(r"^(#{1,3}) ", line)
+        if m:
+            level = len(m.group(1))
+            breadcrumb = [(lvl, h) for lvl, h in breadcrumb if lvl < level]
+            breadcrumb.append((level, line.rstrip()))
+        if current_len + len(line) > max_chars and current:
+            chunks.append("".join(current))
+            ctx = [h + "\n" for _, h in breadcrumb]
+            current = ctx
+            current_len = sum(len(h) for h in ctx)
+        current.append(line)
+        current_len += len(line)
+
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+async def _llm_clean_policy_text(
+    text: str,
+    *,
+    client: "_openai_t.AsyncOpenAI",
+    model: str = "gpt-4o-mini",
+    max_input_chars: int = 60_000,
+) -> str | None:
+    """Semantically clean raw extracted policy text using an LLM.
+
+    Long texts are split into heading-bounded chunks (each ≤ max_input_chars)
+    so the LLM output never silently truncates. Uses the provided AsyncOpenAI
+    client. Returns None on failure so callers can fall back to raw text.
+    """
+    if not text or not text.strip():
+        return None
+
+    chunks = _chunk_policy_text(text, max_chars=max_input_chars)
+    results: list[str] = []
+    for chunk in chunks:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": chunk},
+                ],
+                temperature=0,
+                max_tokens=16384,
+            )
+            result = response.choices[0].message.content
+            if result and result.strip():
+                results.append(result.strip())
+        except Exception as e:
+            warn(f"LLM policy cleaning failed ({model}): {e}")
+
+    if not results:
+        return None
+    return "\n\n".join(results)
 
 
 def _url_host(url: str | None) -> str:
@@ -166,159 +204,6 @@ def _html_to_text(html: str | None) -> str | None:
     except Exception:
         return None
 
-
-def _normalize_link_markup(line: str) -> str:
-    return _INLINE_LINK_RE.sub(lambda m: m.group(1), line)
-
-
-def _looks_like_heading(text: str) -> bool:
-    if not text:
-        return False
-    lower = text.lower()
-    if any(k in lower for k in _KEEP_KEYWORDS):
-        return True
-    if len(text) > 90:
-        return False
-    words = [w for w in re.split(r"\s+", text.strip()) if w]
-    if not words:
-        return False
-    titleish = sum(1 for w in words if w[:1].isupper())
-    return titleish / max(len(words), 1) >= 0.6
-
-
-def _is_nav_line(line: str, normalized: str, counts: dict[str, int]) -> bool:
-    lower = normalized
-    if any(k in lower for k in _FOOTER_TOKENS):
-        return True
-    if any(k in lower for k in _KEEP_KEYWORDS):
-        return False
-    if any(k in lower for k in _NAV_KEYWORDS):
-        return True
-    stripped = line.lstrip()
-    if stripped.startswith("#####") or stripped.startswith("* #####"):
-        return True
-    if "©" in line or "copyright" in lower:
-        return True
-    if "yes" in lower and "no" in lower and len(lower) <= 12:
-        return True
-    plain = re.sub(r"^[#*•\-\d\.\s]+", "", lower).strip()
-    if plain in _SHORT_NAV_TOKENS and len(plain) <= 30:
-        return True
-    if len(plain) <= 3 and plain in ("en", "all"):
-        return True
-    if counts.get(lower, 0) >= 3 and len(lower) <= 80:
-        return True
-    return False
-
-
-def _clean_policy_text(text: str | None) -> str:
-    if not text:
-        return ""
-    text = _MARKDOWN_IMAGE_RE.sub("", text)
-    raw_lines = text.splitlines()
-    counts: dict[str, int] = {}
-    for ln in raw_lines:
-        norm = re.sub(r"\s+", " ", ln.strip().lower())
-        if norm:
-            counts[norm] = counts.get(norm, 0) + 1
-
-    candidates: list[dict[str, object]] = []
-    pending_blank = False
-
-    for line in raw_lines:
-        line = line.strip()
-        if not line:
-            pending_blank = True
-            continue
-        if _MARKDOWN_IMAGE_RE.search(line):
-            line = _MARKDOWN_IMAGE_RE.sub("", line).strip()
-            if not line:
-                continue
-
-        pure_match = _PURE_LINK_LINE_RE.match(line)
-        if pure_match:
-            prefix = pure_match.group("prefix") or ""
-            link_text = pure_match.group("text").strip()
-            if prefix:
-                line = f"{prefix}{link_text}"
-            else:
-                if _looks_like_heading(link_text):
-                    line = link_text
-                else:
-                    continue
-        else:
-            line = _normalize_link_markup(line)
-
-        if "](http" in line or "](https" in line:
-            continue
-        if line.startswith("http://") or line.startswith("https://") or line.startswith("www."):
-            continue
-
-        normalized = re.sub(r"\s+", " ", line.strip().lower())
-        if not normalized:
-            continue
-        keep_force = any(k in normalized for k in _KEEP_KEYWORDS)
-        nav_like = _is_nav_line(line, normalized, counts)
-
-        candidates.append(
-            {
-                "line": line,
-                "normalized": normalized,
-                "keep": keep_force,
-                "nav": nav_like,
-                "pending_blank": pending_blank,
-                "drop": False,
-            }
-        )
-        pending_blank = False
-
-    # Drop nav-like preamble before the first privacy heading/last-updated marker.
-    content_start = None
-    for idx, item in enumerate(candidates):
-        norm = item["normalized"]
-        if "last updated" in norm or ("privacy" in norm and ("policy" in norm or "notice" in norm)):
-            content_start = idx
-            break
-    if content_start is not None:
-        for idx in range(content_start):
-            item = candidates[idx]
-            if item["keep"]:
-                continue
-            norm = item["normalized"]
-            if item["nav"] or len(norm) <= 30:
-                item["drop"] = True
-
-    # Drop footer block from the first footer marker near the end.
-    footer_cut = None
-    cutoff_threshold = int(len(candidates) * 0.6)
-    for idx, item in enumerate(candidates):
-        norm = item["normalized"]
-        line = str(item["line"])
-        if idx < cutoff_threshold:
-            continue
-        if any(k in norm for k in _FOOTER_TOKENS) or "©" in line or "copyright" in norm:
-            footer_cut = idx
-            break
-    if footer_cut is not None:
-        for idx in range(footer_cut, len(candidates)):
-            if not candidates[idx]["keep"]:
-                candidates[idx]["drop"] = True
-
-    cleaned: list[str] = []
-    for item in candidates:
-        if item["drop"]:
-            continue
-        line = str(item["line"])
-        normalized = str(item["normalized"])
-        if item["nav"] and not item["keep"]:
-            continue
-        if not any(ch.isalnum() for ch in line):
-            continue
-        if item["pending_blank"] and cleaned:
-            cleaned.append("")
-        cleaned.append(line)
-
-    return "\n".join(cleaned).strip()
 
 def _combine_errors(*msgs: str | None) -> str | None:
     parts = [m for m in msgs if m and str(m).strip()]
@@ -622,6 +507,8 @@ async def process_site(
     stage_callback: Callable[[str], None] | None = None,
     exclude_same_entity: bool = False,
     third_party_policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
+    openai_client: "_openai_t.AsyncOpenAI | None" = None,
+    llm_model: str = "gpt-4o-mini",
 ) -> dict[str, Any]:
     """
     Process a single website:
@@ -706,14 +593,21 @@ async def process_site(
     first_party_policy = None
     if chosen_full:
         raw_text = chosen_full.get("text") or ""
-        cleaned_text = _clean_policy_text(raw_text)
+        llm_cleaned: str | None = None
+        if openai_client is not None and raw_text:
+            llm_cleaned = await _llm_clean_policy_text(
+                raw_text, client=openai_client, model=llm_model
+            )
+        cleaned_text = llm_cleaned if llm_cleaned else raw_text
+        base_method = chosen_full.get("text_extraction_method") or "fallback"
+        final_method = "llm_cleaned" if llm_cleaned else base_method
         first_party_policy = {
             "url": chosen_full.get("url"),
             "status_code": chosen_full.get("status_code"),
             "likeliness_score": chosen_full.get("likeliness_score"),
             "text_len": len(cleaned_text),
-            "text_len_raw": chosen_full.get("text_len"),
-            "extraction_method": chosen_full.get("text_extraction_method") or "fallback",
+            "text_len_raw": len(raw_text),
+            "extraction_method": final_method,
         }
         _write_text(site_art_dir / "policy.url.txt", chosen_full.get("url"))
         _write_text(site_art_dir / "policy.raw.txt", raw_text)
@@ -721,7 +615,9 @@ async def process_site(
         _write_json(
             site_art_dir / "policy.extraction.json",
             {
-                "method": first_party_policy["extraction_method"],
+                "method": final_method,
+                "base_extraction": base_method,
+                "llm_model": llm_model if llm_cleaned else None,
                 "source_url": chosen_full.get("url"),
             },
         )
@@ -837,15 +733,23 @@ async def process_site(
                     scan_full_page=_should_scan_full_page_policy(purl),
                 )
             tp_text_raw = (res.text or "").strip()
-            tp_text = _clean_policy_text(tp_text_raw)
+            tp_llm_cleaned: str | None = None
+            if openai_client is not None and tp_text_raw:
+                tp_llm_cleaned = await _llm_clean_policy_text(
+                    tp_text_raw, client=openai_client, model=llm_model
+                )
+            tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
+            tp_base_method = res.text_extraction_method or "fallback"
+            tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
             _write_text(tp_dir / "policy.url.txt", purl)
             _write_text(tp_dir / "policy.raw.txt", tp_text_raw)
             _write_text(tp_dir / "policy.txt", tp_text)
-            tp_method = res.text_extraction_method or "fallback"
             _write_json(
                 tp_dir / "policy.extraction.json",
                 {
                     "method": tp_method,
+                    "base_extraction": tp_base_method,
+                    "llm_model": llm_model if tp_llm_cleaned else None,
                     "source_url": purl,
                 },
             )

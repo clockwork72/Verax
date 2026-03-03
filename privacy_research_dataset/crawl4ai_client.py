@@ -9,6 +9,14 @@ from typing import Any, Optional
 from .text_extract import extract_main_text_with_method
 from .utils.logging import warn
 
+# Run in the browser after page load to expose hidden/collapsed content before extraction.
+_EXPAND_COLLAPSED_JS = (
+    "document.querySelectorAll('button[aria-expanded=\"false\"]')"
+    ".forEach(function(el){try{el.click();}catch(e){}});"
+    "document.querySelectorAll('[aria-hidden=\"true\"]')"
+    ".forEach(function(el){el.removeAttribute('aria-hidden');});"
+)
+
 @dataclass
 class Crawl4AIResult:
     url: str
@@ -180,6 +188,7 @@ class Crawl4AIClient:
 
     "magic": magic,
     "scan_full_page": scan_full_page,
+    "js_code": _EXPAND_COLLAPSED_JS,
 
     # Locale/timezone belong to *CrawlerRunConfig* in recent versions.
     "locale": self.locale,
