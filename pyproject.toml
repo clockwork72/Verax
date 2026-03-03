@@ -23,6 +23,11 @@ dependencies = [
   "openai>=1.0.0",
   "readability-lxml>=0.8.1",
   "pypandoc>=1.13",
+  "pandoc>=2.4",
+  "rapidfuzz>=3.0",
+  "lemminflect>=0.2.3",
+  "python-rapidjson>=1.10",
+  "regex>=2024.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +37,7 @@ openwpm = [
 
 [project.scripts]
 privacy-dataset = "privacy_research_dataset.cli:main"
+privacy-dataset-annotate = "privacy_research_dataset.annotate_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

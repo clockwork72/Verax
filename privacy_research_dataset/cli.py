@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -108,6 +108,20 @@ def _parse_args() -> argparse.Namespace:
     sync.add_argument("--state-file", type=str, default=None, help="Write run state JSON after each site.")
     sync.add_argument("--summary-out", type=str, default=None, help="Write aggregated summary JSON after each site.")
     sync.add_argument("--explorer-out", type=str, default=None, help="Write explorer JSONL (or JSON) for dashboard browsing.")
+
+    cache = p.add_argument_group("Cache / deduplication")
+    cache.add_argument(
+        "--force", action="store_true",
+        help="Re-scrape all sites even if already present in --out JSONL.",
+    )
+    cache.add_argument(
+        "--tp-cache-file", type=str, default=None,
+        help=(
+            "Persistent JSON cache for third-party policy fetches, keyed by policy URL. "
+            "Deduplicates across runs and across sites sharing the same TP policy URL. "
+            "Defaults to <out>.tp_cache.json alongside --out."
+        ),
+    )
 
     # ---------------------------
     # NEW: Website prefilter
@@ -403,6 +417,39 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
     return kept
 
 
+def _load_done_records(out_path: Path) -> dict[str, dict]:
+    """Return a dict of input→record for all successfully-scraped sites in an existing output JSONL."""
+    if not out_path.exists():
+        return {}
+    done: dict[str, dict] = {}
+    for line in out_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            if rec.get("status") == "ok":
+                # Key by both "input" and "site_etld1" so either form matches.
+                for key_field in ("input", "site_etld1"):
+                    key = rec.get(key_field)
+                    if key:
+                        done[key] = rec
+        except Exception:
+            pass
+    return done
+
+
+def _load_tp_disk_cache(cache_path: Path) -> dict[str, dict]:
+    """Load the persistent third-party policy cache from disk."""
+    if not cache_path.exists():
+        return {}
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        warn(f"Failed to load TP policy cache from {cache_path}: {e}")
+        return {}
+
+
 async def _run(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())
     tracker_radar = TrackerRadarIndex(args.tracker_radar_index) if args.tracker_radar_index else None
@@ -444,7 +491,7 @@ async def _run(args: argparse.Namespace) -> None:
         "run_id": run_id,
         "stage": "input_loaded",
         "total_sites": len(sites),
-        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     })
 
     if args.crux_filter:
@@ -455,7 +502,7 @@ async def _run(args: argparse.Namespace) -> None:
                 "run_id": run_id,
                 "stage": "crux_filtered",
                 "kept_sites": len(sites),
-                "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
             })
         except Exception as e:
             warn(f"CrUX filter failed unexpectedly; continuing without it. Error: {e}")
@@ -471,7 +518,7 @@ async def _run(args: argparse.Namespace) -> None:
                 "run_id": run_id,
                 "stage": "prefilter_done",
                 "kept_sites": len(sites),
-                "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
             })
         except Exception as e:
             warn(f"Prefilter failed unexpectedly; continuing without prefilter. Error: {e}")
@@ -487,6 +534,28 @@ async def _run(args: argparse.Namespace) -> None:
     sem = asyncio.Semaphore(max(1, int(args.concurrency)))
     write_lock = asyncio.Lock()
 
+    # --- Site-level cache: skip re-scraping sites already in the output JSONL ---
+    done_records: dict[str, dict] = {}
+    if not args.force:
+        done_records = _load_done_records(Path(args.out))
+        if done_records:
+            log(
+                f"Cache: {len(done_records)} successfully-scraped site(s) already in {args.out} "
+                f"will be skipped. Pass --force to re-scrape."
+            )
+
+    # --- Third-party policy disk cache: persist across runs, keyed by policy URL ---
+    out_path = Path(args.out)
+    tp_cache_path = (
+        Path(args.tp_cache_file)
+        if args.tp_cache_file
+        else out_path.with_name(out_path.stem + ".tp_cache.json")
+    )
+    tp_policy_disk_cache: dict[str, dict] = _load_tp_disk_cache(tp_cache_path)
+    if tp_policy_disk_cache:
+        log(f"Loaded {len(tp_policy_disk_cache)} cached third-party policy URL(s) from {tp_cache_path}")
+    tp_cache_write_lock = asyncio.Lock()
+
     summary = SummaryBuilder(run_id=run_id, total_sites=len(sites), mapping_mode=mapping_mode)
     explorer_records: list[dict[str, Any]] = []
     explorer_is_jsonl = bool(args.explorer_out and str(args.explorer_out).endswith(".jsonl"))
@@ -495,14 +564,14 @@ async def _run(args: argparse.Namespace) -> None:
         "type": "run_started",
         "run_id": run_id,
         "total_sites": len(sites),
-        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     })
 
     emit_event({
         "type": "run_stage",
         "run_id": run_id,
         "stage": "crawl_started",
-        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     })
 
     async with Crawl4AIClient(
@@ -522,9 +591,29 @@ async def _run(args: argparse.Namespace) -> None:
         async def fetch_third_party_policy_cached(policy_url: str) -> Crawl4AIResult:
             owner = False
             async with tp_policy_cache_lock:
+                # 1. In-memory cache hit (fastest path).
                 cached = tp_policy_cache.get(policy_url)
                 if cached is not None:
                     return cached
+
+                # 2. Disk cache hit — reconstruct result and warm in-memory cache.
+                disk = tp_policy_disk_cache.get(policy_url)
+                if disk is not None:
+                    result = Crawl4AIResult(
+                        url=policy_url,
+                        success=bool(disk.get("status_code") and disk["status_code"] < 400),
+                        status_code=disk.get("status_code"),
+                        raw_html=None,
+                        cleaned_html=None,
+                        text=disk.get("text"),
+                        network_requests=None,
+                        error_message=disk.get("error_message"),
+                        text_extraction_method=disk.get("extraction_method"),
+                    )
+                    tp_policy_cache[policy_url] = result
+                    return result
+
+                # 3. Not cached anywhere — register as inflight so concurrent callers wait.
                 fut = tp_policy_inflight.get(policy_url)
                 if fut is None:
                     fut = asyncio.get_running_loop().create_future()
@@ -551,6 +640,24 @@ async def _run(args: argparse.Namespace) -> None:
                         error_message=str(e),
                         text_extraction_method=None,
                     )
+
+                # Persist to disk cache only when we got policy text (skip failed fetches).
+                if result.text:
+                    async with tp_cache_write_lock:
+                        tp_policy_disk_cache[policy_url] = {
+                            "text": result.text,
+                            "status_code": result.status_code,
+                            "extraction_method": result.text_extraction_method,
+                            "error_message": result.error_message,
+                            "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                        }
+                        try:
+                            tp_cache_path.write_text(
+                                json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1),
+                                encoding="utf-8",
+                            )
+                        except Exception as e:
+                            warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
 
                 async with tp_policy_cache_lock:
                     tp_policy_cache[policy_url] = result
@@ -579,13 +686,33 @@ async def _run(args: argparse.Namespace) -> None:
             async with sem:
                 rank = rec["rank"]
                 site = rec["site"]
+
+                # Check site-level cache before doing any network work.
+                cached_result = done_records.get(site)
+                if cached_result is not None:
+                    log(f"[cache] {site} — already scraped, reusing cached result.")
+                    async with write_lock:
+                        summary.update(cached_result)
+                        if args.summary_out:
+                            write_json(args.summary_out, summary.to_summary())
+                    emit_event({
+                        "type": "site_finished",
+                        "run_id": run_id,
+                        "site": site,
+                        "rank": rank,
+                        "status": cached_result.get("status"),
+                        "cached": True,
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    })
+                    return
+
                 log(f"Processing {site} (rank={rank})")
                 emit_event({
                     "type": "site_started",
                     "run_id": run_id,
                     "site": site,
                     "rank": rank,
-                    "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
                 try:
                     result = await process_site(
@@ -609,7 +736,7 @@ async def _run(args: argparse.Namespace) -> None:
                             "site": site,
                             "rank": rank,
                             "stage": stage,
-                            "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                         }),
                     )
                 except Exception as e:
@@ -668,7 +795,7 @@ async def _run(args: argparse.Namespace) -> None:
                     "site": site,
                     "rank": rank,
                     "status": result.get("status"),
-                    "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
 
                 emit_event({
@@ -677,7 +804,7 @@ async def _run(args: argparse.Namespace) -> None:
                     "processed": summary.processed_sites,
                     "total": len(sites),
                     "status_counts": dict(summary.status_counts),
-                    "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
 
                 if result.get("status") != "ok":
@@ -693,7 +820,7 @@ async def _run(args: argparse.Namespace) -> None:
         "run_id": run_id,
         "processed": summary.processed_sites,
         "total": len(sites),
-        "timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     })
 
 

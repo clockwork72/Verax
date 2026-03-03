@@ -2,13 +2,19 @@ LICENSE
 README.md
 pyproject.toml
 privacy_research_dataset/__init__.py
+privacy_research_dataset/annotate_cli.py
+privacy_research_dataset/annotation_types.py
+privacy_research_dataset/annotator.py
 privacy_research_dataset/cli.py
 privacy_research_dataset/crawl4ai_client.py
 privacy_research_dataset/crawler.py
 privacy_research_dataset/openwpm_engine.py
 privacy_research_dataset/policy_finder.py
+privacy_research_dataset/summary.py
+privacy_research_dataset/text_extract.py
 privacy_research_dataset/third_party.py
 privacy_research_dataset/tracker_radar.py
+privacy_research_dataset/trackerdb.py
 privacy_research_dataset/tranco_list.py
 privacy_research_dataset.egg-info/PKG-INFO
 privacy_research_dataset.egg-info/SOURCES.txt
@@ -19,4 +25,7 @@ privacy_research_dataset.egg-info/top_level.txt
 privacy_research_dataset/utils/etld.py
 privacy_research_dataset/utils/io.py
 privacy_research_dataset/utils/logging.py
+tests/test_annotator.py
+tests/test_non_browsable.py
 tests/test_policy_finder.py
+tests/test_text_extract.py

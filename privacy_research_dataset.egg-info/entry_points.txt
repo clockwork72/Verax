@@ -1,2 +1,3 @@
 [console_scripts]
 privacy-dataset = privacy_research_dataset.cli:main
+privacy-dataset-annotate = privacy_research_dataset.annotate_cli:main
