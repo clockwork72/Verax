@@ -80,9 +80,9 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
     if (detailTab !== 'statements' || !selectedSite || !window.scraper?.readArtifactText) return
     setStatementsLoading(true)
     setStatements([])
-    const artifactsBase = outDir ? `${outDir}/artifacts` : 'outputs/artifacts'
     window.scraper.readArtifactText({
-      relativePath: `${artifactsBase}/${selectedSite.site}/policy_statements_annotated.jsonl`,
+      outDir: outDir || 'outputs',
+      relativePath: `artifacts/${selectedSite.site}/policy_statements_annotated.jsonl`,
     }).then((res: any) => {
       if (res?.ok && res.data) {
         const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())

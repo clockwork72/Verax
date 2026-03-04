@@ -159,12 +159,13 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
     if (sitesWithStatements.length === 0) return
     setLoading(true)
 
-    const artifactsBase = outDir ? `${outDir}/artifacts` : 'outputs/artifacts'
+    const root = outDir || 'outputs'
 
     Promise.all(
       sitesWithStatements.map(async (s: any) => {
         const res = await window.scraper!.readArtifactText({
-          relativePath: `${artifactsBase}/${s.site}/policy_statements_annotated.jsonl`,
+          outDir: root,
+          relativePath: `artifacts/${s.site}/policy_statements_annotated.jsonl`,
         })
         if (!res.ok || !res.data) return null
         const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())

@@ -51,6 +51,20 @@ function parseAnnotateLogs(logs: string[]): {
 function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
+
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  'gpt-4o-mini':    { input: 0.15,  output: 0.60  },
+  'gpt-4o':         { input: 2.50,  output: 10.00 },
+  'gpt-4-turbo':    { input: 10.00, output: 30.00  },
+  'gpt-3.5-turbo':  { input: 0.50,  output: 1.50  },
+}
+
+const MODEL_OPTIONS = [
+  { value: 'gpt-4o-mini',   label: 'gpt-4o-mini',   price: '$0.15 / $0.60 per 1M' },
+  { value: 'gpt-4o',        label: 'gpt-4o',         price: '$2.50 / $10 per 1M'   },
+  { value: 'gpt-4-turbo',   label: 'gpt-4-turbo',    price: '$10 / $30 per 1M'     },
+  { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo',  price: '$0.50 / $1.50 per 1M' },
+]
 import { FlowChartModal } from './FlowChartModal'
 
 const logLines = [
@@ -518,9 +532,11 @@ export function LauncherView({
                   value={llmModel}
                   onChange={(e) => onLlmModelChange?.(e.target.value)}
                 >
-                  <option value="gpt-4o-mini">gpt-4o-mini</option>
-                  <option value="gpt-4o">gpt-4o</option>
-                  <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                  {MODEL_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label} — {opt.price}
+                    </option>
+                  ))}
                 </select>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-[var(--muted-text)]">Concurrency</span>
@@ -550,7 +566,11 @@ export function LauncherView({
                       <span className="font-mono text-[10px]">
                         {fmtK(tokensIn)}↑&nbsp;{fmtK(tokensOut)}↓&nbsp;tokens
                         <span className="ml-1 text-[var(--muted-text)] opacity-60">
-                          (≈${((tokensIn * 0.00015 + tokensOut * 0.0006) / 1000).toFixed(3)})
+                          {(() => {
+                            const rates = MODEL_PRICING[llmModel] ?? MODEL_PRICING['gpt-4o-mini']
+                            const cost = (tokensIn / 1e6) * rates.input + (tokensOut / 1e6) * rates.output
+                            return `(≈$${cost.toFixed(3)})`
+                          })()}
                         </span>
                       </span>
                     )}

@@ -5,11 +5,19 @@ import { LauncherView } from './components/launcher/LauncherView'
 import { ResultsView } from './components/results/ResultsView'
 import { ExplorerView } from './components/explorer/ExplorerView'
 import { AnnotationsView } from './components/annotations/AnnotationsView'
+import { PolicyViewerView } from './components/annotations/PolicyViewerView'
 import { ConsistencyCheckerView } from './components/consistency/ConsistencyCheckerView'
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
+
+const MODEL_COST_RATES: Record<string, { input: number; output: number }> = {
+  'gpt-4o-mini':    { input: 0.15,  output: 0.60  },
+  'gpt-4o':         { input: 2.50,  output: 10.00 },
+  'gpt-4-turbo':    { input: 10.00, output: 30.00  },
+  'gpt-3.5-turbo':  { input: 0.50,  output: 1.50  },
+}
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -62,6 +70,28 @@ function App() {
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
+  const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
+  const [totalCost, setTotalCost] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('privacy-dashboard.totalCost')
+      return raw ? parseFloat(raw) : 0
+    } catch { return 0 }
+  })
+  const annotateLogsRef = useRef<string[]>([])
+  const llmModelRef = useRef(llmModel)
+
+  const addToCost = useCallback((amount: number) => {
+    setTotalCost((prev) => {
+      const next = prev + amount
+      try { localStorage.setItem('privacy-dashboard.totalCost', String(next)) } catch {}
+      return next
+    })
+  }, [])
+
+  const resetCost = useCallback(() => {
+    setTotalCost(0)
+    try { localStorage.removeItem('privacy-dashboard.totalCost') } catch {}
+  }, [])
 
   type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
   type CompletedSiteInfo = { site: string; status: string; cached: boolean; annotated?: boolean }
@@ -177,6 +207,18 @@ function App() {
     if (scraper.onAnnotatorExit) {
       scraper.onAnnotatorExit(() => {
         setAnnotateRunning(false)
+        // Parse token usage from logs and accumulate cost
+        let tokIn = 0, tokOut = 0
+        for (const line of annotateLogsRef.current) {
+          const m = line.match(/\[done\]\s+.+?\|\s*([\d,]+)↑\/([\d,]+)↓/)
+          if (m) {
+            tokIn += Number(m[1].replace(/,/g, ''))
+            tokOut += Number(m[2].replace(/,/g, ''))
+          }
+        }
+        const rates = MODEL_COST_RATES[llmModelRef.current] ?? MODEL_COST_RATES['gpt-4o-mini']
+        const runCost = (tokIn / 1e6) * rates.input + (tokOut / 1e6) * rates.output
+        if (runCost > 0) addToCost(runCost)
         // refresh stats after annotator finishes
         if (scraper.annotationStats) {
           scraper.annotationStats().then((res: any) => {
@@ -186,6 +228,10 @@ function App() {
       })
     }
   }, [])
+
+  // Keep refs in sync so the IPC exit handler always sees current values
+  useEffect(() => { annotateLogsRef.current = annotateLogs }, [annotateLogs])
+  useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
 
   const createRunId = () => {
     try {
@@ -204,6 +250,7 @@ function App() {
 
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
     if (!window.scraper?.startAnnotate) return
+    annotateLogsRef.current = []
     setAnnotateLogs([])
     setAnnotateRunning(true)
     const res = await window.scraper.startAnnotate({
@@ -474,7 +521,9 @@ function App() {
     launcher: 'Minimal control surface for the dataset pipeline.',
     results: 'Outcome overview of the latest scrape.',
     explorer: 'Browse scraped sites and their policy links.',
-    annotations: 'LLM-extracted privacy statements from policy documents.',
+    annotations: annotationsTab === 'viewer'
+      ? 'Read annotated policy text with phrase-level highlights.'
+      : 'LLM-extracted privacy statements from policy documents.',
     consistency: 'Compare first‑party and third‑party policy texts.',
     database: 'Artifact storage and dataset exports.',
     settings: 'Theme and default crawl preferences.',
@@ -545,10 +594,41 @@ function App() {
           />
         )}
         {activeNav === 'annotations' && (
-          <AnnotationsView
-            annotationStats={annotationStats}
-            outDir={outDir}
-          />
+          <>
+            {/* Tab switcher */}
+            <section className="card rounded-2xl p-1">
+              <div className="flex gap-1">
+                {(
+                  [
+                    { id: 'overview', label: 'Overview' },
+                    { id: 'viewer', label: 'Policy Viewer' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={`flex-1 rounded-xl px-4 py-2 text-xs transition ${
+                      annotationsTab === tab.id
+                        ? 'bg-[var(--color-primary)] text-white'
+                        : 'text-[var(--muted-text)] hover:bg-black/20'
+                    }`}
+                    onClick={() => setAnnotationsTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </section>
+            {annotationsTab === 'overview' && (
+              <AnnotationsView annotationStats={annotationStats} outDir={outDir} />
+            )}
+            {annotationsTab === 'viewer' && (
+              <PolicyViewerView
+                sites={explorerData || undefined}
+                annotationStats={annotationStats}
+                outDir={outDir}
+              />
+            )}
+          </>
         )}
         {activeNav === 'consistency' && (
           <ConsistencyCheckerView
@@ -595,6 +675,8 @@ function App() {
             onToggleAutoAnnotate={setAutoAnnotate}
             openaiApiKey={openaiApiKey}
             onOpenaiApiKeyChange={setOpenaiApiKey}
+            totalCost={totalCost}
+            onResetCost={resetCost}
           />
         )}
       </PageShell>

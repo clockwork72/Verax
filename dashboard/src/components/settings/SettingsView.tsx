@@ -18,6 +18,8 @@ type SettingsViewProps = {
   onToggleAutoAnnotate?: (v: boolean) => void
   openaiApiKey?: string
   onOpenaiApiKeyChange?: (v: string) => void
+  totalCost?: number
+  onResetCost?: () => void
 }
 
 function ToggleRow({
@@ -68,6 +70,8 @@ export function SettingsView({
   onToggleAutoAnnotate,
   openaiApiKey = '',
   onOpenaiApiKeyChange,
+  totalCost = 0,
+  onResetCost,
 }: SettingsViewProps) {
   return (
     <>
@@ -202,6 +206,30 @@ export function SettingsView({
             value={autoAnnotate}
             onToggle={(v) => onToggleAutoAnnotate?.(v)}
           />
+        </div>
+      </section>
+
+      <section className="card rounded-2xl p-6">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Billing</p>
+          <h3 className="text-lg font-semibold">API Cost</h3>
+          <p className="mt-1 text-xs text-[var(--muted-text)]">
+            Accumulated OpenAI API cost across all annotation runs. Stored locally, not reset between sessions.
+          </p>
+        </div>
+        <div className="mt-4 flex items-center justify-between rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
+          <div>
+            <span className="text-2xl font-semibold tabular-nums text-[var(--color-text)]">
+              ${totalCost.toFixed(4)}
+            </span>
+            <p className="mt-0.5 text-[10px] text-[var(--muted-text)]">total spent since last reset</p>
+          </div>
+          <button
+            className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] hover:border-[var(--color-danger)] hover:text-[var(--color-danger)]"
+            onClick={() => onResetCost?.()}
+          >
+            Reset
+          </button>
         </div>
       </section>
     </>

@@ -559,20 +559,12 @@ async def process_site(
             "ended_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
 
-    _write_text(site_art_dir / "home.raw.html", home.raw_html)
-    _write_text(site_art_dir / "home.cleaned.html", home.cleaned_html)
-    if home.text:
-        _write_text(site_art_dir / "home.txt", home.text)
-
     # 2) Privacy policy discovery + fetch
     if stage_callback:
         stage_callback("policy_discovery")
     t_policy = time.perf_counter()
     policy_info = await _fetch_best_policy(client, home.url, home.cleaned_html)
     policy_fetch_ms = int((time.perf_counter() - t_policy) * 1000)
-    _write_json(site_art_dir / "policy.discovery.json", {
-        k: policy_info[k] for k in ("site_etld1","candidates_top","tried","chosen")
-    })
 
     chosen_full = policy_info.get("_chosen_full")
     if chosen_full is None and home.text:
@@ -609,8 +601,6 @@ async def process_site(
             "text_len_raw": len(raw_text),
             "extraction_method": final_method,
         }
-        _write_text(site_art_dir / "policy.url.txt", chosen_full.get("url"))
-        _write_text(site_art_dir / "policy.raw.txt", raw_text)
         _write_text(site_art_dir / "policy.txt", cleaned_text)
         _write_json(
             site_art_dir / "policy.extraction.json",
@@ -621,9 +611,6 @@ async def process_site(
                 "source_url": chosen_full.get("url"),
             },
         )
-        _write_text(site_art_dir / "policy.cleaned.html", chosen_full.get("cleaned_html"))
-        if chosen_full.get("raw_html"):
-            _write_text(site_art_dir / "policy.raw.html", chosen_full.get("raw_html"))
 
     # 3) Third-party extraction
     if stage_callback:
@@ -741,8 +728,6 @@ async def process_site(
             tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
             tp_base_method = res.text_extraction_method or "fallback"
             tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
-            _write_text(tp_dir / "policy.url.txt", purl)
-            _write_text(tp_dir / "policy.raw.txt", tp_text_raw)
             _write_text(tp_dir / "policy.txt", tp_text)
             _write_json(
                 tp_dir / "policy.extraction.json",

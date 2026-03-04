@@ -194,11 +194,10 @@ function ActiveStatementPanel({
   onClose: () => void
 }) {
   const stmt = stmts[activeIdx]
-  if (!stmt) return null
-  const { statement, source_text, chunk_index } = stmt
-  const isProhibition = statement.prohibition === true
 
   const sourceHighlights = useMemo(() => {
+    if (!stmt) return []
+    const { statement, source_text } = stmt
     const phrases: Array<{ field: string; phrase: string }> = []
     for (const field of FIELDS) {
       const vals = (statement[field] as PhraseId[] | undefined) ?? []
@@ -208,6 +207,10 @@ function ActiveStatementPanel({
     }
     return highlightText(source_text || '', phrases)
   }, [stmt])
+
+  if (!stmt) return null
+  const { statement, chunk_index } = stmt
+  const isProhibition = statement.prohibition === true
 
   return (
     <section className="card rounded-2xl p-4 sticky top-4">
@@ -319,11 +322,21 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
   const [hoveredBlock, setHoveredBlock] = useState<number | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  // Annotated site names set for quick lookup
+  // Annotated site names for quick lookup
   const annotatedSites = useMemo<Set<string>>(() => {
     if (!annotationStats?.per_site) return new Set()
     return new Set(
       (annotationStats.per_site as any[]).filter((s) => s.has_statements).map((s) => s.site as string)
+    )
+  }, [annotationStats])
+
+  // Annotated TP lookup: "site/tp" → true
+  const annotatedTps = useMemo<Set<string>>(() => {
+    if (!annotationStats?.per_tp) return new Set()
+    return new Set(
+      (annotationStats.per_tp as any[])
+        .filter((t) => t.has_statements)
+        .map((t) => `${t.site}/${t.tp}`)
     )
   }, [annotationStats])
 
@@ -359,7 +372,11 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
 
   const availableSites = useMemo(() => {
     if (!sites?.length) return []
-    return [...sites].sort((a, b) => a.site.localeCompare(b.site))
+    // Deduplicate by site name (unified explorer.jsonl can have the same site across multiple runs)
+    const seen = new Set<string>()
+    return sites
+      .filter((s) => { if (seen.has(s.site)) return false; seen.add(s.site); return true })
+      .sort((a, b) => a.site.localeCompare(b.site))
   }, [sites])
 
   const siteData = useMemo(
@@ -391,25 +408,26 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
     setDocJson(null)
     setActiveStmtIdxs([])
 
-    const base = `${outDir || 'outputs'}/artifacts`
-    const siteBase =
+    const base =
       policyType === 'first'
-        ? `${base}/${selectedSite}`
-        : `${base}/${selectedSite}/third_party/${selectedTp}`
+        ? `artifacts/${selectedSite}`
+        : `artifacts/${selectedSite}/third_party/${selectedTp}`
+    const root = outDir || 'outputs'
 
     try {
       const [pRes, sRes, dRes] = await Promise.all([
-        window.scraper.readArtifactText({ relativePath: `${siteBase}/policy.txt` }),
+        window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/policy.txt` }),
         window.scraper.readArtifactText({
-          relativePath: `${siteBase}/policy_statements_annotated.jsonl`,
+          outDir: root,
+          relativePath: `${base}/policy_statements_annotated.jsonl`,
         }),
-        window.scraper.readArtifactText({ relativePath: `${siteBase}/document.json` }),
+        window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/document.json` }),
       ])
 
       if (pRes?.ok && pRes.data) {
         setPolicyText(pRes.data as string)
       } else {
-        setLoadError(`Policy text not found at ${siteBase}/policy.txt`)
+        setLoadError(`Policy text not found at ${root}/${base}/policy.txt`)
       }
 
       if (sRes?.ok && sRes.data) {
@@ -537,6 +555,7 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
                 {availableTps.map((tp) => (
                   <option key={tp.name} value={tp.name}>
                     {tp.name}
+                    {annotatedTps.has(`${selectedSite}/${tp.name}`) ? ' ✦' : ''}
                     {tp.entity ? ` · ${tp.entity}` : ''}
                     {tp.categories?.length ? ` [${tp.categories[0]}]` : ''}
                   </option>

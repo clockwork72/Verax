@@ -63,20 +63,42 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _find_site_dirs(artifacts_dir: Path) -> list[Path]:
-    """Return site dirs that completed Stage 1.
+def _find_all_policy_dirs(artifacts_dir: Path) -> list[Path]:
+    """Return all directories (first-party + third-party) that have an annotatable policy.txt.
 
-    Priority:
-    - scrape_complete.json present (authoritative marker written by Stage 1 after a successful run)
+    First-party dirs:
+    - scrape_complete.json present → authoritative Stage 1 marker
     - fallback: non-empty policy.txt (sites scraped before the marker was introduced)
-    """
-    def _is_ready(d: Path) -> bool:
-        if (d / "scrape_complete.json").exists():
-            return (d / "policy.txt").exists()
-        p = d / "policy.txt"
-        return p.exists() and p.stat().st_size > 0
 
-    return sorted(d for d in artifacts_dir.iterdir() if d.is_dir() and _is_ready(d))
+    Third-party dirs (artifacts/{site}/third_party/{tp}/):
+    - non-empty policy.txt is sufficient (no scrape_complete.json for TPs)
+    """
+    result: list[Path] = []
+
+    for site_dir in sorted(artifacts_dir.iterdir()):
+        if not site_dir.is_dir():
+            continue
+
+        # First-party
+        if (site_dir / "scrape_complete.json").exists():
+            if (site_dir / "policy.txt").exists():
+                result.append(site_dir)
+        else:
+            p = site_dir / "policy.txt"
+            if p.exists() and p.stat().st_size > 0:
+                result.append(site_dir)
+
+        # Third-party
+        tp_root = site_dir / "third_party"
+        if tp_root.is_dir():
+            for tp_dir in sorted(tp_root.iterdir()):
+                if not tp_dir.is_dir():
+                    continue
+                p = tp_dir / "policy.txt"
+                if p.exists() and p.stat().st_size > 0:
+                    result.append(tp_dir)
+
+    return result
 
 
 def _annotate_site(
@@ -172,29 +194,37 @@ async def _run(args: argparse.Namespace) -> None:
         warn(f"artifacts-dir not found: {artifacts_dir}")
         return
 
-    site_dirs = _find_site_dirs(artifacts_dir)
-    if not site_dirs:
-        warn(f"No site directories with policy.txt found in {artifacts_dir}")
+    all_dirs = _find_all_policy_dirs(artifacts_dir)
+    if not all_dirs:
+        warn(f"No policy directories with policy.txt found in {artifacts_dir}")
         return
 
-    log(f"Found {len(site_dirs)} site(s) ready for annotation in {artifacts_dir}")
+    fp_count = sum(1 for d in all_dirs if d.parent.name != "third_party")
+    tp_count = len(all_dirs) - fp_count
+    log(f"Found {fp_count} first-party + {tp_count} third-party policy dirs in {artifacts_dir}")
 
     sem = asyncio.Semaphore(args.concurrency)
     loop = asyncio.get_event_loop()
 
+    def _label(d: Path) -> str:
+        """Human-readable label: site or site/3p/tp."""
+        if d.parent.name == "third_party":
+            return f"{d.parent.parent.name}/3p/{d.name}"
+        return d.name
+
     async def process_one(site_dir: Path) -> None:
         async with sem:
-            site = site_dir.name
+            label = _label(site_dir)
             # Primary marker: annotation_complete.json; fallback: policy_statements.jsonl (legacy).
             if (site_dir / "annotation_complete.json").exists() and not args.force:
-                log(f"[skip] {site} — annotation_complete.json exists (use --force to re-annotate)")
+                log(f"[skip] {label} — already annotated (use --force to re-annotate)")
                 return
             stmts_path = site_dir / "policy_statements.jsonl"
             if stmts_path.exists() and not args.force:
-                log(f"[skip] {site} — policy_statements.jsonl exists (use --force to re-annotate)")
+                log(f"[skip] {label} — policy_statements.jsonl exists (use --force to re-annotate)")
                 return
 
-            log(f"[start] {site}")
+            log(f"[start] {label}")
             try:
                 result = await loop.run_in_executor(
                     None,
@@ -202,16 +232,16 @@ async def _run(args: argparse.Namespace) -> None:
                 )
                 if result["status"] == "ok":
                     log(
-                        f"[done]  {site} — {result['statements']} statements "
+                        f"[done]  {label} — {result['statements']} statements "
                         f"from {result['chunks']} chunks ({result['blocks']} blocks) "
                         f"| {result['tokens_in']:,}↑/{result['tokens_out']:,}↓ tokens"
                     )
                 else:
-                    warn(f"[skip] {site} — {result['status']}")
+                    warn(f"[skip] {label} — {result['status']}")
             except Exception as e:
-                warn(f"[error] {site}: {e}")
+                warn(f"[error] {label}: {e}")
 
-    await asyncio.gather(*[process_one(d) for d in site_dirs])
+    await asyncio.gather(*[process_one(d) for d in all_dirs])
     log("Annotation complete.")
 
 

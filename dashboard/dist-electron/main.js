@@ -528,32 +528,57 @@ ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
     if (!fs.existsSync(targetDir)) {
       return { ok: true, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] };
     }
+    const countLines = async (filePath) => {
+      try {
+        const content = await fs.promises.readFile(filePath, "utf-8");
+        return content.split("\n").filter((line) => line.trim()).length;
+      } catch {
+        return 0;
+      }
+    };
     const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
     const perSite = [];
+    const perTp = [];
     let totalStatements = 0;
+    let tpTotalStatements = 0;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const statementsPath = path.join(targetDir, entry.name, "policy_statements.jsonl");
       const hasStatements = fs.existsSync(statementsPath);
       let count = 0;
       if (hasStatements) {
-        try {
-          const content = await fs.promises.readFile(statementsPath, "utf-8");
-          count = content.split("\n").filter((line) => line.trim()).length;
-          totalStatements += count;
-        } catch {
-          count = 0;
-        }
+        count = await countLines(statementsPath);
+        totalStatements += count;
       }
       perSite.push({ site: entry.name, count, has_statements: hasStatements });
+      const tpRoot = path.join(targetDir, entry.name, "third_party");
+      if (fs.existsSync(tpRoot)) {
+        const tpEntries = await fs.promises.readdir(tpRoot, { withFileTypes: true });
+        for (const tpEntry of tpEntries) {
+          if (!tpEntry.isDirectory()) continue;
+          const tpStmtsPath = path.join(tpRoot, tpEntry.name, "policy_statements.jsonl");
+          const tpHas = fs.existsSync(tpStmtsPath);
+          let tpCount = 0;
+          if (tpHas) {
+            tpCount = await countLines(tpStmtsPath);
+            tpTotalStatements += tpCount;
+          }
+          perTp.push({ site: entry.name, tp: tpEntry.name, count: tpCount, has_statements: tpHas });
+        }
+      }
     }
     const annotatedSites = perSite.filter((s) => s.has_statements).length;
+    const tpAnnotatedCount = perTp.filter((t) => t.has_statements).length;
     return {
       ok: true,
       total_sites: perSite.length,
       annotated_sites: annotatedSites,
       total_statements: totalStatements,
-      per_site: perSite
+      per_site: perSite,
+      tp_total: perTp.length,
+      tp_annotated: tpAnnotatedCount,
+      tp_total_statements: tpTotalStatements,
+      per_tp: perTp
     };
   } catch (error) {
     return { ok: false, error: String(error) };
