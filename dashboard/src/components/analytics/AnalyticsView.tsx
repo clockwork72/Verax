@@ -1,9 +1,11 @@
 type AnalyticsViewProps = {
   summary?: any
   state?: any
+  annotationStats?: any
+  tpCacheStats?: any
 }
 
-export function AnalyticsView({ summary, state }: AnalyticsViewProps) {
+export function AnalyticsView({ summary, state, annotationStats, tpCacheStats }: AnalyticsViewProps) {
   const processed = state?.processed_sites ?? summary?.processed_sites ?? 0
   const total = state?.total_sites ?? summary?.total_sites ?? 0
   const successRate = summary?.success_rate ?? 0
@@ -106,6 +108,105 @@ export function AnalyticsView({ summary, state }: AnalyticsViewProps) {
           ))}
         </div>
       </section>
+
+      {tpCacheStats && (
+        <section className="card rounded-2xl p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Cache</p>
+              <h3 className="text-lg font-semibold">Third-party policy cache</h3>
+              <p className="text-xs text-[var(--muted-text)]">
+                Persistent URL cache for third-party policy fetches, avoiding redundant network requests.
+              </p>
+            </div>
+            <span className="theme-chip rounded-full px-3 py-1 text-xs">
+              {tpCacheStats.total ?? 0} cached URLs
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              {
+                label: 'Cached URLs',
+                value: (tpCacheStats.total ?? 0).toLocaleString(),
+              },
+              {
+                label: 'Fetched (text)',
+                value: (tpCacheStats.fetched ?? 0).toLocaleString(),
+              },
+              {
+                label: 'Failed',
+                value: (tpCacheStats.failed ?? 0).toLocaleString(),
+              },
+              {
+                label: 'Requests saved',
+                value: (tpCacheStats.fetched ?? 0).toLocaleString(),
+              },
+            ].map((row) => (
+              <div key={row.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
+                <p className="text-xs text-[var(--muted-text)]">{row.label}</p>
+                <p className="text-lg font-semibold">{row.value}</p>
+              </div>
+            ))}
+          </div>
+          {tpCacheStats.total > 0 && (
+            <div className="mt-4">
+              <div className="flex h-2 w-full overflow-hidden rounded-full bg-black/30">
+                <div
+                  className="h-full bg-[var(--color-success)]"
+                  style={{ width: `${Math.min(100, ((tpCacheStats.fetched ?? 0) / Math.max(1, tpCacheStats.total)) * 100)}%` }}
+                />
+                <div
+                  className="h-full bg-[var(--color-danger)]"
+                  style={{ width: `${Math.min(100, ((tpCacheStats.failed ?? 0) / Math.max(1, tpCacheStats.total)) * 100)}%` }}
+                />
+              </div>
+              <div className="mt-2 flex gap-4 text-xs text-[var(--muted-text)]">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-[var(--color-success)]" /> fetched
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-[var(--color-danger)]" /> failed
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {annotationStats && (
+        <section className="card rounded-2xl p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Stage 2</p>
+              <h3 className="text-lg font-semibold">Annotation status</h3>
+              <p className="text-xs text-[var(--muted-text)]">
+                LLM annotation progress across artifact directories.
+              </p>
+            </div>
+            <span className="theme-chip rounded-full px-3 py-1 text-xs">
+              {annotationStats.annotated_sites ?? 0} / {annotationStats.total_sites ?? 0} annotated
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { label: 'Sites annotated', value: (annotationStats.annotated_sites ?? 0).toLocaleString() },
+              {
+                label: 'Pending annotation',
+                value: Math.max(
+                  0,
+                  (annotationStats.total_sites ?? 0) - (annotationStats.annotated_sites ?? 0)
+                ).toLocaleString(),
+              },
+              { label: 'Total statements', value: (annotationStats.total_statements ?? 0).toLocaleString() },
+            ].map((row) => (
+              <div key={row.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
+                <p className="text-xs text-[var(--muted-text)]">{row.label}</p>
+                <p className="text-lg font-semibold">{row.value}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   )
 }

@@ -32,8 +32,32 @@ electron.contextBridge.exposeInMainWorld("scraper", {
   listRuns: (baseOutDir) => electron.ipcRenderer.invoke("scraper:list-runs", baseOutDir),
   openLogWindow: (content, title) => electron.ipcRenderer.invoke("scraper:open-log-window", { content, title }),
   openPolicyWindow: (url) => electron.ipcRenderer.invoke("scraper:open-policy-window", url),
-  onEvent: (callback) => electron.ipcRenderer.on("scraper:event", (_evt, data) => callback(data)),
-  onLog: (callback) => electron.ipcRenderer.on("scraper:log", (_evt, data) => callback(data)),
-  onError: (callback) => electron.ipcRenderer.on("scraper:error", (_evt, data) => callback(data)),
-  onExit: (callback) => electron.ipcRenderer.on("scraper:exit", (_evt, data) => callback(data))
+  onEvent: (callback) => {
+    electron.ipcRenderer.removeAllListeners("scraper:event");
+    electron.ipcRenderer.on("scraper:event", (_evt, data) => callback(data));
+  },
+  onLog: (callback) => {
+    electron.ipcRenderer.removeAllListeners("scraper:log");
+    electron.ipcRenderer.on("scraper:log", (_evt, data) => callback(data));
+  },
+  onError: (callback) => {
+    electron.ipcRenderer.removeAllListeners("scraper:error");
+    electron.ipcRenderer.on("scraper:error", (_evt, data) => callback(data));
+  },
+  onExit: (callback) => {
+    electron.ipcRenderer.removeAllListeners("scraper:exit");
+    electron.ipcRenderer.on("scraper:exit", (_evt, data) => callback(data));
+  },
+  startAnnotate: (options) => electron.ipcRenderer.invoke("scraper:start-annotate", options),
+  stopAnnotate: () => electron.ipcRenderer.invoke("scraper:stop-annotate"),
+  annotationStats: (artifactsDir) => electron.ipcRenderer.invoke("scraper:annotation-stats", artifactsDir),
+  readTpCache: (outDir) => electron.ipcRenderer.invoke("scraper:read-tp-cache", outDir),
+  onAnnotatorLog: (callback) => {
+    electron.ipcRenderer.removeAllListeners("annotator:log");
+    electron.ipcRenderer.on("annotator:log", (_evt, data) => callback(data));
+  },
+  onAnnotatorExit: (callback) => {
+    electron.ipcRenderer.removeAllListeners("annotator:exit");
+    electron.ipcRenderer.on("annotator:exit", (_evt, data) => callback(data));
+  }
 });

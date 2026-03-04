@@ -15,7 +15,13 @@ import asyncio
 import json
 import logging
 import os
+import warnings
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Suppress Pydantic serialization warnings from LiteLLM's disk cache
+# (schema version mismatch between cached response models and current LiteLLM internals)
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 from .annotator import Annotator, enable_litellm_disk_cache, preprocess_policy
 from .utils.logging import log, warn
@@ -58,11 +64,19 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _find_site_dirs(artifacts_dir: Path) -> list[Path]:
-    """Return all subdirectories that contain a policy.txt file."""
-    return sorted(
-        d for d in artifacts_dir.iterdir()
-        if d.is_dir() and (d / "policy.txt").exists()
-    )
+    """Return site dirs that completed Stage 1.
+
+    Priority:
+    - scrape_complete.json present (authoritative marker written by Stage 1 after a successful run)
+    - fallback: non-empty policy.txt (sites scraped before the marker was introduced)
+    """
+    def _is_ready(d: Path) -> bool:
+        if (d / "scrape_complete.json").exists():
+            return (d / "policy.txt").exists()
+        p = d / "policy.txt"
+        return p.exists() and p.stat().st_size > 0
+
+    return sorted(d for d in artifacts_dir.iterdir() if d.is_dir() and _is_ready(d))
 
 
 def _annotate_site(
@@ -91,7 +105,7 @@ def _annotate_site(
     n = 0
     with statements_path.open("w", encoding="utf-8") as fout, \
          annotated_path.open("w", encoding="utf-8") as fanno:
-        for chunk_index, statement in annotator.run(doc):
+        for chunk_index, statement in annotator.run(doc):  # token usage accumulates here
             # Collect unique block indices (in document order) for source_text.
             block_indices: list[int] = []
             seen: set[int] = set()
@@ -117,7 +131,30 @@ def _annotate_site(
             )
             n += 1
 
-    return {"status": "ok", "statements": n, "chunks": len(doc["chunks"]), "blocks": len(doc["blocks"])}
+    # Write annotation_complete.json — authoritative per-site marker for future skip checks.
+    try:
+        (site_dir / "annotation_complete.json").write_text(
+            json.dumps({
+                "status": "ok",
+                "model": model_name,
+                "annotated_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                "statements": n,
+                "chunks": len(doc["chunks"]),
+                "blocks": len(doc["blocks"]),
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # Non-fatal; the JSONL outputs are the primary deliverables.
+
+    return {
+        "status": "ok",
+        "statements": n,
+        "chunks": len(doc["chunks"]),
+        "blocks": len(doc["blocks"]),
+        "tokens_in": annotator.usage["prompt_tokens"],
+        "tokens_out": annotator.usage["completion_tokens"],
+    }
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -140,7 +177,7 @@ async def _run(args: argparse.Namespace) -> None:
         warn(f"No site directories with policy.txt found in {artifacts_dir}")
         return
 
-    log(f"Found {len(site_dirs)} site(s) with policy.txt in {artifacts_dir}")
+    log(f"Found {len(site_dirs)} site(s) ready for annotation in {artifacts_dir}")
 
     sem = asyncio.Semaphore(args.concurrency)
     loop = asyncio.get_event_loop()
@@ -148,6 +185,10 @@ async def _run(args: argparse.Namespace) -> None:
     async def process_one(site_dir: Path) -> None:
         async with sem:
             site = site_dir.name
+            # Primary marker: annotation_complete.json; fallback: policy_statements.jsonl (legacy).
+            if (site_dir / "annotation_complete.json").exists() and not args.force:
+                log(f"[skip] {site} — annotation_complete.json exists (use --force to re-annotate)")
+                return
             stmts_path = site_dir / "policy_statements.jsonl"
             if stmts_path.exists() and not args.force:
                 log(f"[skip] {site} — policy_statements.jsonl exists (use --force to re-annotate)")
@@ -162,7 +203,8 @@ async def _run(args: argparse.Namespace) -> None:
                 if result["status"] == "ok":
                     log(
                         f"[done]  {site} — {result['statements']} statements "
-                        f"from {result['chunks']} chunks ({result['blocks']} blocks)"
+                        f"from {result['chunks']} chunks ({result['blocks']} blocks) "
+                        f"| {result['tokens_in']:,}↑/{result['tokens_out']:,}↓ tokens"
                     )
                 else:
                     warn(f"[skip] {site} — {result['status']}")

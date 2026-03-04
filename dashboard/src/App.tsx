@@ -1,17 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
 import { PageShell } from './components/layout/PageShell'
 import { LauncherView } from './components/launcher/LauncherView'
 import { ResultsView } from './components/results/ResultsView'
 import { ExplorerView } from './components/explorer/ExplorerView'
+import { AnnotationsView } from './components/annotations/AnnotationsView'
 import { ConsistencyCheckerView } from './components/consistency/ConsistencyCheckerView'
-import { ReasoningView } from './components/reasoning/ReasoningView'
-import { AnalyticsView } from './components/analytics/AnalyticsView'
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
-import type { ReasoningSelection } from './components/reasoning/ReasoningView'
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -25,7 +23,7 @@ function formatDuration(ms: number) {
 }
 
 function App() {
-  const [theme, setTheme] = useState<Theme>('dark')
+  const [theme, setTheme] = useState<Theme>('academia')
   const [showExtractionMethod, setShowExtractionMethod] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem('settings.showExtractionMethod')
@@ -40,7 +38,6 @@ function App() {
   const [hasRun, setHasRun] = useState(false)
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [stepIndex, setStepIndex] = useState(0)
   const [logs, setLogs] = useState<string[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<any | null>(null)
@@ -49,23 +46,33 @@ function App() {
   const [clearing, setClearing] = useState(false)
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
   const [etaText, setEtaText] = useState<string>('')
-  const [useCrux, setUseCrux] = useState(false)
+  const [useCrux, setUseCrux] = useState(true)
   const [cruxApiKey, setCruxApiKey] = useState('')
-  const [currentSite, setCurrentSite] = useState<string>('')
-  const [excludeSameEntity, setExcludeSameEntity] = useState(false)
-  const [mappingMode, setMappingMode] = useState<'radar' | 'trackerdb' | 'mixed'>('radar')
+  const [excludeSameEntity, setExcludeSameEntity] = useState(true)
+  const [mappingMode, setMappingMode] = useState<'radar' | 'trackerdb' | 'mixed'>('mixed')
   const [outDir, setOutDir] = useState('outputs')
   const [runsRoot] = useState('outputs')
+  const [resumeMode, setResumeMode] = useState(false)
   const [runRecords, setRunRecords] = useState<any[]>([])
   const [folderBytes, setFolderBytes] = useState<number | null>(null)
-  const [reasoningSelection, setReasoningSelection] = useState<ReasoningSelection | null>(null)
+  // Stage 2 — Annotation state
+  const [openaiApiKey, setOpenaiApiKey] = useState('')
+  const [llmModel, setLlmModel] = useState('gpt-4o-mini')
+  const [annotateRunning, setAnnotateRunning] = useState(false)
+  const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
+  const [annotationStats, setAnnotationStats] = useState<any>(null)
+  const [autoAnnotate, setAutoAnnotate] = useState(true)
 
-  const siteSteps = ['Home fetch', 'Policy discovery', '3P extraction', '3P policy fetch']
-  const siteStageToIndex: Record<string, number> = {
-    home_fetch: 0,
-    policy_discovery: 1,
-    third_party_extract: 2,
-    third_party_policy_fetch: 3,
+  type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
+  type CompletedSiteInfo = { site: string; status: string; cached: boolean; annotated?: boolean }
+  const [activeSites, setActiveSites] = useState<Record<string, ActiveSiteInfo>>({})
+  const [recentCompleted, setRecentCompleted] = useState<CompletedSiteInfo[]>([])
+
+  const SITE_STAGE_LABELS: Record<string, { label: string; index: number }> = {
+    home_fetch:               { label: 'Home fetch',       index: 0 },
+    policy_discovery:         { label: 'Policy discovery', index: 1 },
+    third_party_extract:      { label: '3P extraction',    index: 2 },
+    third_party_policy_fetch: { label: '3P policies',      index: 3 },
   }
 
   useEffect(() => {
@@ -81,8 +88,6 @@ function App() {
   }, [showExtractionMethod])
 
   const resultsMetrics = useMemo(() => computeResults(hasRun, progress), [hasRun, progress])
-  const postCruxCount = useCrux ? (stateData?.total_sites ?? summaryData?.total_sites ?? null) : null
-
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -94,8 +99,8 @@ function App() {
         setErrorMessage(null)
         setRunStartedAt(Date.now())
         setEtaText('')
-        setCurrentSite('')
-        setStepIndex(0)
+        setActiveSites({})
+        setRecentCompleted([])
       }
       if (event?.type === 'run_progress') {
         const processed = Number(event.processed || 0)
@@ -104,28 +109,40 @@ function App() {
           setProgress(Math.min(100, (processed / total) * 100))
         }
       }
-      if (event?.type === 'site_started') {
-        if (event.site) setCurrentSite(event.site)
-        setStepIndex(0)
+      if (event?.type === 'site_started' && event.site) {
+        setActiveSites((prev) => ({
+          ...prev,
+          [event.site]: { label: 'Home fetch', stepIndex: 0, rank: event.rank ?? 0 },
+        }))
+        setLogs((prev) => [...prev, `Processing ${event.site}`].slice(-50))
       }
-      if (event?.type === 'site_stage') {
-        if (event.site) setCurrentSite(event.site)
-        if (event.stage && event.stage in siteStageToIndex) {
-          setStepIndex(siteStageToIndex[event.stage])
+      if (event?.type === 'site_stage' && event.site) {
+        const stageInfo = SITE_STAGE_LABELS[event.stage]
+        if (stageInfo) {
+          setActiveSites((prev) => ({
+            ...prev,
+            [event.site]: { ...(prev[event.site] ?? { rank: event.rank ?? 0 }), label: stageInfo.label, stepIndex: stageInfo.index },
+          }))
         }
+      }
+      if (event?.type === 'site_finished' && event.site) {
+        setActiveSites((prev) => {
+          const next = { ...prev }
+          delete next[event.site]
+          return next
+        })
+        setRecentCompleted((prev) => [
+          { site: event.site, status: event.status || 'ok', cached: !!event.cached, annotated: !!event.annotated },
+          ...prev.slice(0, 14),
+        ])
+        setLogs((prev) => [...prev, `Finished ${event.site} (${event.status})`].slice(-50))
       }
       if (event?.type === 'run_completed') {
         setRunning(false)
         setProgress(100)
         setEtaText('0s')
-        setStepIndex(3)
+        setActiveSites({})
         refreshRuns()
-      }
-      if (event?.type === 'site_started' && event.site) {
-        setLogs((prev) => [...prev, `Processing ${event.site}`].slice(-50))
-      }
-      if (event?.type === 'site_finished' && event.site) {
-        setLogs((prev) => [...prev, `Finished ${event.site} (${event.status})`].slice(-50))
       }
     })
     scraper.onLog((evt) => {
@@ -146,6 +163,28 @@ function App() {
       }
       setRunning(false)
     })
+
+    if (scraper.onAnnotatorLog) {
+      scraper.onAnnotatorLog((evt) => {
+        const raw = evt?.message ? String(evt.message).trimEnd() : String(evt)
+        const lines = raw.split('\n').map((l: string) => l.trimEnd()).filter(Boolean)
+        if (lines.length) {
+          setAnnotateLogs((prev) => [...prev.slice(-(200 - lines.length)), ...lines])
+        }
+      })
+    }
+
+    if (scraper.onAnnotatorExit) {
+      scraper.onAnnotatorExit(() => {
+        setAnnotateRunning(false)
+        // refresh stats after annotator finishes
+        if (scraper.annotationStats) {
+          scraper.annotationStats().then((res: any) => {
+            if (res?.ok) setAnnotationStats(res)
+          })
+        }
+      })
+    }
   }, [])
 
   const createRunId = () => {
@@ -156,16 +195,49 @@ function App() {
     }
   }
 
+  const refreshAnnotationStats = useCallback(async () => {
+    if (!window.scraper?.annotationStats) return
+    const artifactsDir = `${outDir}/artifacts`
+    const res = await window.scraper.annotationStats(artifactsDir)
+    if (res?.ok) setAnnotationStats(res)
+  }, [outDir])
+
+  const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
+    if (!window.scraper?.startAnnotate) return
+    setAnnotateLogs([])
+    setAnnotateRunning(true)
+    const res = await window.scraper.startAnnotate({
+      artifactsDir: `${outDir}/artifacts`,
+      openaiApiKey,
+      llmModel: opts.llmModel ?? llmModel,
+      concurrency: opts.concurrency ?? 3,
+      force: opts.force ?? false,
+    })
+    if (!res?.ok) {
+      setAnnotateRunning(false)
+      setAnnotateLogs([`Failed to start annotator: ${res?.error ?? 'unknown error'}`])
+    }
+  }, [outDir, openaiApiKey, llmModel])
+
+  const stopAnnotate = async () => {
+    if (!window.scraper?.stopAnnotate) return
+    await window.scraper.stopAnnotate()
+    setAnnotateRunning(false)
+  }
+
   const startRun = async () => {
     if (!topN || Number(topN) <= 0) return
     const runId = createRunId()
-    const runOutDir = `${runsRoot}/output_${runId}`
+    // In resume mode, use a fixed unified dir so _load_done_records() can skip cached sites
+    const runOutDir = resumeMode ? `${runsRoot}/unified` : `${runsRoot}/output_${runId}`
     const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
     const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
     setErrorMessage(null)
     setLogs([])
-    setSummaryData(null)
-    setExplorerData(null)
+    if (!resumeMode) {
+      setSummaryData(null)
+      setExplorerData(null)
+    }
     setOutDir(runOutDir)
     if (window.scraper) {
       const res = await window.scraper.startRun({
@@ -174,7 +246,7 @@ function App() {
         trackerDbIndex,
         outDir: runOutDir,
         artifactsDir: `${runOutDir}/artifacts`,
-        runId,
+        runId: resumeMode ? undefined : runId,
         cruxFilter: useCrux,
         cruxApiKey: useCrux ? cruxApiKey : undefined,
         excludeSameEntity: excludeSameEntity,
@@ -185,7 +257,6 @@ function App() {
         setHasRun(true)
         setRunning(true)
         setProgress(0)
-        setStepIndex(0)
         setRunStartedAt(Date.now())
         setEtaText('')
       }
@@ -194,7 +265,6 @@ function App() {
     setHasRun(true)
     setRunning(true)
     setProgress(0)
-    setStepIndex(0)
     setRunStartedAt(Date.now())
     setEtaText('')
   }
@@ -214,11 +284,7 @@ function App() {
     if (window.scraper) return
     if (progress >= 100) {
       setRunning(false)
-      setStepIndex(3)
-      return
     }
-    const nextStep = progress < 25 ? 0 : progress < 50 ? 1 : progress < 75 ? 2 : 3
-    setStepIndex(nextStep)
   }, [progress, running])
 
   useEffect(() => {
@@ -263,12 +329,26 @@ function App() {
         if (size?.ok && typeof size.bytes === 'number') {
           setFolderBytes(size.bytes)
         }
+        // Refresh annotation stats during annotate run or when viewing annotations
+        if (annotateRunning || activeNav === 'annotations') {
+          await refreshAnnotationStats()
+        }
       } catch (error) {
         setErrorMessage(String(error))
       }
     }, 2000)
     return () => clearInterval(interval)
-  }, [hasRun, outDir])
+  }, [hasRun, outDir, annotateRunning, activeNav, refreshAnnotationStats])
+
+  // Auto-annotate: when a scrape run completes and autoAnnotate is enabled, start annotation.
+  const prevRunningRef = useRef(false)
+  useEffect(() => {
+    const justCompleted = prevRunningRef.current === true && running === false
+    prevRunningRef.current = running
+    if (justCompleted && hasRun && autoAnnotate && !annotateRunning) {
+      startAnnotate({})
+    }
+  }, [running, hasRun, autoAnnotate, annotateRunning, startAnnotate])
 
   const refreshRuns = async (baseDir: string = runsRoot) => {
     if (!window.scraper) return
@@ -337,6 +417,11 @@ function App() {
       setRunning(false)
       setProgress(100)
     }
+    // Load annotation stats for the new outDir
+    if (window.scraper?.annotationStats) {
+      const annRes = await window.scraper.annotationStats(`${targetDir}/artifacts`)
+      if (annRes?.ok) setAnnotationStats(annRes)
+    }
   }
 
   const deleteOutDir = async () => {
@@ -379,9 +464,8 @@ function App() {
     launcher: 'Scraper Launcher',
     results: 'Results',
     explorer: 'Explorer',
+    annotations: 'Annotations',
     consistency: 'Consistency checker',
-    reasoning: 'Reasoning',
-    analytics: 'Analytics',
     database: 'Database',
     settings: 'Settings',
   }[activeNav]
@@ -390,9 +474,8 @@ function App() {
     launcher: 'Minimal control surface for the dataset pipeline.',
     results: 'Outcome overview of the latest scrape.',
     explorer: 'Browse scraped sites and their policy links.',
+    annotations: 'LLM-extracted privacy statements from policy documents.',
     consistency: 'Compare first‑party and third‑party policy texts.',
-    reasoning: 'Run advanced consistency pipeline steps on a selected policy pair.',
-    analytics: 'Operational metrics and crawl performance.',
     database: 'Artifact storage and dataset exports.',
     settings: 'Theme and default crawl preferences.',
   }[activeNav]
@@ -403,8 +486,6 @@ function App() {
       <PageShell title={pageTitle} subtitle={pageSubtitle}>
         {activeNav === 'launcher' && (
           <LauncherView
-            steps={siteSteps}
-            currentSite={currentSite}
             topN={topN}
             onTopNChange={setTopN}
             onStart={startRun}
@@ -412,7 +493,6 @@ function App() {
             hasRun={hasRun}
             running={running}
             progress={progress}
-            stepIndex={stepIndex}
             resultsReady={resultsMetrics.resultsReady}
             onViewResults={() => setActiveNav('results')}
             logs={logs}
@@ -426,8 +506,20 @@ function App() {
             onToggleExcludeSameEntity={setExcludeSameEntity}
             mappingMode={mappingMode}
             onMappingModeChange={setMappingMode}
-            postCruxCount={postCruxCount}
             onOpenLogWindow={openLogWindow}
+            openaiApiKey={openaiApiKey}
+            onOpenAiKeyChange={setOpenaiApiKey}
+            llmModel={llmModel}
+            onLlmModelChange={setLlmModel}
+            annotateRunning={annotateRunning}
+            annotateLogs={annotateLogs}
+            annotationStats={annotationStats}
+            onStartAnnotate={startAnnotate}
+            onStopAnnotate={stopAnnotate}
+            resumeMode={resumeMode}
+            onToggleResumeMode={setResumeMode}
+            activeSites={activeSites}
+            recentCompleted={recentCompleted}
           />
         )}
         {activeNav === 'results' && (
@@ -439,8 +531,8 @@ function App() {
             summary={summaryData}
             sites={explorerData || undefined}
             useCrux={useCrux}
-            postCruxCount={postCruxCount}
             mappingMode={mappingMode}
+            annotationStats={annotationStats}
           />
         )}
         {activeNav === 'explorer' && (
@@ -449,6 +541,13 @@ function App() {
             progress={progress}
             sites={explorerData || undefined}
             showExtractionMethod={showExtractionMethod}
+            outDir={outDir}
+          />
+        )}
+        {activeNav === 'annotations' && (
+          <AnnotationsView
+            annotationStats={annotationStats}
+            outDir={outDir}
           />
         )}
         {activeNav === 'consistency' && (
@@ -457,19 +556,9 @@ function App() {
             sites={explorerData || undefined}
             outDir={outDir}
             showExtractionMethod={showExtractionMethod}
-            onSendToReasoning={(selection) => {
-              setReasoningSelection(selection)
-              setActiveNav('reasoning')
-            }}
+            onSendToReasoning={() => {}}
           />
         )}
-        {activeNav === 'reasoning' && (
-          <ReasoningView
-            selection={reasoningSelection}
-            onGoToConsistency={() => setActiveNav('consistency')}
-          />
-        )}
-        {activeNav === 'analytics' && <AnalyticsView summary={summaryData} state={stateData} />}
         {activeNav === 'database' && (
           <DatabaseView
             runsRoot={runsRoot}
@@ -485,6 +574,7 @@ function App() {
             onLoadOutDir={() => loadOutDir()}
             onDeleteOutDir={deleteOutDir}
             folderBytes={folderBytes}
+            annotationStats={annotationStats}
           />
         )}
         {activeNav === 'settings' && (
@@ -493,6 +583,18 @@ function App() {
             onThemeChange={setTheme}
             showExtractionMethod={showExtractionMethod}
             onToggleShowExtractionMethod={setShowExtractionMethod}
+            useCrux={useCrux}
+            onToggleCrux={setUseCrux}
+            cruxApiKey={cruxApiKey}
+            onCruxKeyChange={setCruxApiKey}
+            excludeSameEntity={excludeSameEntity}
+            onToggleExcludeSameEntity={setExcludeSameEntity}
+            mappingMode={mappingMode}
+            onMappingModeChange={setMappingMode}
+            autoAnnotate={autoAnnotate}
+            onToggleAutoAnnotate={setAutoAnnotate}
+            openaiApiKey={openaiApiKey}
+            onOpenaiApiKeyChange={setOpenaiApiKey}
           />
         )}
       </PageShell>

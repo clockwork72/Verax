@@ -40,6 +40,16 @@ const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
     ),
   },
   {
+    id: 'annotations',
+    label: 'Annotations',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+        <line x1="7" y1="7" x2="7.01" y2="7" strokeWidth="2.5" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
     id: 'consistency',
     label: 'Consistency',
     icon: (
@@ -48,29 +58,6 @@ const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
         <rect x="13" y="5" width="8" height="14" rx="1.5" />
         <path d="M9 9h6" />
         <path d="M9 15h6" />
-      </svg>
-    ),
-  },
-  {
-    id: 'reasoning',
-    label: 'Reasoning',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path d="M4 6h16" />
-        <path d="M4 12h10" />
-        <path d="M4 18h7" />
-        <circle cx="18" cy="12" r="3" />
-      </svg>
-    ),
-  },
-  {
-    id: 'analytics',
-    label: 'Chart',
-    icon: (
-      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6">
-        <path d="M5 19V9" />
-        <path d="M11 19V5" />
-        <path d="M17 19v-7" />
       </svg>
     ),
   },

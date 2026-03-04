@@ -12,8 +12,40 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 const REPO_ROOT = path.resolve(process.env.APP_ROOT, "..");
 let win;
 let scraperProcess = null;
+let annotatorProcess = null;
 const policyWindows = /* @__PURE__ */ new Set();
 const logWindows = /* @__PURE__ */ new Set();
+function getPythonCmd() {
+  if (process.env.PRIVACY_DATASET_PYTHON) return process.env.PRIVACY_DATASET_PYTHON;
+  const condaPrefix = process.env.CONDA_PREFIX;
+  if (condaPrefix) {
+    const explicit = path.join(condaPrefix, "bin", "python");
+    if (fs.existsSync(explicit)) return explicit;
+  }
+  return "python";
+}
+function buildSubprocessEnv(extra = {}) {
+  const env = { ...process.env, PYTHONUNBUFFERED: "1", ...extra };
+  const baseBins = [];
+  const condaPrefix = process.env.CONDA_PREFIX;
+  if (condaPrefix) {
+    const envsIdx = condaPrefix.lastIndexOf("/envs/");
+    if (envsIdx !== -1) {
+      baseBins.push(path.join(condaPrefix.slice(0, envsIdx), "bin"));
+    }
+  }
+  const mambaRoot = process.env.MAMBA_ROOT_PREFIX || process.env.CONDA_ROOT;
+  if (mambaRoot) baseBins.push(path.join(mambaRoot, "bin"));
+  if (baseBins.length > 0) {
+    const currentPath = env.PATH || "";
+    const existing = new Set(currentPath.split(":"));
+    const toAdd = baseBins.filter((d) => !existing.has(d));
+    if (toAdd.length > 0) {
+      env.PATH = currentPath + ":" + toAdd.join(":");
+    }
+  }
+  return env;
+}
 function sendToRenderer(channel, payload) {
   if (win && !win.isDestroyed()) {
     win.webContents.send(channel, payload);
@@ -280,7 +312,7 @@ ipcMain.handle("scraper:start", async (_event, options = {}) => {
     return { ok: false, error: "scraper_already_running" };
   }
   const paths = defaultPaths(options.outDir);
-  const pythonCmd = process.env.PRIVACY_DATASET_PYTHON || "python";
+  const pythonCmd = getPythonCmd();
   const args = [
     "-m",
     "privacy_research_dataset.cli",
@@ -336,7 +368,7 @@ ipcMain.handle("scraper:start", async (_event, options = {}) => {
   try {
     scraperProcess = spawn(pythonCmd, args, {
       cwd: REPO_ROOT,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" }
+      env: buildSubprocessEnv()
     });
   } catch (error) {
     scraperProcess = null;
@@ -441,6 +473,116 @@ ipcMain.handle("scraper:delete-output", async (_event, outDir) => {
     }
     await fs.promises.rm(target, { recursive: true, force: true });
     return { ok: true, path: target };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+});
+ipcMain.handle("scraper:start-annotate", async (_event, options = {}) => {
+  if (annotatorProcess) {
+    return { ok: false, error: "annotator_already_running" };
+  }
+  const pythonCmd = getPythonCmd();
+  const artifactsDir = options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
+  const args = [
+    "-m",
+    "privacy_research_dataset.annotate_cli",
+    "--artifacts-dir",
+    artifactsDir
+  ];
+  if (options.llmModel) args.push("--llm-model", options.llmModel);
+  if (options.tokenLimit) args.push("--token-limit", String(options.tokenLimit));
+  if (options.concurrency) args.push("--concurrency", String(options.concurrency));
+  if (options.force) args.push("--force");
+  const annotatorExtra = {};
+  if (options.openaiApiKey) annotatorExtra.OPENAI_API_KEY = options.openaiApiKey;
+  const env = buildSubprocessEnv(annotatorExtra);
+  try {
+    annotatorProcess = spawn(pythonCmd, args, { cwd: REPO_ROOT, env });
+  } catch (error) {
+    annotatorProcess = null;
+    return { ok: false, error: String(error) };
+  }
+  annotatorProcess.stdout.on("data", (chunk) => {
+    sendToRenderer("annotator:log", { message: chunk.toString().trimEnd() });
+  });
+  annotatorProcess.stderr.on("data", (chunk) => {
+    sendToRenderer("annotator:log", { message: chunk.toString().trimEnd() });
+  });
+  annotatorProcess.on("error", (error) => {
+    sendToRenderer("annotator:log", { message: `Error: ${String(error)}` });
+  });
+  annotatorProcess.on("close", (code, signal) => {
+    sendToRenderer("annotator:exit", { code, signal });
+    annotatorProcess = null;
+  });
+  return { ok: true, artifactsDir };
+});
+ipcMain.handle("scraper:stop-annotate", async () => {
+  if (!annotatorProcess) return { ok: false, error: "not_running" };
+  annotatorProcess.kill();
+  return { ok: true };
+});
+ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
+  try {
+    const targetDir = artifactsDir ? path.resolve(REPO_ROOT, artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
+    if (!fs.existsSync(targetDir)) {
+      return { ok: true, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] };
+    }
+    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
+    const perSite = [];
+    let totalStatements = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const statementsPath = path.join(targetDir, entry.name, "policy_statements.jsonl");
+      const hasStatements = fs.existsSync(statementsPath);
+      let count = 0;
+      if (hasStatements) {
+        try {
+          const content = await fs.promises.readFile(statementsPath, "utf-8");
+          count = content.split("\n").filter((line) => line.trim()).length;
+          totalStatements += count;
+        } catch {
+          count = 0;
+        }
+      }
+      perSite.push({ site: entry.name, count, has_statements: hasStatements });
+    }
+    const annotatedSites = perSite.filter((s) => s.has_statements).length;
+    return {
+      ok: true,
+      total_sites: perSite.length,
+      annotated_sites: annotatedSites,
+      total_statements: totalStatements,
+      per_site: perSite
+    };
+  } catch (error) {
+    return { ok: false, error: String(error) };
+  }
+});
+ipcMain.handle("scraper:read-tp-cache", async (_event, outDir) => {
+  try {
+    const root = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
+    const cachePath = path.join(root, "results.tp_cache.json");
+    if (!fs.existsSync(cachePath)) {
+      return { ok: false, error: "not_found", path: cachePath };
+    }
+    const raw = await fs.promises.readFile(cachePath, "utf-8");
+    const data = JSON.parse(raw);
+    let total = 0;
+    let fetched = 0;
+    let failed = 0;
+    const byStatus = {};
+    for (const entry of Object.values(data)) {
+      total++;
+      if (entry.text !== null && entry.text !== void 0) {
+        fetched++;
+      } else if (entry.error_message) {
+        failed++;
+      }
+      const code = String(entry.status_code ?? "unknown");
+      byStatus[code] = (byStatus[code] || 0) + 1;
+    }
+    return { ok: true, total, fetched, failed, by_status: byStatus };
   } catch (error) {
     return { ok: false, error: String(error) };
   }

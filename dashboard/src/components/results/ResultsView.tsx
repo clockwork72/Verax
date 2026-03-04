@@ -1,4 +1,3 @@
-import { useEffect, useMemo, useState } from 'react'
 import { baseResults } from '../../data/results'
 import { ResultsMetrics } from '../../utils/results'
 
@@ -10,8 +9,8 @@ type ResultsViewProps = {
   summary?: any
   sites?: any[]
   useCrux?: boolean
-  postCruxCount?: number | null
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
+  annotationStats?: any
 }
 
 export function ResultsView({
@@ -20,10 +19,9 @@ export function ResultsView({
   topN,
   metrics,
   summary,
-  sites,
   useCrux,
-  postCruxCount,
   mappingMode,
+  annotationStats,
 }: ResultsViewProps) {
   if (!hasRun) {
     return (
@@ -37,25 +35,24 @@ export function ResultsView({
     )
   }
 
+  const hasSummary = Boolean(summary)
   const statusCounts = summary?.status_counts || {}
-  const statusOk = statusCounts.ok ?? metrics.statusOk
-  const statusPolicyNotFound = statusCounts.policy_not_found ?? metrics.statusPolicyNotFound
-  const statusNonBrowsable = statusCounts.non_browsable ?? metrics.statusNonBrowsable
-  const statusHomeFailed = statusCounts.home_fetch_failed ?? metrics.statusHomeFailed
+  const statusOk = statusCounts.ok ?? (hasSummary ? 0 : metrics.statusOk)
+  const statusPolicyNotFound = statusCounts.policy_not_found ?? (hasSummary ? 0 : metrics.statusPolicyNotFound)
+  const statusNonBrowsable = statusCounts.non_browsable ?? (hasSummary ? 0 : metrics.statusNonBrowsable)
+  const statusHomeFailed = statusCounts.home_fetch_failed ?? (hasSummary ? 0 : metrics.statusHomeFailed)
   const statusTotal = Math.max(1, statusOk + statusPolicyNotFound + statusNonBrowsable + statusHomeFailed)
 
   const thirdParty = summary?.third_party || {}
   const thirdPartyDetected =
-    thirdParty.total ?? Math.max(0, metrics.radarMapped + metrics.radarUnmapped)
-  const radarMapped = thirdParty.mapped ?? metrics.radarMapped
-  const radarUnmapped = thirdParty.unmapped ?? metrics.radarUnmapped
-  const radarNoPolicy = thirdParty.no_policy_url ?? metrics.radarNoPolicy
+    thirdParty.unique ?? thirdParty.total ?? (hasSummary ? 0 : Math.max(0, metrics.radarMapped + metrics.radarUnmapped))
+  const radarMapped = thirdParty.mapped ?? (hasSummary ? 0 : metrics.radarMapped)
+  const radarUnmapped = thirdParty.unmapped ?? (hasSummary ? 0 : metrics.radarUnmapped)
+  const radarNoPolicy = thirdParty.no_policy_url ?? (hasSummary ? 0 : metrics.radarNoPolicy)
   const thirdPartyPoliciesFound = Math.max(0, thirdPartyDetected - radarNoPolicy)
 
-  const mappedRatio = Math.round((radarMapped / Math.max(1, thirdPartyDetected)) * 100)
-  const unmappedRatio = Math.round((radarUnmapped / Math.max(1, thirdPartyDetected)) * 100)
-  const summaryCategories = summary?.categories || baseResults.categories
-  const summaryEntities = summary?.entities || baseResults.entities
+  const summaryCategories = summary?.categories || (hasSummary ? [] : baseResults.categories)
+  const summaryEntities = summary?.entities || (hasSummary ? [] : baseResults.entities)
   const categoryMax = summaryCategories.reduce((max: number, cat: any) => Math.max(max, cat.count || 0), 1)
   const entityMax = summaryEntities.reduce((max: number, entity: any) => {
     const prev = entity.prevalence_max ?? entity.prevalence_avg ?? entity.prevalence ?? 0
@@ -87,8 +84,6 @@ export function ResultsView({
   const radarPct = thirdPartyDetected ? Math.round(((mappingRadar ?? 0) / thirdPartyDetected) * 100) : 0
   const trackerdbPct = thirdPartyDetected ? Math.round(((mappingDb ?? 0) / thirdPartyDetected) * 100) : 0
   const unmappedPct = Math.max(0, 100 - radarPct - trackerdbPct)
-  const postCruxSites =
-    typeof postCruxCount === 'number' ? postCruxCount : typeof summary?.total_sites === 'number' ? summary.total_sites : null
   const targetSites =
     typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || metrics.totalSitesProcessed
 
@@ -135,7 +130,7 @@ export function ResultsView({
     {
       label: '3P services detected',
       value: thirdPartyDetected,
-      info: 'Distinct third-party eTLD+1 domains observed during page loads.',
+      info: 'Unique third-party eTLD+1 domains observed across all crawled sites.',
     },
     {
       label: '3P policies found',
@@ -299,7 +294,7 @@ export function ResultsView({
                   <div className="text-3xl font-semibold text-[var(--color-text)]">{Math.max(0, 100 - unmappedPct)}%</div>
                   <div className="text-xs text-[var(--muted-text)]">mapped coverage</div>
                 </div>
-                <div className="text-xs text-[var(--muted-text)]">{thirdPartyDetected.toLocaleString()} total services</div>
+                <div className="text-xs text-[var(--muted-text)]">{thirdPartyDetected.toLocaleString()} unique services</div>
               </div>
               <div className="mt-3 h-3 overflow-hidden rounded-full bg-black/30">
                 <div className="flex h-full w-full">
@@ -364,6 +359,87 @@ export function ResultsView({
           </div>
         </div>
       </section>
+
+      {annotationStats && (
+        <section className="card rounded-2xl p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Annotations</p>
+              <h3 className="text-lg font-semibold">Policy annotation coverage</h3>
+              <p className="text-xs text-[var(--muted-text)]">
+                LLM-extracted privacy statements from Stage 2 annotation.
+              </p>
+            </div>
+            <span className="theme-chip rounded-full px-3 py-1 text-xs">
+              Stage 2
+            </span>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              {
+                label: 'Annotated sites',
+                value: `${annotationStats.annotated_sites ?? 0} / ${annotationStats.total_sites ?? 0}`,
+                info: 'Sites with completed Stage 2 annotation.',
+              },
+              {
+                label: 'Total statements',
+                value: (annotationStats.total_statements ?? 0).toLocaleString(),
+                info: 'Sum of all privacy statements extracted across all annotated sites.',
+              },
+              {
+                label: 'Avg per site',
+                value: annotationStats.annotated_sites
+                  ? ((annotationStats.total_statements ?? 0) / annotationStats.annotated_sites).toFixed(1)
+                  : '—',
+                info: 'Average number of statements extracted per annotated site.',
+              },
+              {
+                label: 'Coverage',
+                value: (summary?.processed_sites ?? 0) > 0
+                  ? `${Math.round(((annotationStats.annotated_sites ?? 0) / summary.processed_sites) * 100)}%`
+                  : '—',
+                info: 'Percentage of crawled sites that have been annotated.',
+              },
+            ].map((stat) => (
+              <div key={stat.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
+                <p className="flex items-center text-xs text-[var(--muted-text)]">
+                  {stat.label}
+                  <InfoTip text={stat.info} />
+                </p>
+                <p className="text-lg font-semibold">{stat.value}</p>
+              </div>
+            ))}
+          </div>
+          {annotationStats.per_site && annotationStats.per_site.length > 0 && (
+            <div className="mt-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Top sites by statement count</p>
+              <div className="mt-3 space-y-2 text-xs">
+                {[...annotationStats.per_site]
+                  .filter((s: any) => s.has_statements)
+                  .sort((a: any, b: any) => b.count - a.count)
+                  .slice(0, 8)
+                  .map((s: any) => {
+                    const max = annotationStats.per_site
+                      .filter((x: any) => x.has_statements)
+                      .reduce((m: number, x: any) => Math.max(m, x.count), 1)
+                    return (
+                      <div key={s.site} className="flex items-center gap-4">
+                        <span className="w-36 truncate text-[var(--muted-text)]">{s.site}</span>
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-black/30">
+                          <div
+                            className="h-full rounded-full bg-[var(--color-primary)]"
+                            style={{ width: `${Math.min(100, (s.count / Math.max(1, max)) * 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-[var(--muted-text)]">{s.count}</span>
+                      </div>
+                    )
+                  })}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="card rounded-2xl p-6">
         <div>

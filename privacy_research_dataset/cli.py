@@ -439,6 +439,44 @@ def _load_done_records(out_path: Path) -> dict[str, dict]:
     return done
 
 
+def _load_annotated_sites(artifacts_dir: Path) -> set[str]:
+    """Return the set of site names that already have a completed annotation output.
+
+    Primary marker: ``annotation_complete.json`` (written by the annotator on success).
+    Fallback:       ``policy_statements_annotated.jsonl`` (legacy, for runs before the marker
+                    was introduced).
+
+    We require the *annotated* variant (not just ``policy_statements.jsonl``) so that a
+    partially-completed annotation run does not cause the site to be skipped prematurely.
+    """
+    if not artifacts_dir.is_dir():
+        return set()
+    annotated: set[str] = set()
+    for site_dir in artifacts_dir.iterdir():
+        if not site_dir.is_dir():
+            continue
+        if (site_dir / "annotation_complete.json").exists() or \
+                (site_dir / "policy_statements_annotated.jsonl").exists():
+            annotated.add(site_dir.name)
+    return annotated
+
+
+def _load_scraped_sites(artifacts_dir: Path) -> set[str]:
+    """Return the set of site names that already have a scrape_complete.json marker.
+
+    This is a durable per-site marker written after a successful scrape (``policy.txt``
+    present and non-empty).  It survives deletions of the main results JSONL file and
+    provides a reliable secondary cache signal.
+    """
+    if not artifacts_dir.is_dir():
+        return set()
+    scraped: set[str] = set()
+    for site_dir in artifacts_dir.iterdir():
+        if site_dir.is_dir() and (site_dir / "scrape_complete.json").exists():
+            scraped.add(site_dir.name)
+    return scraped
+
+
 def _load_tp_disk_cache(cache_path: Path) -> dict[str, dict]:
     """Load the persistent third-party policy cache from disk."""
     if not cache_path.exists():
@@ -542,6 +580,29 @@ async def _run(args: argparse.Namespace) -> None:
             log(
                 f"Cache: {len(done_records)} successfully-scraped site(s) already in {args.out} "
                 f"will be skipped. Pass --force to re-scrape."
+            )
+
+    # --- Annotation cache: skip re-scraping sites that already have full annotations ---
+    annotated_sites: set[str] = set()
+    if not args.force and args.artifacts_dir:
+        annotated_sites = _load_annotated_sites(Path(args.artifacts_dir))
+        # Remove any already covered by done_records to avoid double-counting in the log.
+        new_annotated = annotated_sites - set(done_records.keys())
+        if new_annotated:
+            log(
+                f"Annotation cache: {len(new_annotated)} site(s) already fully annotated in "
+                f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
+            )
+
+    # --- Scrape marker cache: skip sites with scrape_complete.json (durable per-site marker) ---
+    scraped_sites: set[str] = set()
+    if not args.force and args.artifacts_dir:
+        scraped_sites = _load_scraped_sites(Path(args.artifacts_dir))
+        new_scraped = scraped_sites - set(done_records.keys())
+        if new_scraped:
+            log(
+                f"Scrape marker cache: {len(new_scraped)} site(s) with scrape_complete.json in "
+                f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
             )
 
     # --- Third-party policy disk cache: persist across runs, keyed by policy URL ---
@@ -706,6 +767,39 @@ async def _run(args: argparse.Namespace) -> None:
                     })
                     return
 
+                # Check scrape_complete.json marker (durable per-site marker not in done_records).
+                if site in scraped_sites:
+                    log(f"[scraped] {site} — scrape_complete.json exists, skipping re-scrape.")
+                    async with write_lock:
+                        summary.update({"status": "ok", "input": site, "rank": rank, "site_etld1": site})
+                        if args.summary_out:
+                            write_json(args.summary_out, summary.to_summary())
+                    emit_event({
+                        "type": "site_finished",
+                        "run_id": run_id,
+                        "site": site,
+                        "rank": rank,
+                        "status": "ok",
+                        "cached": True,
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    })
+                    return
+
+                # Check annotation cache: skip sites whose policy has already been fully annotated.
+                if site in annotated_sites:
+                    log(f"[annotated] {site} — policy already annotated, skipping re-scrape.")
+                    emit_event({
+                        "type": "site_finished",
+                        "run_id": run_id,
+                        "site": site,
+                        "rank": rank,
+                        "status": "ok",
+                        "cached": True,
+                        "annotated": True,
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    })
+                    return
+
                 log(f"Processing {site} (rank={rank})")
                 emit_event({
                     "type": "site_started",
@@ -788,6 +882,25 @@ async def _run(args: argparse.Namespace) -> None:
                             },
                             "updated_at": summary.updated_at,
                         })
+
+                # Write scrape_complete.json — durable per-site marker for future runs.
+                if result.get("status") == "ok" and args.artifacts_dir:
+                    site_key = result.get("site_etld1") or site
+                    site_art_dir = Path(args.artifacts_dir) / site_key
+                    policy_txt = site_art_dir / "policy.txt"
+                    if policy_txt.exists() and policy_txt.stat().st_size > 0:
+                        try:
+                            (site_art_dir / "scrape_complete.json").write_text(
+                                json.dumps({
+                                    "status": "ok",
+                                    "run_id": run_id,
+                                    "scraped_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                                    "policy_text_len": policy_txt.stat().st_size,
+                                }, ensure_ascii=False, indent=2),
+                                encoding="utf-8",
+                            )
+                        except Exception as e:
+                            warn(f"Failed to write scrape_complete.json for {site_key}: {e}")
 
                 emit_event({
                     "type": "site_finished",

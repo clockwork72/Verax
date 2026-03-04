@@ -521,6 +521,7 @@ class Annotator:
         self.model_name = model_name
         self.reflection_rounds = 3
         self.error_retries = 3
+        self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def run(self, doc: DocumentJson) -> Generator[tuple[int, Statement], None, None]:
         """Yield (chunk_index, statement) for every statement found in the document."""
@@ -580,6 +581,10 @@ class Annotator:
                 )
                 raw_message = response.choices[0].message.content
                 logging.info("LLM response: %r", raw_message[:200])
+                if hasattr(response, "usage") and response.usage:
+                    self.usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
+                    self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
+                    self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
             except Exception as e:
                 logging.error("LLM call failed (retry %d): %s", i_retry + 1, e)
                 continue
@@ -618,6 +623,10 @@ class Annotator:
             response = litellm.completion(model=self.model_name, messages=messages)
             raw_message = response.choices[0].message.content
             logging.info("Exhaustion check response: %r", raw_message)
+            if hasattr(response, "usage") and response.usage:
+                self.usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
+                self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
+                self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
             return "YES" not in raw_message
         except Exception as e:
             logging.error("Exhaustion check failed: %s", e)

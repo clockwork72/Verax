@@ -18,6 +18,7 @@ type ExplorerViewProps = {
   progress: number
   sites?: ExplorerSite[]
   showExtractionMethod?: boolean
+  outDir?: string
 }
 
 function formatExtractionMethod(value?: string | null) {
@@ -25,9 +26,12 @@ function formatExtractionMethod(value?: string | null) {
   return value === 'trafilatura' ? 'Trafilatura' : 'Fallback'
 }
 
-export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = true }: ExplorerViewProps) {
+export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = true, outDir }: ExplorerViewProps) {
   const [selectedSite, setSelectedSite] = useState<ExplorerSite | null>(null)
   const [view, setView] = useState<'sites' | 'thirdParties' | 'viewer'>('sites')
+  const [detailTab, setDetailTab] = useState<'third-parties' | 'statements'>('third-parties')
+  const [statements, setStatements] = useState<any[]>([])
+  const [statementsLoading, setStatementsLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | ExplorerSite['status']>('all')
   const [minThirdParties, setMinThirdParties] = useState('')
@@ -71,6 +75,26 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
     if (!currentEntry?.url) return
     setViewerError(null)
   }, [currentEntry?.url])
+
+  useEffect(() => {
+    if (detailTab !== 'statements' || !selectedSite || !window.scraper?.readArtifactText) return
+    setStatementsLoading(true)
+    setStatements([])
+    const artifactsBase = outDir ? `${outDir}/artifacts` : 'outputs/artifacts'
+    window.scraper.readArtifactText({
+      relativePath: `${artifactsBase}/${selectedSite.site}/policy_statements_annotated.jsonl`,
+    }).then((res: any) => {
+      if (res?.ok && res.data) {
+        const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())
+        const parsed: any[] = []
+        for (const line of lines) {
+          try { parsed.push(JSON.parse(line)) } catch { /* skip */ }
+        }
+        setStatements(parsed)
+      }
+      setStatementsLoading(false)
+    })
+  }, [detailTab, selectedSite, outDir])
 
   const sitesToShow = useMemo(() => {
     const fraction = Math.min(1, Math.max(0, 0.01 * Math.round(progress)))
@@ -208,6 +232,8 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
                   className="rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4 text-left transition hover:border-[var(--color-danger)]"
                   onClick={() => {
                     setSelectedSite(site)
+                    setDetailTab('third-parties')
+                    setStatements([])
                     setView('thirdParties')
                   }}
                 >
@@ -274,23 +300,64 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
           </section>
 
           <section className="card rounded-2xl p-6">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Third-party services</p>
-              <h3 className="text-lg font-semibold">Detected services</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Details</p>
+                <h3 className="text-lg font-semibold">{selectedSite.site}</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {['third-parties', 'statements'].map((tab) => (
+                  <button
+                    key={tab}
+                    className={`focusable rounded-full border px-4 py-1.5 text-xs ${
+                      detailTab === tab
+                        ? 'border-[var(--color-danger)] text-white'
+                        : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                    }`}
+                    onClick={() => setDetailTab(tab as 'third-parties' | 'statements')}
+                  >
+                    {tab === 'third-parties' ? `Third-parties (${selectedThirdParties.length})` : 'Statements'}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {selectedThirdParties.length === 0 && (
-                <div className="text-sm text-[var(--muted-text)]">No third-party services detected.</div>
-              )}
-              {selectedThirdParties.map((service) => (
-                <ThirdPartyCard
-                  key={service.name}
-                  service={service}
-                  onOpen={openViewer}
-                  showExtractionMethod={showExtractionMethod}
-                />
-              ))}
-            </div>
+
+            {detailTab === 'third-parties' && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {selectedThirdParties.length === 0 && (
+                  <div className="text-sm text-[var(--muted-text)]">No third-party services detected.</div>
+                )}
+                {selectedThirdParties.map((service) => (
+                  <ThirdPartyCard
+                    key={service.name}
+                    service={service}
+                    onOpen={openViewer}
+                    showExtractionMethod={showExtractionMethod}
+                  />
+                ))}
+              </div>
+            )}
+
+            {detailTab === 'statements' && (
+              <div className="mt-4">
+                {statementsLoading && (
+                  <p className="text-sm text-[var(--muted-text)]">Loading statements…</p>
+                )}
+                {!statementsLoading && statements.length === 0 && (
+                  <p className="text-sm text-[var(--muted-text)]">
+                    No annotation data found for this site. Run Stage 2 annotation first.
+                  </p>
+                )}
+                {!statementsLoading && statements.length > 0 && (
+                  <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+                    <p className="text-xs text-[var(--muted-text)]">{statements.length} statements extracted</p>
+                    {statements.map((stmt, i) => (
+                      <StatementCard key={i} stmt={stmt} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </>
       )}
@@ -398,6 +465,62 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
         </section>
       )}
     </>
+  )
+}
+
+const STMT_FIELD_COLORS: Record<string, string> = {
+  action: 'bg-blue-900/50 text-blue-300 border-blue-700',
+  data: 'bg-purple-900/50 text-purple-300 border-purple-700',
+  processor: 'bg-gray-700/50 text-gray-300 border-gray-600',
+  purpose: 'bg-green-900/50 text-green-300 border-green-700',
+  recipient: 'bg-orange-900/50 text-orange-300 border-orange-700',
+  context: 'bg-teal-900/50 text-teal-300 border-teal-700',
+}
+
+function StatementCard({ stmt }: { stmt: any }) {
+  const [expanded, setExpanded] = useState(false)
+  const { statement, source_text } = stmt
+  const isProhibition = statement?.prohibition === true
+  return (
+    <div
+      className={`rounded-xl border p-3 text-xs ${
+        isProhibition ? 'border-red-800/60 bg-red-950/20' : 'border-[var(--border-soft)] bg-black/10'
+      }`}
+    >
+      {isProhibition && (
+        <span className="mb-2 inline-block rounded-full border border-red-700 bg-red-900/50 px-2 py-0.5 text-[10px] text-red-300">
+          prohibition
+        </span>
+      )}
+      {source_text && (
+        <p
+          className="cursor-pointer italic text-[var(--muted-text)] leading-relaxed"
+          style={{
+            display: '-webkit-box',
+            WebkitLineClamp: expanded ? 'unset' : 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: expanded ? 'visible' : 'hidden',
+          } as React.CSSProperties}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {source_text}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {(['action', 'data', 'processor', 'purpose', 'recipient', 'context'] as const).map((field) => {
+          const phrases: [number, string][] = statement?.[field] ?? []
+          return phrases.map(([, phrase], i) => (
+            <span
+              key={`${field}-${i}`}
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${STMT_FIELD_COLORS[field] ?? ''}`}
+            >
+              <span className="mr-1 font-semibold opacity-60">{field}</span>
+              {phrase}
+            </span>
+          ))
+        })}
+      </div>
+    </div>
   )
 }
 

@@ -33,6 +33,12 @@ declare global {
       onLog: (callback: (event: any) => void) => void
       onError: (callback: (event: any) => void) => void
       onExit: (callback: (event: any) => void) => void
+      startAnnotate: (options: { artifactsDir?: string; openaiApiKey?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
+      stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
+      annotationStats: (artifactsDir?: string) => Promise<{ ok: boolean; error?: string; total_sites?: number; annotated_sites?: number; total_statements?: number; per_site?: { site: string; count: number; has_statements: boolean }[] }>
+      readTpCache: (outDir?: string) => Promise<{ ok: boolean; error?: string; total?: number; fetched?: number; failed?: number; by_status?: Record<string, number> }>
+      onAnnotatorLog: (callback: (event: any) => void) => void
+      onAnnotatorExit: (callback: (event: any) => void) => void
     }
   }
 }

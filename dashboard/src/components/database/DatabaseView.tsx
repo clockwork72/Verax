@@ -12,6 +12,7 @@ type DatabaseViewProps = {
   onLoadOutDir: () => void
   onDeleteOutDir: () => void
   folderBytes?: number | null
+  annotationStats?: any
 }
 
 function formatBytes(bytes?: number | null) {
@@ -74,6 +75,7 @@ export function DatabaseView({
   onLoadOutDir,
   onDeleteOutDir,
   folderBytes,
+  annotationStats,
 }: DatabaseViewProps) {
   const processed = summary?.processed_sites ?? state?.processed_sites ?? 0
   const total = summary?.total_sites ?? state?.total_sites ?? 0
@@ -195,6 +197,17 @@ export function DatabaseView({
           >
             Load folder
           </button>
+          <button
+            className={`focusable rounded-full border px-4 py-2 text-xs ${
+              outDir === `${runsRoot || 'outputs'}/unified`
+                ? 'border-[var(--color-primary)] text-[var(--color-primary)]'
+                : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+            }`}
+            onClick={() => onSelectRun?.(`${runsRoot || 'outputs'}/unified`)}
+            title="Load the unified output directory that accumulates all runs"
+          >
+            Load unified
+          </button>
           <span className="text-xs text-[var(--muted-text)]">Folder size: {formatBytes(folderBytes)}</span>
         </div>
 
@@ -234,6 +247,8 @@ export function DatabaseView({
                 { label: 'results.summary.json', detail: 'Aggregated metrics', action: 'Open' },
                 { label: 'run_state.json', detail: 'Live counters', action: 'Open' },
                 { label: 'explorer.jsonl', detail: 'Explorer data', action: 'Open' },
+                { label: 'policy_statements.jsonl', detail: 'Base statements (per site)', action: 'Open' },
+                { label: 'policy_statements_annotated.jsonl', detail: 'Annotated with source text', action: 'Open' },
               ].map((row) => (
                 <div
                   key={row.label}
@@ -266,7 +281,10 @@ export function DatabaseView({
             { label: 'JSONL valid', value: summary ? 'OK' : '—' },
             { label: 'Policies extracted', value: summary?.success_rate ? `${summary.success_rate}%` : '—' },
             { label: 'Third-party mapped', value: thirdParty.mapped ? `${thirdParty.mapped}` : '—' },
-            { label: 'Artifacts present', value: '—' },
+            {
+              label: 'Artifacts present',
+              value: annotationStats?.total_sites ? String(annotationStats.total_sites) : '—',
+            },
           ].map((row) => (
             <div key={row.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
               <p className="text-xs text-[var(--muted-text)]">{row.label}</p>
@@ -274,6 +292,35 @@ export function DatabaseView({
             </div>
           ))}
         </div>
+        {annotationStats && (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              {
+                label: 'document.json',
+                value: annotationStats.per_site
+                  ? annotationStats.per_site.filter((s: any) => s.has_statements).length
+                  : '—',
+                detail: 'Sites with document structure',
+              },
+              {
+                label: 'policy_statements.jsonl',
+                value: annotationStats.annotated_sites ?? '—',
+                detail: 'Sites with base statements',
+              },
+              {
+                label: 'policy_statements_annotated.jsonl',
+                value: annotationStats.annotated_sites ?? '—',
+                detail: 'Sites with source-text statements',
+              },
+            ].map((row) => (
+              <div key={row.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
+                <p className="mono text-[10px] text-[var(--muted-text)]">{row.label}</p>
+                <p className="text-lg font-semibold">{typeof row.value === 'number' ? row.value.toLocaleString() : row.value}</p>
+                <p className="text-[10px] text-[var(--muted-text)]">{row.detail}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </>
   )

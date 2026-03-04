@@ -36,8 +36,32 @@ contextBridge.exposeInMainWorld('scraper', {
   listRuns: (baseOutDir?: string) => ipcRenderer.invoke('scraper:list-runs', baseOutDir),
   openLogWindow: (content: string, title?: string) => ipcRenderer.invoke('scraper:open-log-window', { content, title }),
   openPolicyWindow: (url: string) => ipcRenderer.invoke('scraper:open-policy-window', url),
-  onEvent: (callback: (event: any) => void) => ipcRenderer.on('scraper:event', (_evt, data) => callback(data)),
-  onLog: (callback: (event: any) => void) => ipcRenderer.on('scraper:log', (_evt, data) => callback(data)),
-  onError: (callback: (event: any) => void) => ipcRenderer.on('scraper:error', (_evt, data) => callback(data)),
-  onExit: (callback: (event: any) => void) => ipcRenderer.on('scraper:exit', (_evt, data) => callback(data)),
+  onEvent: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('scraper:event')
+    ipcRenderer.on('scraper:event', (_evt, data) => callback(data))
+  },
+  onLog: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('scraper:log')
+    ipcRenderer.on('scraper:log', (_evt, data) => callback(data))
+  },
+  onError: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('scraper:error')
+    ipcRenderer.on('scraper:error', (_evt, data) => callback(data))
+  },
+  onExit: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('scraper:exit')
+    ipcRenderer.on('scraper:exit', (_evt, data) => callback(data))
+  },
+  startAnnotate: (options: any) => ipcRenderer.invoke('scraper:start-annotate', options),
+  stopAnnotate: () => ipcRenderer.invoke('scraper:stop-annotate'),
+  annotationStats: (artifactsDir?: string) => ipcRenderer.invoke('scraper:annotation-stats', artifactsDir),
+  readTpCache: (outDir?: string) => ipcRenderer.invoke('scraper:read-tp-cache', outDir),
+  onAnnotatorLog: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('annotator:log')
+    ipcRenderer.on('annotator:log', (_evt, data) => callback(data))
+  },
+  onAnnotatorExit: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('annotator:exit')
+    ipcRenderer.on('annotator:exit', (_evt, data) => callback(data))
+  },
 })

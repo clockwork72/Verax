@@ -13,6 +13,7 @@ class SummaryBuilder:
     processed_sites: int = 0
     status_counts: Counter = field(default_factory=Counter)
     third_party_total: int = 0
+    third_party_unique_domains: set = field(default_factory=set)
     third_party_mapped: int = 0
     third_party_unmapped: int = 0
     third_party_no_policy_url: int = 0
@@ -36,6 +37,9 @@ class SummaryBuilder:
             if not isinstance(tp, dict):
                 continue
             self.third_party_total += 1
+            domain = tp.get("third_party_etld1")
+            if isinstance(domain, str) and domain:
+                self.third_party_unique_domains.add(domain)
             mapped = bool(
                 tp.get("tracker_radar_source_domain_file")
                 or tp.get("entity")
@@ -110,6 +114,7 @@ class SummaryBuilder:
             "status_counts": dict(self.status_counts),
             "third_party": {
                 "total": self.third_party_total,
+                "unique": len(self.third_party_unique_domains),
                 "mapped": self.third_party_mapped,
                 "unmapped": self.third_party_unmapped,
                 "no_policy_url": self.third_party_no_policy_url,
