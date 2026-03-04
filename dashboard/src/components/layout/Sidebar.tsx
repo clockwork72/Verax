@@ -28,6 +28,19 @@ const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
     ),
   },
   {
+    id: 'audit',
+    label: 'Audit',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M4 6h16" />
+        <path d="M4 12h10" />
+        <path d="M4 18h7" />
+        <circle cx="17.5" cy="17.5" r="3.5" />
+        <path d="M20.2 20.2l1.8 1.8" />
+      </svg>
+    ),
+  },
+  {
     id: 'explorer',
     label: 'Explorer',
     icon: (

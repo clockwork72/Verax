@@ -1,159 +1,273 @@
-import { ipcMain, app, BrowserWindow } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import fs from "node:fs";
-import { spawn } from "node:child_process";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-const REPO_ROOT = path.resolve(process.env.APP_ROOT, "..");
-let win;
-let scraperProcess = null;
-let annotatorProcess = null;
-const policyWindows = /* @__PURE__ */ new Set();
-const logWindows = /* @__PURE__ */ new Set();
-function getPythonCmd() {
+import { ipcMain as p, app as D, BrowserWindow as P } from "electron";
+import { fileURLToPath as G } from "node:url";
+import o from "node:path";
+import c from "node:fs";
+import { spawn as C } from "node:child_process";
+const N = o.dirname(G(import.meta.url));
+process.env.APP_ROOT = o.join(N, "..");
+const E = process.env.VITE_DEV_SERVER_URL, ie = o.join(process.env.APP_ROOT, "dist-electron"), L = o.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = E ? o.join(process.env.APP_ROOT, "public") : L;
+const d = o.resolve(process.env.APP_ROOT, "..");
+let v, y = null, k = null;
+const J = /* @__PURE__ */ new Set(), F = /* @__PURE__ */ new Set();
+function K() {
   if (process.env.PRIVACY_DATASET_PYTHON) return process.env.PRIVACY_DATASET_PYTHON;
-  const condaPrefix = process.env.CONDA_PREFIX;
-  if (condaPrefix) {
-    const explicit = path.join(condaPrefix, "bin", "python");
-    if (fs.existsSync(explicit)) return explicit;
+  const s = process.env.CONDA_PREFIX;
+  if (s) {
+    const e = o.join(s, "bin", "python");
+    if (c.existsSync(e)) return e;
   }
   return "python";
 }
-function buildSubprocessEnv(extra = {}) {
-  const env = { ...process.env, PYTHONUNBUFFERED: "1", ...extra };
-  const baseBins = [];
-  const condaPrefix = process.env.CONDA_PREFIX;
-  if (condaPrefix) {
-    const envsIdx = condaPrefix.lastIndexOf("/envs/");
-    if (envsIdx !== -1) {
-      baseBins.push(path.join(condaPrefix.slice(0, envsIdx), "bin"));
-    }
+function U(s = {}) {
+  const e = { ...process.env, PYTHONUNBUFFERED: "1", ...s }, t = [], r = process.env.CONDA_PREFIX;
+  if (r) {
+    const a = r.lastIndexOf("/envs/");
+    a !== -1 && t.push(o.join(r.slice(0, a), "bin"));
   }
-  const mambaRoot = process.env.MAMBA_ROOT_PREFIX || process.env.CONDA_ROOT;
-  if (mambaRoot) baseBins.push(path.join(mambaRoot, "bin"));
-  if (baseBins.length > 0) {
-    const currentPath = env.PATH || "";
-    const existing = new Set(currentPath.split(":"));
-    const toAdd = baseBins.filter((d) => !existing.has(d));
-    if (toAdd.length > 0) {
-      env.PATH = currentPath + ":" + toAdd.join(":");
-    }
+  const n = process.env.MAMBA_ROOT_PREFIX || process.env.CONDA_ROOT;
+  if (n && t.push(o.join(n, "bin")), t.length > 0) {
+    const a = e.PATH || "", l = new Set(a.split(":")), i = t.filter((u) => !l.has(u));
+    i.length > 0 && (e.PATH = a + ":" + i.join(":"));
   }
-  return env;
+  return e;
 }
-function sendToRenderer(channel, payload) {
-  if (win && !win.isDestroyed()) {
-    win.webContents.send(channel, payload);
-  }
+function _(s, e) {
+  v && !v.isDestroyed() && v.webContents.send(s, e);
 }
-function defaultPaths(outDir) {
-  const root = outDir ? path.resolve(REPO_ROOT, outDir) : path.join(REPO_ROOT, "outputs");
+function g(s) {
+  const e = s ? o.resolve(d, s) : o.join(d, "outputs");
   return {
-    outDir: root,
-    resultsJsonl: path.join(root, "results.jsonl"),
-    summaryJson: path.join(root, "results.summary.json"),
-    stateJson: path.join(root, "run_state.json"),
-    explorerJsonl: path.join(root, "explorer.jsonl"),
-    artifactsDir: path.join(root, "artifacts")
+    outDir: e,
+    resultsJsonl: o.join(e, "results.jsonl"),
+    summaryJson: o.join(e, "results.summary.json"),
+    stateJson: o.join(e, "run_state.json"),
+    explorerJsonl: o.join(e, "explorer.jsonl"),
+    artifactsDir: o.join(e, "artifacts")
   };
 }
-function parseJsonl(content, limit) {
-  const lines = content.split(/\r?\n/);
-  const out = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      out.push(JSON.parse(trimmed));
-      if (limit && out.length >= limit) break;
-    } catch (err) {
-      out.push({ _error: "invalid_json", raw: trimmed });
-    }
-  }
-  return out;
-}
-async function getDirectorySize(dirPath) {
-  let total = 0;
-  const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      total += await getDirectorySize(fullPath);
-    } else if (entry.isFile()) {
+function V(s, e) {
+  const t = s.split(/\r?\n/), r = [];
+  for (const n of t) {
+    const a = n.trim();
+    if (a)
       try {
-        const stat = await fs.promises.stat(fullPath);
-        total += stat.size;
+        if (r.push(JSON.parse(a)), e && r.length >= e) break;
+      } catch {
+        r.push({ _error: "invalid_json", raw: a });
+      }
+  }
+  return r;
+}
+function b(s) {
+  return s.trim().toLowerCase();
+}
+function W(s) {
+  const e = String(s || "").trim().toLowerCase();
+  return e ? e.includes("/") && e.split("/").pop() || e : "";
+}
+function S(s, e) {
+  if (!s.startsWith(`${e}-`)) return !1;
+  const t = s.slice(e.length + 1);
+  return /^\d/.test(t);
+}
+function Q(s) {
+  return s === "gpt-4o" || S(s, "gpt-4o") || s === "gpt-4.1" || S(s, "gpt-4.1");
+}
+function $(s) {
+  const e = W(s);
+  return e === "gpt-4o" || S(e, "gpt-4o") ? [
+    "--model-tpm",
+    "30000",
+    "--tpm-headroom-ratio",
+    "0.65",
+    "--tpm-safety-factor",
+    "1.30",
+    "--llm-max-output-tokens",
+    "650",
+    "--rate-limit-retries",
+    "12",
+    "--disable-exhaustion-check"
+  ] : e === "gpt-4.1" || S(e, "gpt-4.1") ? [
+    "--model-tpm",
+    "30000",
+    "--tpm-headroom-ratio",
+    "0.70",
+    "--tpm-safety-factor",
+    "1.25",
+    "--llm-max-output-tokens",
+    "700",
+    "--rate-limit-retries",
+    "10",
+    "--disable-exhaustion-check"
+  ] : e === "gpt-4o-mini" || S(e, "gpt-4o-mini") ? [
+    "--model-tpm",
+    "200000",
+    "--tpm-headroom-ratio",
+    "0.80",
+    "--tpm-safety-factor",
+    "1.15",
+    "--llm-max-output-tokens",
+    "900",
+    "--rate-limit-retries",
+    "8"
+  ] : e === "gpt-4.1-mini" || S(e, "gpt-4.1-mini") ? [
+    "--model-tpm",
+    "200000",
+    "--tpm-headroom-ratio",
+    "0.80",
+    "--tpm-safety-factor",
+    "1.15",
+    "--llm-max-output-tokens",
+    "900",
+    "--rate-limit-retries",
+    "8"
+  ] : e === "gpt-4.1-nano" || S(e, "gpt-4.1-nano") ? [
+    "--model-tpm",
+    "1000000",
+    "--tpm-headroom-ratio",
+    "0.85",
+    "--tpm-safety-factor",
+    "1.10",
+    "--llm-max-output-tokens",
+    "850",
+    "--rate-limit-retries",
+    "8"
+  ] : [];
+}
+function B(s) {
+  return o.join(g(s).outDir, "audit_state.json");
+}
+async function Z(s) {
+  if (!c.existsSync(s))
+    return { verifiedSites: [], urlOverrides: {} };
+  try {
+    const e = await c.promises.readFile(s, "utf-8"), t = JSON.parse(e), n = (Array.isArray(t == null ? void 0 : t.verifiedSites) ? t.verifiedSites : []).filter((i) => typeof i == "string" && i.trim().length > 0).map((i) => b(i)), a = t != null && t.urlOverrides && typeof t.urlOverrides == "object" ? t.urlOverrides : {}, l = {};
+    for (const [i, u] of Object.entries(a))
+      typeof u == "string" && u.trim().length > 0 && (l[b(i)] = u.trim());
+    return { verifiedSites: n, urlOverrides: l, updatedAt: t == null ? void 0 : t.updatedAt };
+  } catch {
+    return { verifiedSites: [], urlOverrides: {} };
+  }
+}
+async function z(s, e = {}) {
+  const t = K();
+  try {
+    y = C(t, s, {
+      cwd: d,
+      env: U(e)
+    });
+  } catch (n) {
+    return y = null, { ok: !1, error: String(n) };
+  }
+  let r = "";
+  return y.stdout.on("data", (n) => {
+    r += n.toString();
+    const a = r.split(/\r?\n/);
+    r = a.pop() || "";
+    for (const l of a) {
+      const i = l.trim();
+      if (i)
+        try {
+          const u = JSON.parse(i);
+          _("scraper:event", u);
+        } catch {
+          _("scraper:log", { message: i });
+        }
+    }
+  }), y.stderr.on("data", (n) => {
+    _("scraper:error", { message: n.toString() });
+  }), y.on("error", (n) => {
+    _("scraper:error", { message: String(n) });
+  }), y.on("close", (n, a) => {
+    _("scraper:exit", { code: n, signal: a }), y = null;
+  }), { ok: !0 };
+}
+async function H(s, e = {}) {
+  const t = K();
+  try {
+    k = C(t, s, {
+      cwd: d,
+      env: U(e)
+    });
+  } catch (r) {
+    return k = null, { ok: !1, error: String(r) };
+  }
+  return k.stdout.on("data", (r) => {
+    _("annotator:log", { message: r.toString().trimEnd() });
+  }), k.stderr.on("data", (r) => {
+    _("annotator:log", { message: r.toString().trimEnd() });
+  }), k.on("error", (r) => {
+    _("annotator:log", { message: `Error: ${String(r)}` });
+  }), k.on("close", (r, n) => {
+    _("annotator:exit", { code: r, signal: n }), k = null;
+  }), { ok: !0 };
+}
+async function Y(s) {
+  let e = 0;
+  const t = await c.promises.readdir(s, { withFileTypes: !0 });
+  for (const r of t) {
+    const n = o.join(s, r.name);
+    if (r.isDirectory())
+      e += await Y(n);
+    else if (r.isFile())
+      try {
+        const a = await c.promises.stat(n);
+        e += a.size;
       } catch {
         continue;
       }
-    }
   }
-  return total;
+  return e;
 }
-function createWindow() {
-  win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+function q() {
+  v = new P({
+    icon: o.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs")
+      preload: o.join(N, "preload.mjs")
     }
-  });
-  win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
-  });
-  if (VITE_DEV_SERVER_URL) {
-    win.loadURL(VITE_DEV_SERVER_URL);
-  } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
-  }
+  }), v.webContents.on("did-finish-load", () => {
+    v == null || v.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+  }), E ? v.loadURL(E) : v.loadFile(o.join(L, "index.html"));
 }
-function createPolicyWindow(url) {
-  const policyWin = new BrowserWindow({
+function ee(s) {
+  const e = new P({
     width: 1200,
     height: 800,
     title: "Policy Viewer",
     backgroundColor: "#0B0E14",
     webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
+      contextIsolation: !0,
+      nodeIntegration: !1,
+      sandbox: !0
     }
   });
-  policyWin.setMenuBarVisibility(false);
-  policyWin.loadURL(url);
-  policyWindows.add(policyWin);
-  policyWin.on("closed", () => {
-    policyWindows.delete(policyWin);
-  });
-  return policyWin;
+  return e.setMenuBarVisibility(!1), e.loadURL(s), J.add(e), e.on("closed", () => {
+    J.delete(e);
+  }), e;
 }
-function escapeHtml(value) {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+function M(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-function createLogWindow(content, title) {
-  const logWin = new BrowserWindow({
+function te(s, e) {
+  const t = new P({
     width: 1100,
     height: 800,
-    title: title || "Run logs",
+    title: e || "Run logs",
     backgroundColor: "#0B0E14",
     webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true
+      contextIsolation: !0,
+      nodeIntegration: !1,
+      sandbox: !0
     }
   });
-  logWin.setMenuBarVisibility(false);
-  const safe = escapeHtml(content || "");
-  const html = `<!doctype html>
+  t.setMenuBarVisibility(!1);
+  const r = M(s || ""), n = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(title || "Run logs")}</title>
+    <title>${M(e || "Run logs")}</title>
     <style>
       :root { color-scheme: dark; }
       body { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; background: #0B0E14; color: #E6EDF3; }
@@ -168,464 +282,393 @@ function createLogWindow(content, title) {
       <h1>Run logs</h1>
       <div class="sub">Full log output</div>
     </header>
-    <pre>${safe}</pre>
+    <pre>${r}</pre>
   </body>
 </html>`;
-  logWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-  logWindows.add(logWin);
-  logWin.on("closed", () => {
-    logWindows.delete(logWin);
-  });
-  return logWin;
+  return t.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(n)}`), F.add(t), t.on("closed", () => {
+    F.delete(t);
+  }), t;
 }
-ipcMain.handle("scraper:get-paths", (_event, outDir) => {
-  return defaultPaths(outDir);
-});
-ipcMain.handle("scraper:read-summary", async (_event, filePath) => {
+p.handle("scraper:get-paths", (s, e) => g(e));
+p.handle("scraper:read-summary", async (s, e) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().summaryJson;
-    if (!fs.existsSync(target)) {
-      return { ok: false, error: "not_found", path: target };
-    }
-    const raw = await fs.promises.readFile(target, "utf-8");
-    return { ok: true, data: JSON.parse(raw), path: target };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const t = e ? o.resolve(d, e) : g().summaryJson;
+    if (!c.existsSync(t))
+      return { ok: !1, error: "not_found", path: t };
+    const r = await c.promises.readFile(t, "utf-8");
+    return { ok: !0, data: JSON.parse(r), path: t };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:read-state", async (_event, filePath) => {
+p.handle("scraper:read-state", async (s, e) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().stateJson;
-    if (!fs.existsSync(target)) {
-      return { ok: false, error: "not_found", path: target };
-    }
-    const raw = await fs.promises.readFile(target, "utf-8");
-    return { ok: true, data: JSON.parse(raw), path: target };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const t = e ? o.resolve(d, e) : g().stateJson;
+    if (!c.existsSync(t))
+      return { ok: !1, error: "not_found", path: t };
+    const r = await c.promises.readFile(t, "utf-8");
+    return { ok: !0, data: JSON.parse(r), path: t };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:read-explorer", async (_event, filePath, limit) => {
+p.handle("scraper:read-explorer", async (s, e, t) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().explorerJsonl;
-    if (!fs.existsSync(target)) {
-      return { ok: false, error: "not_found", path: target };
-    }
-    const raw = await fs.promises.readFile(target, "utf-8");
-    const data = target.endsWith(".jsonl") ? parseJsonl(raw, limit) : JSON.parse(raw);
-    return { ok: true, data, path: target };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const r = e ? o.resolve(d, e) : g().explorerJsonl;
+    if (!c.existsSync(r))
+      return { ok: !1, error: "not_found", path: r };
+    const n = await c.promises.readFile(r, "utf-8");
+    return { ok: !0, data: r.endsWith(".jsonl") ? V(n, t) : JSON.parse(n), path: r };
+  } catch (r) {
+    return { ok: !1, error: String(r) };
   }
 });
-ipcMain.handle("scraper:read-artifact-text", async (_event, options) => {
+p.handle("scraper:read-results", async (s, e, t) => {
   try {
-    const relativePath = options == null ? void 0 : options.relativePath;
-    if (!relativePath) {
-      return { ok: false, error: "missing_relative_path" };
-    }
-    const root = (options == null ? void 0 : options.outDir) ? path.resolve(REPO_ROOT, options.outDir) : defaultPaths().outDir;
-    const fullPath = path.resolve(root, relativePath);
-    const normalizedRoot = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (fullPath !== root && !fullPath.startsWith(normalizedRoot)) {
-      return { ok: false, error: "path_outside_root" };
-    }
-    if (!fs.existsSync(fullPath)) {
-      return { ok: false, error: "not_found", path: fullPath };
-    }
-    const raw = await fs.promises.readFile(fullPath, "utf-8");
-    return { ok: true, data: raw, path: fullPath };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const r = e ? o.resolve(d, e) : g().resultsJsonl;
+    if (!c.existsSync(r))
+      return { ok: !1, error: "not_found", path: r };
+    const n = await c.promises.readFile(r, "utf-8");
+    return { ok: !0, data: V(n, t), path: r };
+  } catch (r) {
+    return { ok: !1, error: String(r) };
   }
 });
-ipcMain.handle("scraper:folder-size", async (_event, outDir) => {
+p.handle("scraper:read-audit-state", async (s, e) => {
   try {
-    const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    if (!fs.existsSync(target)) {
-      return { ok: false, error: "not_found", path: target };
-    }
-    const size = await getDirectorySize(target);
-    return { ok: true, bytes: size, path: target };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const t = B(e);
+    return { ok: !0, data: await Z(t), path: t };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:list-runs", async (_event, baseOutDir) => {
-  try {
-    const root = baseOutDir ? path.resolve(REPO_ROOT, baseOutDir) : defaultPaths().outDir;
-    if (!fs.existsSync(root)) {
-      return { ok: false, error: "not_found", path: root };
+p.handle(
+  "scraper:write-audit-state",
+  async (s, e) => {
+    try {
+      const t = B(e == null ? void 0 : e.outDir), r = o.dirname(t);
+      await c.promises.mkdir(r, { recursive: !0 });
+      const n = Array.isArray(e == null ? void 0 : e.verifiedSites) ? e.verifiedSites.filter((u) => typeof u == "string" && u.trim().length > 0).map((u) => b(u)) : [], a = (e == null ? void 0 : e.urlOverrides) || {}, l = {};
+      for (const [u, f] of Object.entries(a))
+        typeof f == "string" && f.trim().length > 0 && (l[b(u)] = f.trim());
+      const i = {
+        verifiedSites: Array.from(new Set(n)),
+        urlOverrides: l,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      return await c.promises.writeFile(t, JSON.stringify(i, null, 2), "utf-8"), { ok: !0, data: i, path: t };
+    } catch (t) {
+      return { ok: !1, error: String(t) };
     }
-    const entries = await fs.promises.readdir(root, { withFileTypes: true });
-    const runs = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const dir = path.join(root, entry.name);
-      const summaryPath = path.join(dir, "results.summary.json");
-      const statePath = path.join(dir, "run_state.json");
-      let summary = null;
-      let state = null;
-      if (fs.existsSync(summaryPath)) {
+  }
+);
+p.handle("scraper:read-artifact-text", async (s, e) => {
+  try {
+    const t = e == null ? void 0 : e.relativePath;
+    if (!t)
+      return { ok: !1, error: "missing_relative_path" };
+    const r = e != null && e.outDir ? o.resolve(d, e.outDir) : g().outDir, n = o.resolve(r, t), a = r.endsWith(o.sep) ? r : `${r}${o.sep}`;
+    return n !== r && !n.startsWith(a) ? { ok: !1, error: "path_outside_root" } : c.existsSync(n) ? { ok: !0, data: await c.promises.readFile(n, "utf-8"), path: n } : { ok: !1, error: "not_found", path: n };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
+  }
+});
+p.handle("scraper:folder-size", async (s, e) => {
+  try {
+    const t = e ? o.resolve(d, e) : g().outDir;
+    return c.existsSync(t) ? { ok: !0, bytes: await Y(t), path: t } : { ok: !1, error: "not_found", path: t };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
+  }
+});
+p.handle("scraper:list-runs", async (s, e) => {
+  try {
+    const t = e ? o.resolve(d, e) : g().outDir;
+    if (!c.existsSync(t))
+      return { ok: !1, error: "not_found", path: t };
+    const r = await c.promises.readdir(t, { withFileTypes: !0 }), n = [];
+    for (const a of r) {
+      if (!a.isDirectory()) continue;
+      const l = o.join(t, a.name), i = o.join(l, "results.summary.json"), u = o.join(l, "run_state.json");
+      let f = null, m = null;
+      if (c.existsSync(i))
         try {
-          summary = JSON.parse(await fs.promises.readFile(summaryPath, "utf-8"));
+          f = JSON.parse(await c.promises.readFile(i, "utf-8"));
         } catch {
-          summary = null;
+          f = null;
         }
-      }
-      if (fs.existsSync(statePath)) {
+      if (c.existsSync(u))
         try {
-          state = JSON.parse(await fs.promises.readFile(statePath, "utf-8"));
+          m = JSON.parse(await c.promises.readFile(u, "utf-8"));
         } catch {
-          state = null;
+          m = null;
         }
-      }
-      if (!summary && !state && !entry.name.startsWith("output_")) {
+      if (!f && !m && !a.name.startsWith("output_"))
         continue;
-      }
-      let mtime = "";
+      let h = "";
       try {
-        const stat = await fs.promises.stat(dir);
-        mtime = stat.mtime.toISOString();
+        h = (await c.promises.stat(l)).mtime.toISOString();
       } catch {
-        mtime = "";
+        h = "";
       }
-      const runId = (summary == null ? void 0 : summary.run_id) || (state == null ? void 0 : state.run_id) || entry.name.replace(/^output_/, "");
-      runs.push({
-        runId,
-        folder: entry.name,
-        outDir: path.relative(REPO_ROOT, dir),
-        summary,
-        state,
-        updated_at: (summary == null ? void 0 : summary.updated_at) || (state == null ? void 0 : state.updated_at) || mtime,
-        started_at: (summary == null ? void 0 : summary.started_at) || (state == null ? void 0 : state.started_at) || null
+      const w = (f == null ? void 0 : f.run_id) || (m == null ? void 0 : m.run_id) || a.name.replace(/^output_/, "");
+      n.push({
+        runId: w,
+        folder: a.name,
+        outDir: o.relative(d, l),
+        summary: f,
+        state: m,
+        updated_at: (f == null ? void 0 : f.updated_at) || (m == null ? void 0 : m.updated_at) || h,
+        started_at: (f == null ? void 0 : f.started_at) || (m == null ? void 0 : m.started_at) || null
       });
     }
-    runs.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-    return { ok: true, root, runs };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    return n.sort((a, l) => String(l.updated_at || "").localeCompare(String(a.updated_at || ""))), { ok: !0, root: t, runs: n };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:start", async (_event, options = {}) => {
-  if (scraperProcess) {
-    return { ok: false, error: "scraper_already_running" };
-  }
-  const paths = defaultPaths(options.outDir);
-  const pythonCmd = getPythonCmd();
-  const args = [
+p.handle("scraper:start", async (s, e = {}) => {
+  if (y)
+    return { ok: !1, error: "scraper_already_running" };
+  const t = g(e.outDir), r = [
     "-m",
     "privacy_research_dataset.cli",
     "--out",
-    paths.resultsJsonl,
+    t.resultsJsonl,
     "--artifacts-dir",
-    options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    e.artifactsDir ? o.resolve(d, e.artifactsDir) : t.artifactsDir,
     "--emit-events",
     "--state-file",
-    paths.stateJson,
+    t.stateJson,
     "--summary-out",
-    paths.summaryJson,
+    t.summaryJson,
     "--explorer-out",
-    paths.explorerJsonl
+    t.explorerJsonl
   ];
-  if (options.topN) {
-    args.push("--tranco-top", String(options.topN));
+  if (e.topN && r.push("--tranco-top", String(e.topN)), e.trancoDate && r.push("--tranco-date", e.trancoDate), e.trackerRadarIndex) {
+    const a = o.resolve(d, e.trackerRadarIndex);
+    c.existsSync(a) ? r.push("--tracker-radar-index", a) : _("scraper:error", { message: "tracker_radar_index_not_found", path: a });
   }
-  if (options.trancoDate) {
-    args.push("--tranco-date", options.trancoDate);
+  if (e.trackerDbIndex) {
+    const a = o.resolve(d, e.trackerDbIndex);
+    c.existsSync(a) ? r.push("--trackerdb-index", a) : _("scraper:error", { message: "trackerdb_index_not_found", path: a });
   }
-  if (options.trackerRadarIndex) {
-    const trackerPath = path.resolve(REPO_ROOT, options.trackerRadarIndex);
-    if (fs.existsSync(trackerPath)) {
-      args.push("--tracker-radar-index", trackerPath);
-    } else {
-      sendToRenderer("scraper:error", { message: "tracker_radar_index_not_found", path: trackerPath });
-    }
+  e.runId && r.push("--run-id", e.runId), e.cruxFilter && (r.push("--crux-filter"), e.cruxApiKey && r.push("--crux-api-key", e.cruxApiKey)), e.skipHomeFailed && r.push("--skip-home-fetch-failed"), e.excludeSameEntity && r.push("--exclude-same-entity");
+  const n = await z(r);
+  return n.ok ? { ok: !0, paths: t } : { ok: !1, error: n.error || "failed_to_start" };
+});
+p.handle("scraper:rerun-site", async (s, e = {}) => {
+  if (y)
+    return { ok: !1, error: "scraper_already_running" };
+  if (k)
+    return { ok: !1, error: "annotator_running" };
+  const t = String(e.site || "").trim();
+  if (!t)
+    return { ok: !1, error: "missing_site" };
+  const r = g(e.outDir), n = [
+    "-m",
+    "privacy_research_dataset.cli",
+    "--site",
+    t,
+    "--out",
+    r.resultsJsonl,
+    "--artifacts-dir",
+    e.artifactsDir ? o.resolve(d, e.artifactsDir) : r.artifactsDir,
+    "--emit-events",
+    "--state-file",
+    r.stateJson,
+    "--summary-out",
+    r.summaryJson,
+    "--explorer-out",
+    r.explorerJsonl,
+    "--force",
+    "--upsert-by-site",
+    "--concurrency",
+    "1"
+  ];
+  if (e.trackerRadarIndex) {
+    const i = o.resolve(d, e.trackerRadarIndex);
+    c.existsSync(i) ? n.push("--tracker-radar-index", i) : _("scraper:error", { message: "tracker_radar_index_not_found", path: i });
   }
-  if (options.trackerDbIndex) {
-    const trackerDbPath = path.resolve(REPO_ROOT, options.trackerDbIndex);
-    if (fs.existsSync(trackerDbPath)) {
-      args.push("--trackerdb-index", trackerDbPath);
-    } else {
-      sendToRenderer("scraper:error", { message: "trackerdb_index_not_found", path: trackerDbPath });
-    }
+  if (e.trackerDbIndex) {
+    const i = o.resolve(d, e.trackerDbIndex);
+    c.existsSync(i) ? n.push("--trackerdb-index", i) : _("scraper:error", { message: "trackerdb_index_not_found", path: i });
   }
-  if (options.runId) {
-    args.push("--run-id", options.runId);
-  }
-  if (options.cruxFilter) {
-    args.push("--crux-filter");
-    if (options.cruxApiKey) {
-      args.push("--crux-api-key", options.cruxApiKey);
-    }
-  }
-  if (options.skipHomeFailed) {
-    args.push("--skip-home-fetch-failed");
-  }
-  if (options.excludeSameEntity) {
-    args.push("--exclude-same-entity");
-  }
+  e.runId && n.push("--run-id", e.runId), e.excludeSameEntity && n.push("--exclude-same-entity"), e.policyUrlOverride && e.policyUrlOverride.trim() && n.push("--policy-url-override", e.policyUrlOverride.trim()), e.llmModel && e.llmModel.trim() && n.push("--llm-model", e.llmModel.trim());
+  const a = {};
+  e.openaiApiKey && e.openaiApiKey.trim() && (a.OPENAI_API_KEY = e.openaiApiKey.trim());
+  const l = await z(n, a);
+  return l.ok ? { ok: !0, paths: r, site: t } : { ok: !1, error: l.error || "failed_to_start" };
+});
+p.handle("scraper:stop", async () => y ? (y.kill(), { ok: !0 }) : { ok: !1, error: "not_running" });
+p.handle("scraper:open-log-window", async (s, e) => {
   try {
-    scraperProcess = spawn(pythonCmd, args, {
-      cwd: REPO_ROOT,
-      env: buildSubprocessEnv()
-    });
-  } catch (error) {
-    scraperProcess = null;
-    return { ok: false, error: String(error) };
+    const t = (e == null ? void 0 : e.content) ?? "", r = e == null ? void 0 : e.title;
+    return te(t, r), { ok: !0 };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
-  let stdoutBuffer = "";
-  scraperProcess.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString();
-    const lines = stdoutBuffer.split(/\r?\n/);
-    stdoutBuffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const evt = JSON.parse(trimmed);
-        sendToRenderer("scraper:event", evt);
-      } catch (error) {
-        sendToRenderer("scraper:log", { message: trimmed });
-      }
-    }
-  });
-  scraperProcess.stderr.on("data", (chunk) => {
-    sendToRenderer("scraper:error", { message: chunk.toString() });
-  });
-  scraperProcess.on("error", (error) => {
-    sendToRenderer("scraper:error", { message: String(error) });
-  });
-  scraperProcess.on("close", (code, signal) => {
-    sendToRenderer("scraper:exit", { code, signal });
-    scraperProcess = null;
-  });
-  return { ok: true, paths };
 });
-ipcMain.handle("scraper:stop", async () => {
-  if (!scraperProcess) return { ok: false, error: "not_running" };
-  scraperProcess.kill();
-  return { ok: true };
-});
-ipcMain.handle("scraper:open-log-window", async (_event, payload) => {
+p.handle("scraper:open-policy-window", async (s, e) => {
+  if (!e || typeof e != "string")
+    return { ok: !1, error: "invalid_url" };
   try {
-    const content = (payload == null ? void 0 : payload.content) ?? "";
-    const title = payload == null ? void 0 : payload.title;
-    createLogWindow(content, title);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const t = new URL(e);
+    return ["http:", "https:"].includes(t.protocol) ? (ee(e), { ok: !0 }) : { ok: !1, error: "unsupported_protocol" };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:open-policy-window", async (_event, url) => {
-  if (!url || typeof url !== "string") {
-    return { ok: false, error: "invalid_url" };
-  }
-  try {
-    const parsed = new URL(url);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      return { ok: false, error: "unsupported_protocol" };
-    }
-    createPolicyWindow(url);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: String(error) };
-  }
-});
-ipcMain.handle("scraper:clear-results", async (_event, options) => {
-  if (scraperProcess) {
-    return { ok: false, error: "scraper_running" };
-  }
-  const paths = defaultPaths(options == null ? void 0 : options.outDir);
-  const targets = [paths.resultsJsonl, paths.summaryJson, paths.stateJson, paths.explorerJsonl];
-  const removed = [];
-  const missing = [];
-  const errors = [];
-  for (const target of targets) {
+p.handle("scraper:clear-results", async (s, e) => {
+  if (y)
+    return { ok: !1, error: "scraper_running" };
+  const t = g(e == null ? void 0 : e.outDir), r = [
+    t.resultsJsonl,
+    t.summaryJson,
+    t.stateJson,
+    t.explorerJsonl,
+    o.join(t.outDir, "audit_state.json")
+  ], n = [], a = [], l = [];
+  for (const i of r)
     try {
-      if (fs.existsSync(target)) {
-        await fs.promises.rm(target, { force: true });
-        removed.push(target);
-      } else {
-        missing.push(target);
-      }
-    } catch (error) {
-      errors.push(`${target}: ${String(error)}`);
+      c.existsSync(i) ? (await c.promises.rm(i, { force: !0 }), n.push(i)) : a.push(i);
+    } catch (u) {
+      l.push(`${i}: ${String(u)}`);
     }
-  }
-  if (options == null ? void 0 : options.includeArtifacts) {
+  if (e != null && e.includeArtifacts)
     try {
-      if (fs.existsSync(paths.artifactsDir)) {
-        await fs.promises.rm(paths.artifactsDir, { recursive: true, force: true });
-        removed.push(paths.artifactsDir);
-      }
-    } catch (error) {
-      errors.push(`${paths.artifactsDir}: ${String(error)}`);
+      c.existsSync(t.artifactsDir) && (await c.promises.rm(t.artifactsDir, { recursive: !0, force: !0 }), n.push(t.artifactsDir));
+    } catch (i) {
+      l.push(`${t.artifactsDir}: ${String(i)}`);
     }
-  }
-  return { ok: errors.length === 0, removed, missing, errors, paths };
+  return { ok: l.length === 0, removed: n, missing: a, errors: l, paths: t };
 });
-ipcMain.handle("scraper:delete-output", async (_event, outDir) => {
+p.handle("scraper:delete-output", async (s, e) => {
   try {
-    const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    if (!fs.existsSync(target)) {
-      return { ok: false, error: "not_found", path: target };
-    }
-    await fs.promises.rm(target, { recursive: true, force: true });
-    return { ok: true, path: target };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    const t = e ? o.resolve(d, e) : g().outDir;
+    return c.existsSync(t) ? (await c.promises.rm(t, { recursive: !0, force: !0 }), { ok: !0, path: t }) : { ok: !1, error: "not_found", path: t };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:start-annotate", async (_event, options = {}) => {
-  if (annotatorProcess) {
-    return { ok: false, error: "annotator_already_running" };
-  }
-  const pythonCmd = getPythonCmd();
-  const artifactsDir = options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
-  const args = [
+p.handle("scraper:start-annotate", async (s, e = {}) => {
+  if (k)
+    return { ok: !1, error: "annotator_already_running" };
+  const t = e.artifactsDir ? o.resolve(d, e.artifactsDir) : o.join(g().outDir, "artifacts"), r = [
     "-m",
     "privacy_research_dataset.annotate_cli",
     "--artifacts-dir",
-    artifactsDir
+    t
   ];
-  if (options.llmModel) args.push("--llm-model", options.llmModel);
-  if (options.tokenLimit) args.push("--token-limit", String(options.tokenLimit));
-  if (options.concurrency) args.push("--concurrency", String(options.concurrency));
-  if (options.force) args.push("--force");
-  const annotatorExtra = {};
-  if (options.openaiApiKey) annotatorExtra.OPENAI_API_KEY = options.openaiApiKey;
-  const env = buildSubprocessEnv(annotatorExtra);
-  try {
-    annotatorProcess = spawn(pythonCmd, args, { cwd: REPO_ROOT, env });
-  } catch (error) {
-    annotatorProcess = null;
-    return { ok: false, error: String(error) };
-  }
-  annotatorProcess.stdout.on("data", (chunk) => {
-    sendToRenderer("annotator:log", { message: chunk.toString().trimEnd() });
-  });
-  annotatorProcess.stderr.on("data", (chunk) => {
-    sendToRenderer("annotator:log", { message: chunk.toString().trimEnd() });
-  });
-  annotatorProcess.on("error", (error) => {
-    sendToRenderer("annotator:log", { message: `Error: ${String(error)}` });
-  });
-  annotatorProcess.on("close", (code, signal) => {
-    sendToRenderer("annotator:exit", { code, signal });
-    annotatorProcess = null;
-  });
-  return { ok: true, artifactsDir };
+  e.llmModel && r.push("--llm-model", e.llmModel), e.tokenLimit && r.push("--token-limit", String(e.tokenLimit));
+  const n = W(e.llmModel), a = Q(n) ? 1 : void 0;
+  let l = e.concurrency || a;
+  a && l && l > a && (l = a, _("annotator:log", {
+    message: `[info] ${e.llmModel || n}: forcing concurrency ${a} for TPM stability.`
+  })), l && r.push("--concurrency", String(l)), r.push(...$(e.llmModel)), e.force && r.push("--force");
+  const i = {};
+  e.openaiApiKey && (i.OPENAI_API_KEY = e.openaiApiKey);
+  const u = await H(r, i);
+  return u.ok ? { ok: !0, artifactsDir: t } : { ok: !1, error: u.error || "failed_to_start" };
 });
-ipcMain.handle("scraper:stop-annotate", async () => {
-  if (!annotatorProcess) return { ok: false, error: "not_running" };
-  annotatorProcess.kill();
-  return { ok: true };
+p.handle("scraper:annotate-site", async (s, e = {}) => {
+  if (k)
+    return { ok: !1, error: "annotator_already_running" };
+  if (y)
+    return { ok: !1, error: "scraper_running" };
+  const t = String(e.site || "").trim();
+  if (!t)
+    return { ok: !1, error: "missing_site" };
+  const r = g(e.outDir), n = [
+    "-m",
+    "privacy_research_dataset.annotate_cli",
+    "--artifacts-dir",
+    r.artifactsDir,
+    "--target-dir",
+    t,
+    "--concurrency",
+    "1"
+  ];
+  e.llmModel && e.llmModel.trim() && n.push("--llm-model", e.llmModel.trim()), n.push(...$(e.llmModel)), typeof e.tokenLimit == "number" && Number.isFinite(e.tokenLimit) && n.push("--token-limit", String(e.tokenLimit)), e.force !== !1 && n.push("--force");
+  const a = {};
+  e.openaiApiKey && e.openaiApiKey.trim() && (a.OPENAI_API_KEY = e.openaiApiKey.trim());
+  const l = await H(n, a);
+  return l.ok ? { ok: !0, artifactsDir: r.artifactsDir, site: t } : { ok: !1, error: l.error || "failed_to_start" };
 });
-ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
+p.handle("scraper:stop-annotate", async () => k ? (k.kill(), { ok: !0 }) : { ok: !1, error: "not_running" });
+p.handle("scraper:annotation-stats", async (s, e) => {
   try {
-    const targetDir = artifactsDir ? path.resolve(REPO_ROOT, artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
-    if (!fs.existsSync(targetDir)) {
-      return { ok: true, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] };
-    }
-    const countLines = async (filePath) => {
+    const t = e ? o.resolve(d, e) : o.join(g().outDir, "artifacts");
+    if (!c.existsSync(t))
+      return { ok: !0, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] };
+    const r = async (h) => {
       try {
-        const content = await fs.promises.readFile(filePath, "utf-8");
-        return content.split("\n").filter((line) => line.trim()).length;
+        return (await c.promises.readFile(h, "utf-8")).split(`
+`).filter((x) => x.trim()).length;
       } catch {
         return 0;
       }
-    };
-    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
-    const perSite = [];
-    const perTp = [];
-    let totalStatements = 0;
-    let tpTotalStatements = 0;
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const statementsPath = path.join(targetDir, entry.name, "policy_statements.jsonl");
-      const hasStatements = fs.existsSync(statementsPath);
-      let count = 0;
-      if (hasStatements) {
-        count = await countLines(statementsPath);
-        totalStatements += count;
-      }
-      perSite.push({ site: entry.name, count, has_statements: hasStatements });
-      const tpRoot = path.join(targetDir, entry.name, "third_party");
-      if (fs.existsSync(tpRoot)) {
-        const tpEntries = await fs.promises.readdir(tpRoot, { withFileTypes: true });
-        for (const tpEntry of tpEntries) {
-          if (!tpEntry.isDirectory()) continue;
-          const tpStmtsPath = path.join(tpRoot, tpEntry.name, "policy_statements.jsonl");
-          const tpHas = fs.existsSync(tpStmtsPath);
-          let tpCount = 0;
-          if (tpHas) {
-            tpCount = await countLines(tpStmtsPath);
-            tpTotalStatements += tpCount;
-          }
-          perTp.push({ site: entry.name, tp: tpEntry.name, count: tpCount, has_statements: tpHas });
+    }, n = await c.promises.readdir(t, { withFileTypes: !0 }), a = [], l = [];
+    let i = 0, u = 0;
+    for (const h of n) {
+      if (!h.isDirectory()) continue;
+      const w = o.join(t, h.name, "policy_statements.jsonl"), x = c.existsSync(w);
+      let O = 0;
+      x && (O = await r(w), i += O), a.push({ site: h.name, count: O, has_statements: x });
+      const A = o.join(t, h.name, "third_party");
+      if (c.existsSync(A)) {
+        const X = await c.promises.readdir(A, { withFileTypes: !0 });
+        for (const R of X) {
+          if (!R.isDirectory()) continue;
+          const I = o.join(A, R.name, "policy_statements.jsonl"), T = c.existsSync(I);
+          let j = 0;
+          T && (j = await r(I), u += j), l.push({ site: h.name, tp: R.name, count: j, has_statements: T });
         }
       }
     }
-    const annotatedSites = perSite.filter((s) => s.has_statements).length;
-    const tpAnnotatedCount = perTp.filter((t) => t.has_statements).length;
+    const f = a.filter((h) => h.has_statements).length, m = l.filter((h) => h.has_statements).length;
     return {
-      ok: true,
-      total_sites: perSite.length,
-      annotated_sites: annotatedSites,
-      total_statements: totalStatements,
-      per_site: perSite,
-      tp_total: perTp.length,
-      tp_annotated: tpAnnotatedCount,
-      tp_total_statements: tpTotalStatements,
-      per_tp: perTp
+      ok: !0,
+      total_sites: a.length,
+      annotated_sites: f,
+      total_statements: i,
+      per_site: a,
+      tp_total: l.length,
+      tp_annotated: m,
+      tp_total_statements: u,
+      per_tp: l
     };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-ipcMain.handle("scraper:read-tp-cache", async (_event, outDir) => {
+p.handle("scraper:read-tp-cache", async (s, e) => {
   try {
-    const root = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    const cachePath = path.join(root, "results.tp_cache.json");
-    if (!fs.existsSync(cachePath)) {
-      return { ok: false, error: "not_found", path: cachePath };
+    const t = e ? o.resolve(d, e) : g().outDir, r = o.join(t, "results.tp_cache.json");
+    if (!c.existsSync(r))
+      return { ok: !1, error: "not_found", path: r };
+    const n = await c.promises.readFile(r, "utf-8"), a = JSON.parse(n);
+    let l = 0, i = 0, u = 0;
+    const f = {};
+    for (const m of Object.values(a)) {
+      l++, m.text !== null && m.text !== void 0 ? i++ : m.error_message && u++;
+      const h = String(m.status_code ?? "unknown");
+      f[h] = (f[h] || 0) + 1;
     }
-    const raw = await fs.promises.readFile(cachePath, "utf-8");
-    const data = JSON.parse(raw);
-    let total = 0;
-    let fetched = 0;
-    let failed = 0;
-    const byStatus = {};
-    for (const entry of Object.values(data)) {
-      total++;
-      if (entry.text !== null && entry.text !== void 0) {
-        fetched++;
-      } else if (entry.error_message) {
-        failed++;
-      }
-      const code = String(entry.status_code ?? "unknown");
-      byStatus[code] = (byStatus[code] || 0) + 1;
-    }
-    return { ok: true, total, fetched, failed, by_status: byStatus };
-  } catch (error) {
-    return { ok: false, error: String(error) };
+    return { ok: !0, total: l, fetched: i, failed: u, by_status: f };
+  } catch (t) {
+    return { ok: !1, error: String(t) };
   }
 });
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
+D.on("window-all-closed", () => {
+  process.platform !== "darwin" && (D.quit(), v = null);
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+D.on("activate", () => {
+  P.getAllWindows().length === 0 && q();
 });
-app.whenReady().then(createWindow);
+D.whenReady().then(q);
 export {
-  MAIN_DIST,
-  RENDERER_DIST,
-  VITE_DEV_SERVER_URL
+  ie as MAIN_DIST,
+  L as RENDERER_DIST,
+  E as VITE_DEV_SERVER_URL
 };

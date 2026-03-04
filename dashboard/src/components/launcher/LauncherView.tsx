@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { parseAnnotationUsage, pricingForModel } from '../../utils/annotationCost'
 
 type AnnotateSiteStatus = 'active' | 'done' | 'skip' | 'error'
 type AnnotateSiteEntry = { site: string; status: AnnotateSiteStatus; statements?: number }
@@ -52,13 +53,6 @@ function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'gpt-4o-mini':    { input: 0.15,  output: 0.60  },
-  'gpt-4o':         { input: 2.50,  output: 10.00 },
-  'gpt-4-turbo':    { input: 10.00, output: 30.00  },
-  'gpt-3.5-turbo':  { input: 0.50,  output: 1.50  },
-}
-
 const MODEL_OPTIONS = [
   { value: 'gpt-4o-mini',   label: 'gpt-4o-mini',   price: '$0.15 / $0.60 per 1M' },
   { value: 'gpt-4o',        label: 'gpt-4o',         price: '$2.50 / $10 per 1M'   },
@@ -110,6 +104,7 @@ type LauncherViewProps = {
   annotationStats?: any
   onStartAnnotate?: (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => void
   onStopAnnotate?: () => void
+  annotateRunUsage?: { tokensIn: number; tokensOut: number }
   // Resume mode — use unified output dir to skip already-scraped sites
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
@@ -148,6 +143,7 @@ export function LauncherView({
   annotationStats,
   onStartAnnotate,
   onStopAnnotate,
+  annotateRunUsage,
   resumeMode = false,
   onToggleResumeMode,
 }: LauncherViewProps) {
@@ -457,8 +453,11 @@ export function LauncherView({
       {/* Stage 2 — Annotation */}
       <section className="card rounded-2xl p-6">
         {(() => {
-          const { activeSites: annotateSites, completed: annotateCompleted, totalSites, tokensIn, tokensOut } =
+          const { activeSites: annotateSites, completed: annotateCompleted, totalSites } =
             parseAnnotateLogs(annotateLogs)
+          const parsedUsage = parseAnnotationUsage(annotateLogs)
+          const tokensIn = annotateRunUsage?.tokensIn ?? parsedUsage.tokensIn
+          const tokensOut = annotateRunUsage?.tokensOut ?? parsedUsage.tokensOut
           const knownTotal = totalSites || annotationStats?.total_sites || 0
           const doneCount = annotateCompleted.filter((s) => s.status !== 'skip' || annotateSites.length === 0).length
           const progressPct = knownTotal > 0 ? Math.round((annotateCompleted.length / knownTotal) * 100) : 0
@@ -567,7 +566,7 @@ export function LauncherView({
                         {fmtK(tokensIn)}↑&nbsp;{fmtK(tokensOut)}↓&nbsp;tokens
                         <span className="ml-1 text-[var(--muted-text)] opacity-60">
                           {(() => {
-                            const rates = MODEL_PRICING[llmModel] ?? MODEL_PRICING['gpt-4o-mini']
+                            const rates = pricingForModel(llmModel)
                             const cost = (tokensIn / 1e6) * rates.input + (tokensOut / 1e6) * rates.output
                             return `(≈$${cost.toFixed(3)})`
                           })()}

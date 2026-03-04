@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 
@@ -45,6 +46,7 @@ def _parse_args() -> argparse.Namespace:
         description="Build Step-1 dataset: websites -> first-party privacy policy + observed third-party tools (+ their policies via Tracker Radar / Ghostery TrackerDB).",
     )
     src = p.add_argument_group("Input source")
+    src.add_argument("--site", action="append", default=None, help="Single site/domain/URL to process (repeatable). If set, overrides --input/Tranco.")
     src.add_argument("--input", type=str, default=None, help="Path to a newline-delimited list of domains/URLs. If omitted, uses Tranco.")
     src.add_argument("--tranco-top", type=int, default=100, help="How many Tranco sites to include (if --input not set).")
     src.add_argument("--tranco-date", type=str, default=None, help="Tranco snapshot date YYYY-MM-DD (recommended for reproducibility).")
@@ -69,6 +71,7 @@ def _parse_args() -> argparse.Namespace:
     crawl.add_argument("--locale", type=str, default="en-GB", help="Browser locale. Default: en-GB")
     crawl.add_argument("--timezone-id", type=str, default="Europe/Paris", help="Browser timezone id. Default: Europe/Paris")
     crawl.add_argument("--page-timeout-ms", type=int, default=15000, help="Page timeout in ms.")
+    crawl.add_argument("--policy-url-override", type=str, default=None, help="Force this first-party privacy policy URL (recommended with --site for manual reruns).")
 
     scale = p.add_argument_group("Scale / behavior")
     scale.add_argument("--max-sites", type=int, default=None, help="Hard cap on number of sites processed.")
@@ -108,6 +111,7 @@ def _parse_args() -> argparse.Namespace:
     sync.add_argument("--state-file", type=str, default=None, help="Write run state JSON after each site.")
     sync.add_argument("--summary-out", type=str, default=None, help="Write aggregated summary JSON after each site.")
     sync.add_argument("--explorer-out", type=str, default=None, help="Write explorer JSONL (or JSON) for dashboard browsing.")
+    sync.add_argument("--upsert-by-site", action="store_true", help="Replace existing site records in --out/--explorer-out instead of appending duplicates.")
 
     cache = p.add_argument_group("Cache / deduplication")
     cache.add_argument(
@@ -177,7 +181,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_input_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
-    if args.input:
+    if getattr(args, "site", None):
+        raw = [str(s).strip() for s in (args.site or [])]
+        lines = [ln for ln in raw if ln and not ln.startswith("#")]
+        sites = [{"rank": None, "site": ln} for ln in lines]
+    elif args.input:
         path = Path(args.input)
         lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
         sites = [{"rank": None, "site": ln} for ln in lines]
@@ -439,6 +447,103 @@ def _load_done_records(out_path: Path) -> dict[str, dict]:
     return done
 
 
+def _iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                out.append(obj)
+        except Exception:
+            continue
+    return out
+
+
+def _write_jsonl_records(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def _site_keys_for_result(result: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for key in (
+        result.get("site_etld1"),
+        result.get("input"),
+        result.get("site"),
+    ):
+        if isinstance(key, str) and key.strip():
+            keys.add(key.strip())
+    return keys
+
+
+def _upsert_result_jsonl(path: Path, result: dict[str, Any]) -> None:
+    keys = _site_keys_for_result(result)
+    existing = list(_iter_jsonl(path))
+    kept: list[dict[str, Any]] = []
+    for rec in existing:
+        rec_keys = _site_keys_for_result(rec)
+        if keys and rec_keys and (keys & rec_keys):
+            continue
+        kept.append(rec)
+    kept.append(result)
+    _write_jsonl_records(path, kept)
+
+
+def _upsert_explorer_jsonl(path: Path, record: dict[str, Any]) -> None:
+    site = record.get("site")
+    existing = list(_iter_jsonl(path))
+    if isinstance(site, str) and site:
+        existing = [r for r in existing if r.get("site") != site]
+    existing.append(record)
+    _write_jsonl_records(path, existing)
+
+
+def _build_summary_from_results(out_path: Path, *, run_id: str, mapping_mode: str) -> dict[str, Any]:
+    records = list(_iter_jsonl(out_path))
+    sites_seen: set[str] = set()
+    for rec in records:
+        key = rec.get("site_etld1") or rec.get("input")
+        if isinstance(key, str) and key:
+            sites_seen.add(key)
+    sb = SummaryBuilder(run_id=run_id, total_sites=len(sites_seen), mapping_mode=mapping_mode)
+    for rec in records:
+        sb.update(rec)
+    return sb.to_summary()
+
+
+def _state_from_summary(summary: dict[str, Any], *, run_id: str, total_sites: int) -> dict[str, Any]:
+    mapping = summary.get("mapping") if isinstance(summary.get("mapping"), dict) else {}
+    third_party = summary.get("third_party") if isinstance(summary.get("third_party"), dict) else {}
+    status_counts = summary.get("status_counts") if isinstance(summary.get("status_counts"), dict) else {}
+
+    return {
+        "run_id": run_id,
+        "mapping": {
+            "mode": mapping.get("mode"),
+            "radar_mapped": int(mapping.get("radar_mapped") or 0),
+            "trackerdb_mapped": int(mapping.get("trackerdb_mapped") or 0),
+            "unmapped": int(mapping.get("unmapped") or 0),
+        },
+        "total_sites": int(total_sites),
+        "processed_sites": int(summary.get("processed_sites") or 0),
+        "status_counts": status_counts,
+        "third_party": {
+            "total": int(third_party.get("total") or 0),
+            "mapped": int(third_party.get("mapped") or 0),
+            "unmapped": int(third_party.get("unmapped") or 0),
+            "no_policy_url": int(third_party.get("no_policy_url") or 0),
+        },
+        "updated_at": summary.get("updated_at"),
+    }
+
+
 def _load_annotated_sites(artifacts_dir: Path) -> set[str]:
     """Return the set of site names that already have a completed annotation output.
 
@@ -478,7 +583,7 @@ def _load_scraped_sites(artifacts_dir: Path) -> set[str]:
 
 
 def _load_tp_disk_cache(cache_path: Path) -> dict[str, dict]:
-    """Load the persistent third-party policy cache from disk."""
+    """Load the persistent policy cache from disk."""
     if not cache_path.exists():
         return {}
     try:
@@ -486,6 +591,25 @@ def _load_tp_disk_cache(cache_path: Path) -> dict[str, dict]:
     except Exception as e:
         warn(f"Failed to load TP policy cache from {cache_path}: {e}")
         return {}
+
+
+def _normalize_policy_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        host = (p.hostname or "").lower()
+        if not host:
+            return u
+        port = p.port
+        default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        netloc = host if (port is None or default_port) else f"{host}:{port}"
+        path = p.path or "/"
+        return urlunparse((scheme, netloc, path, "", p.query, ""))
+    except Exception:
+        return u
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -605,7 +729,7 @@ async def _run(args: argparse.Namespace) -> None:
                 f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
             )
 
-    # --- Third-party policy disk cache: persist across runs, keyed by policy URL ---
+    # --- Policy disk cache: persist across runs, keyed by policy URL ---
     out_path = Path(args.out)
     tp_cache_path = (
         Path(args.tp_cache_file)
@@ -614,7 +738,7 @@ async def _run(args: argparse.Namespace) -> None:
     )
     tp_policy_disk_cache: dict[str, dict] = _load_tp_disk_cache(tp_cache_path)
     if tp_policy_disk_cache:
-        log(f"Loaded {len(tp_policy_disk_cache)} cached third-party policy URL(s) from {tp_cache_path}")
+        log(f"Loaded {len(tp_policy_disk_cache)} cached policy URL(s) from {tp_cache_path}")
     tp_cache_write_lock = asyncio.Lock()
 
     summary = SummaryBuilder(run_id=run_id, total_sites=len(sites), mapping_mode=mapping_mode)
@@ -645,40 +769,52 @@ async def _run(args: argparse.Namespace) -> None:
         timezone_id=args.timezone_id,
         page_timeout_ms=args.page_timeout_ms,
     ) as client:
-        tp_policy_cache: dict[str, Crawl4AIResult] = {}
-        tp_policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
-        tp_policy_cache_lock = asyncio.Lock()
+        policy_cache: dict[str, Crawl4AIResult] = {}
+        policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
+        policy_url_aliases: dict[str, str] = {}
+        policy_cache_lock = asyncio.Lock()
 
-        async def fetch_third_party_policy_cached(policy_url: str) -> Crawl4AIResult:
+        async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
+            req_key = _normalize_policy_url(policy_url) or policy_url
             owner = False
-            async with tp_policy_cache_lock:
+            async with policy_cache_lock:
+                lookup_key = policy_url_aliases.get(req_key, req_key)
                 # 1. In-memory cache hit (fastest path).
-                cached = tp_policy_cache.get(policy_url)
+                cached = policy_cache.get(lookup_key) or policy_cache.get(req_key)
                 if cached is not None:
                     return cached
 
                 # 2. Disk cache hit — reconstruct result and warm in-memory cache.
-                disk = tp_policy_disk_cache.get(policy_url)
+                disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
                 if disk is not None:
+                    status_code = disk.get("status_code")
+                    text = disk.get("text")
                     result = Crawl4AIResult(
-                        url=policy_url,
-                        success=bool(disk.get("status_code") and disk["status_code"] < 400),
-                        status_code=disk.get("status_code"),
+                        url=disk.get("final_url") or policy_url,
+                        success=bool((isinstance(status_code, int) and status_code < 400) or text),
+                        status_code=status_code,
                         raw_html=None,
                         cleaned_html=None,
-                        text=disk.get("text"),
+                        text=text,
                         network_requests=None,
                         error_message=disk.get("error_message"),
                         text_extraction_method=disk.get("extraction_method"),
                     )
-                    tp_policy_cache[policy_url] = result
+                    policy_cache[lookup_key] = result
+                    policy_cache[req_key] = result
+                    final_url = disk.get("final_url")
+                    if isinstance(final_url, str) and final_url:
+                        final_key = _normalize_policy_url(final_url)
+                        if final_key:
+                            policy_cache[final_key] = result
+                            policy_url_aliases[req_key] = final_key
                     return result
 
                 # 3. Not cached anywhere — register as inflight so concurrent callers wait.
-                fut = tp_policy_inflight.get(policy_url)
+                fut = policy_inflight.get(lookup_key)
                 if fut is None:
                     fut = asyncio.get_running_loop().create_future()
-                    tp_policy_inflight[policy_url] = fut
+                    policy_inflight[lookup_key] = fut
                     owner = True
 
             if owner:
@@ -702,16 +838,23 @@ async def _run(args: argparse.Namespace) -> None:
                         text_extraction_method=None,
                     )
 
+                final_url = result.url or policy_url
+                final_key = _normalize_policy_url(final_url) or req_key
+                cache_keys = {req_key, final_key}
+
                 # Persist to disk cache only when we got policy text (skip failed fetches).
                 if result.text:
                     async with tp_cache_write_lock:
-                        tp_policy_disk_cache[policy_url] = {
+                        cache_entry = {
                             "text": result.text,
                             "status_code": result.status_code,
                             "extraction_method": result.text_extraction_method,
                             "error_message": result.error_message,
+                            "final_url": final_url,
                             "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                         }
+                        for key in cache_keys:
+                            tp_policy_disk_cache[key] = cache_entry
                         try:
                             tp_cache_path.write_text(
                                 json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1),
@@ -720,16 +863,23 @@ async def _run(args: argparse.Namespace) -> None:
                         except Exception as e:
                             warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
 
-                async with tp_policy_cache_lock:
-                    tp_policy_cache[policy_url] = result
-                    inflight = tp_policy_inflight.pop(policy_url, None)
+                async with policy_cache_lock:
+                    for key in cache_keys:
+                        policy_cache[key] = result
+                    policy_url_aliases[req_key] = final_key
+                    inflight = policy_inflight.pop(req_key, None)
+                    if inflight is None:
+                        inflight = policy_inflight.pop(final_key, None)
+                    if inflight is None:
+                        inflight = policy_inflight.pop(lookup_key, None)
                     if inflight is not None and not inflight.done():
                         inflight.set_result(result)
                 return result
 
-            async with tp_policy_cache_lock:
-                wait_fut = tp_policy_inflight.get(policy_url)
-                cached = tp_policy_cache.get(policy_url)
+            async with policy_cache_lock:
+                wait_key = policy_url_aliases.get(req_key, req_key)
+                wait_fut = policy_inflight.get(wait_key)
+                cached = policy_cache.get(wait_key) or policy_cache.get(req_key)
             if cached is not None:
                 return cached
             if wait_fut is not None:
@@ -821,7 +971,9 @@ async def _run(args: argparse.Namespace) -> None:
                         third_party_engine=args.third_party_engine,
                         run_id=run_id,
                         exclude_same_entity=bool(args.exclude_same_entity),
-                        third_party_policy_fetcher=fetch_third_party_policy_cached,
+                        first_party_policy_url_override=(args.policy_url_override or None),
+                        first_party_policy_fetcher=fetch_policy_cached,
+                        third_party_policy_fetcher=fetch_policy_cached,
                         openai_client=openai_client,
                         llm_model=args.llm_model,
                         stage_callback=lambda stage: emit_event({
@@ -844,44 +996,54 @@ async def _run(args: argparse.Namespace) -> None:
                     }
 
                 async with write_lock:
-                    if args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed":
+                    should_skip_output = args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"
+                    if should_skip_output:
                         warn(f"Skipping {site} due to home_fetch_failed.")
                     else:
-                        append_jsonl(args.out, result)
+                        if args.upsert_by_site:
+                            _upsert_result_jsonl(Path(args.out), result)
+                        else:
+                            append_jsonl(args.out, result)
 
-                    if not (args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"):
+                    if not should_skip_output:
                         summary.update(result)
 
-                    if args.explorer_out and not (args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"):
+                    if args.explorer_out and not should_skip_output:
                         explorer_rec = site_to_explorer_record(result)
                         if explorer_is_jsonl:
-                            append_jsonl(args.explorer_out, explorer_rec)
+                            if args.upsert_by_site:
+                                _upsert_explorer_jsonl(Path(args.explorer_out), explorer_rec)
+                            else:
+                                append_jsonl(args.explorer_out, explorer_rec)
                         else:
-                            explorer_records.append(explorer_rec)
+                            if args.upsert_by_site:
+                                site_key = explorer_rec.get("site")
+                                if isinstance(site_key, str) and site_key:
+                                    explorer_records[:] = [r for r in explorer_records if r.get("site") != site_key]
+                                explorer_records.append(explorer_rec)
+                            else:
+                                explorer_records.append(explorer_rec)
+
+                    summary_payload = summary.to_summary()
+                    if args.upsert_by_site and not should_skip_output:
+                        summary_payload = _build_summary_from_results(
+                            Path(args.out),
+                            run_id=run_id,
+                            mapping_mode=mapping_mode,
+                        )
 
                     if args.summary_out:
-                        write_json(args.summary_out, summary.to_summary())
+                        write_json(args.summary_out, summary_payload)
 
                     if args.state_file:
-                        write_json(args.state_file, {
-                            "run_id": run_id,
-                            "mapping": {
-                                "mode": mapping_mode,
-                                "radar_mapped": summary.third_party_radar_mapped,
-                                "trackerdb_mapped": summary.third_party_trackerdb_mapped,
-                                "unmapped": max(0, summary.third_party_total - summary.third_party_radar_mapped - summary.third_party_trackerdb_mapped),
-                            },
-                            "total_sites": len(sites),
-                            "processed_sites": summary.processed_sites,
-                            "status_counts": dict(summary.status_counts),
-                            "third_party": {
-                                "total": summary.third_party_total,
-                                "mapped": summary.third_party_mapped,
-                                "unmapped": summary.third_party_unmapped,
-                                "no_policy_url": summary.third_party_no_policy_url,
-                            },
-                            "updated_at": summary.updated_at,
-                        })
+                        write_json(
+                            args.state_file,
+                            _state_from_summary(
+                                summary_payload,
+                                run_id=run_id,
+                                total_sites=int(summary_payload.get("total_sites") or len(sites)),
+                            ),
+                        )
 
                 # Write scrape_complete.json — durable per-site marker for future runs.
                 if result.get("status") == "ok" and args.artifacts_dir:

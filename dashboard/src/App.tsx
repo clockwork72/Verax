@@ -9,15 +9,10 @@ import { PolicyViewerView } from './components/annotations/PolicyViewerView'
 import { ConsistencyCheckerView } from './components/consistency/ConsistencyCheckerView'
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
+import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
-
-const MODEL_COST_RATES: Record<string, { input: number; output: number }> = {
-  'gpt-4o-mini':    { input: 0.15,  output: 0.60  },
-  'gpt-4o':         { input: 2.50,  output: 10.00 },
-  'gpt-4-turbo':    { input: 10.00, output: 30.00  },
-  'gpt-3.5-turbo':  { input: 0.50,  output: 1.50  },
-}
+import { parseAnnotationDoneUsage, parseAnnotationUsage, pricingForModel } from './utils/annotationCost'
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -28,6 +23,10 @@ function formatDuration(ms: number) {
   if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
   if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
   return `${seconds}s`
+}
+
+function normalizeSiteKey(value: string): string {
+  return value.trim().toLowerCase()
 }
 
 function App() {
@@ -50,6 +49,7 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<any | null>(null)
   const [explorerData, setExplorerData] = useState<any[] | null>(null)
+  const [resultsData, setResultsData] = useState<any[] | null>(null)
   const [stateData, setStateData] = useState<any | null>(null)
   const [clearing, setClearing] = useState(false)
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
@@ -63,11 +63,16 @@ function App() {
   const [resumeMode, setResumeMode] = useState(false)
   const [runRecords, setRunRecords] = useState<any[]>([])
   const [folderBytes, setFolderBytes] = useState<number | null>(null)
+  const [auditVerifiedSites, setAuditVerifiedSites] = useState<string[]>([])
+  const [auditUrlOverrides, setAuditUrlOverrides] = useState<Record<string, string>>({})
+  const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
+  const [auditAnnotatingSite, setAuditAnnotatingSite] = useState<string | null>(null)
   // Stage 2 — Annotation state
   const [openaiApiKey, setOpenaiApiKey] = useState('')
   const [llmModel, setLlmModel] = useState('gpt-4o-mini')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
+  const [annotateRunUsage, setAnnotateRunUsage] = useState<{ tokensIn: number; tokensOut: number }>({ tokensIn: 0, tokensOut: 0 })
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
@@ -78,6 +83,7 @@ function App() {
     } catch { return 0 }
   })
   const annotateLogsRef = useRef<string[]>([])
+  const annotateRunUsageRef = useRef(annotateRunUsage)
   const llmModelRef = useRef(llmModel)
 
   const addToCost = useCallback((amount: number) => {
@@ -161,6 +167,7 @@ function App() {
           delete next[event.site]
           return next
         })
+        setAuditBusySite((current) => (current === event.site ? null : current))
         setRecentCompleted((prev) => [
           { site: event.site, status: event.status || 'ok', cached: !!event.cached, annotated: !!event.annotated },
           ...prev.slice(0, 14),
@@ -172,6 +179,7 @@ function App() {
         setProgress(100)
         setEtaText('0s')
         setActiveSites({})
+        setAuditBusySite(null)
         refreshRuns()
       }
     })
@@ -186,12 +194,14 @@ function App() {
         setLogs((prev) => [...prev, `ERROR: ${evt.message}`].slice(-50))
       }
       setRunning(false)
+      setAuditBusySite(null)
     })
     scraper.onExit((evt) => {
       if (evt?.code && Number(evt.code) !== 0) {
         setErrorMessage(`Scraper exited with code ${evt.code}`)
       }
       setRunning(false)
+      setAuditBusySite(null)
     })
 
     if (scraper.onAnnotatorLog) {
@@ -199,6 +209,14 @@ function App() {
         const raw = evt?.message ? String(evt.message).trimEnd() : String(evt)
         const lines = raw.split('\n').map((l: string) => l.trimEnd()).filter(Boolean)
         if (lines.length) {
+          annotateLogsRef.current = [...annotateLogsRef.current, ...lines]
+          const delta = parseAnnotationDoneUsage(lines)
+          if (delta.tokensIn || delta.tokensOut) {
+            setAnnotateRunUsage((prev) => ({
+              tokensIn: prev.tokensIn + delta.tokensIn,
+              tokensOut: prev.tokensOut + delta.tokensOut,
+            }))
+          }
           setAnnotateLogs((prev) => [...prev.slice(-(200 - lines.length)), ...lines])
         }
       })
@@ -207,16 +225,12 @@ function App() {
     if (scraper.onAnnotatorExit) {
       scraper.onAnnotatorExit(() => {
         setAnnotateRunning(false)
-        // Parse token usage from logs and accumulate cost
-        let tokIn = 0, tokOut = 0
-        for (const line of annotateLogsRef.current) {
-          const m = line.match(/\[done\]\s+.+?\|\s*([\d,]+)↑\/([\d,]+)↓/)
-          if (m) {
-            tokIn += Number(m[1].replace(/,/g, ''))
-            tokOut += Number(m[2].replace(/,/g, ''))
-          }
-        }
-        const rates = MODEL_COST_RATES[llmModelRef.current] ?? MODEL_COST_RATES['gpt-4o-mini']
+        setAuditAnnotatingSite(null)
+        // Parse token usage from logs and accumulate cost.
+        const usage = parseAnnotationUsage(annotateLogsRef.current)
+        const tokIn = Math.max(annotateRunUsageRef.current.tokensIn, usage.tokensIn)
+        const tokOut = Math.max(annotateRunUsageRef.current.tokensOut, usage.tokensOut)
+        const rates = pricingForModel(llmModelRef.current)
         const runCost = (tokIn / 1e6) * rates.input + (tokOut / 1e6) * rates.output
         if (runCost > 0) addToCost(runCost)
         // refresh stats after annotator finishes
@@ -230,7 +244,7 @@ function App() {
   }, [])
 
   // Keep refs in sync so the IPC exit handler always sees current values
-  useEffect(() => { annotateLogsRef.current = annotateLogs }, [annotateLogs])
+  useEffect(() => { annotateRunUsageRef.current = annotateRunUsage }, [annotateRunUsage])
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
 
   const createRunId = () => {
@@ -248,9 +262,143 @@ function App() {
     if (res?.ok) setAnnotationStats(res)
   }, [outDir])
 
+  const loadAuditWorkspace = useCallback(async (dirOverride?: string) => {
+    if (!window.scraper) return
+    const targetDir = dirOverride || outDir
+    if (window.scraper.readResults) {
+      const results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
+      if (results?.ok && Array.isArray(results.data)) {
+        const cleaned = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
+        setResultsData(cleaned)
+      } else if (!results?.ok && results?.error === 'not_found') {
+        setResultsData([])
+      }
+    }
+    if (window.scraper.readAuditState) {
+      const state = await window.scraper.readAuditState(targetDir)
+      if (state?.ok && state.data) {
+        setAuditVerifiedSites(Array.isArray(state.data.verifiedSites) ? state.data.verifiedSites : [])
+        setAuditUrlOverrides(state.data.urlOverrides || {})
+      } else {
+        setAuditVerifiedSites([])
+        setAuditUrlOverrides({})
+      }
+    }
+  }, [outDir])
+
+  const persistAuditState = useCallback(async (
+    nextVerifiedSites: string[],
+    nextUrlOverrides: Record<string, string>,
+    dirOverride?: string
+  ) => {
+    if (!window.scraper?.writeAuditState) return
+    const targetDir = dirOverride || outDir
+    const res = await window.scraper.writeAuditState({
+      outDir: targetDir,
+      verifiedSites: nextVerifiedSites,
+      urlOverrides: nextUrlOverrides,
+    })
+    if (res?.ok && res.data) {
+      setAuditVerifiedSites(res.data.verifiedSites || [])
+      setAuditUrlOverrides(res.data.urlOverrides || {})
+    }
+  }, [outDir])
+
+  const markAuditVerified = useCallback(async (site: string) => {
+    const siteKey = normalizeSiteKey(site)
+    const next = Array.from(new Set([...auditVerifiedSites, siteKey]))
+    await persistAuditState(next, auditUrlOverrides)
+  }, [auditVerifiedSites, auditUrlOverrides, persistAuditState])
+
+  const saveAuditOverride = useCallback(async (site: string, url: string) => {
+    const siteKey = normalizeSiteKey(site)
+    const nextOverrides = { ...auditUrlOverrides }
+    const normalizedUrl = url.trim()
+    if (normalizedUrl) {
+      nextOverrides[siteKey] = normalizedUrl
+    } else {
+      delete nextOverrides[siteKey]
+    }
+    await persistAuditState(auditVerifiedSites, nextOverrides)
+  }, [auditVerifiedSites, auditUrlOverrides, persistAuditState])
+
+  const rerunAuditSite = useCallback(async (site: string, overrideUrl?: string) => {
+    if (!window.scraper?.rerunSite) {
+      return { ok: false, error: 'rerunSite API unavailable' }
+    }
+    const siteKey = normalizeSiteKey(site)
+    const normalizedOverride = (overrideUrl || '').trim()
+    const nextOverrides = { ...auditUrlOverrides }
+    if (normalizedOverride) {
+      nextOverrides[siteKey] = normalizedOverride
+    } else {
+      delete nextOverrides[siteKey]
+    }
+    await persistAuditState(auditVerifiedSites, nextOverrides)
+
+    const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
+    const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
+    const runId = createRunId()
+    setAuditBusySite(site)
+    const res = await window.scraper.rerunSite({
+      site,
+      outDir,
+      artifactsDir: `${outDir}/artifacts`,
+      runId,
+      trackerRadarIndex,
+      trackerDbIndex,
+      policyUrlOverride: normalizedOverride || undefined,
+      excludeSameEntity,
+      openaiApiKey: openaiApiKey || undefined,
+      llmModel,
+    })
+    if (!res?.ok) {
+      setAuditBusySite(null)
+      return { ok: false, error: res?.error || 'Failed to start rerun.' }
+    }
+    setHasRun(true)
+    setRunning(true)
+    setProgress(0)
+    return { ok: true }
+  }, [
+    auditUrlOverrides,
+    auditVerifiedSites,
+    persistAuditState,
+    mappingMode,
+    outDir,
+    excludeSameEntity,
+    openaiApiKey,
+    llmModel,
+  ])
+
+  const annotateAuditSite = useCallback(async (site: string) => {
+    if (!window.scraper?.annotateSite) {
+      return { ok: false, error: 'annotateSite API unavailable' }
+    }
+    annotateLogsRef.current = []
+    setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
+    setAnnotateLogs([])
+    setAnnotateRunning(true)
+    setAuditAnnotatingSite(site)
+    const res = await window.scraper.annotateSite({
+      site,
+      outDir,
+      openaiApiKey: openaiApiKey || undefined,
+      llmModel,
+      force: true,
+    })
+    if (!res?.ok) {
+      setAnnotateRunning(false)
+      setAuditAnnotatingSite(null)
+      return { ok: false, error: res?.error || 'Failed to start annotation.' }
+    }
+    return { ok: true }
+  }, [outDir, openaiApiKey, llmModel])
+
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
     if (!window.scraper?.startAnnotate) return
     annotateLogsRef.current = []
+    setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
     setAnnotateLogs([])
     setAnnotateRunning(true)
     const res = await window.scraper.startAnnotate({
@@ -270,6 +418,7 @@ function App() {
     if (!window.scraper?.stopAnnotate) return
     await window.scraper.stopAnnotate()
     setAnnotateRunning(false)
+    setAuditAnnotatingSite(null)
   }
 
   const startRun = async () => {
@@ -284,6 +433,9 @@ function App() {
     if (!resumeMode) {
       setSummaryData(null)
       setExplorerData(null)
+      setResultsData(null)
+      setAuditVerifiedSites([])
+      setAuditUrlOverrides({})
     }
     setOutDir(runOutDir)
     if (window.scraper) {
@@ -372,6 +524,22 @@ function App() {
           const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
           setExplorerData(cleaned)
         }
+        if (activeNav === 'audit') {
+          if (window.scraper?.readResults) {
+            const results = await window.scraper.readResults(`${outDir}/results.jsonl`)
+            if (results?.ok && Array.isArray(results.data)) {
+              const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
+              setResultsData(cleanedResults)
+            }
+          }
+          if (window.scraper?.readAuditState) {
+            const auditState = await window.scraper.readAuditState(outDir)
+            if (auditState?.ok && auditState.data) {
+              setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
+              setAuditUrlOverrides(auditState.data.urlOverrides || {})
+            }
+          }
+        }
         const size = await window.scraper?.getFolderSize(outDir)
         if (size?.ok && typeof size.bytes === 'number') {
           setFolderBytes(size.bytes)
@@ -412,14 +580,24 @@ function App() {
     refreshRuns()
   }, [activeNav, runsRoot])
 
+  useEffect(() => {
+    if (activeNav !== 'audit') return
+    void loadAuditWorkspace()
+  }, [activeNav, outDir, loadAuditWorkspace])
+
   const clearResults = async (includeArtifacts?: boolean) => {
     if (!window.scraper) {
       setSummaryData(null)
       setExplorerData(null)
+      setResultsData(null)
       setStateData(null)
       setHasRun(false)
       setProgress(0)
       setLogs([])
+      setAuditVerifiedSites([])
+      setAuditUrlOverrides({})
+      setAuditBusySite(null)
+      setAuditAnnotatingSite(null)
       return
     }
     setClearing(true)
@@ -429,10 +607,15 @@ function App() {
     } else {
       setSummaryData(null)
       setExplorerData(null)
+      setResultsData(null)
       setStateData(null)
       setHasRun(false)
       setProgress(0)
       setLogs([])
+      setAuditVerifiedSites([])
+      setAuditUrlOverrides({})
+      setAuditBusySite(null)
+      setAuditAnnotatingSite(null)
     }
     setClearing(false)
   }
@@ -453,6 +636,25 @@ function App() {
       setExplorerData(cleaned)
     } else {
       setExplorerData([])
+    }
+    if (window.scraper.readResults) {
+      const results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
+      if (results?.ok && Array.isArray(results.data)) {
+        const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
+        setResultsData(cleanedResults)
+      } else {
+        setResultsData([])
+      }
+    }
+    if (window.scraper.readAuditState) {
+      const auditState = await window.scraper.readAuditState(targetDir)
+      if (auditState?.ok && auditState.data) {
+        setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
+        setAuditUrlOverrides(auditState.data.urlOverrides || {})
+      } else {
+        setAuditVerifiedSites([])
+        setAuditUrlOverrides({})
+      }
     }
     const size = await window.scraper.getFolderSize(targetDir)
     if (size?.ok && typeof size.bytes === 'number') {
@@ -480,11 +682,16 @@ function App() {
     } else {
       setSummaryData(null)
       setExplorerData(null)
+      setResultsData(null)
       setStateData(null)
       setHasRun(false)
       setProgress(0)
       setLogs([])
       setFolderBytes(null)
+      setAuditVerifiedSites([])
+      setAuditUrlOverrides({})
+      setAuditBusySite(null)
+      setAuditAnnotatingSite(null)
     }
     setClearing(false)
   }
@@ -509,6 +716,7 @@ function App() {
 
   const pageTitle = {
     launcher: 'Scraper Launcher',
+    audit: 'Audit Workspace',
     results: 'Results',
     explorer: 'Explorer',
     annotations: 'Annotations',
@@ -519,6 +727,7 @@ function App() {
 
   const pageSubtitle = {
     launcher: 'Minimal control surface for the dataset pipeline.',
+    audit: 'Audit scraped sites, apply manual fixes, and rerun targeted tasks.',
     results: 'Outcome overview of the latest scrape.',
     explorer: 'Browse scraped sites and their policy links.',
     annotations: annotationsTab === 'viewer'
@@ -565,10 +774,28 @@ function App() {
             annotationStats={annotationStats}
             onStartAnnotate={startAnnotate}
             onStopAnnotate={stopAnnotate}
+            annotateRunUsage={annotateRunUsage}
             resumeMode={resumeMode}
             onToggleResumeMode={setResumeMode}
             activeSites={activeSites}
             recentCompleted={recentCompleted}
+          />
+        )}
+        {activeNav === 'audit' && (
+          <AuditWorkspaceView
+            outDir={outDir}
+            records={resultsData || []}
+            verifiedSites={auditVerifiedSites}
+            urlOverrides={auditUrlOverrides}
+            running={running}
+            busySite={auditBusySite}
+            annotatingSite={auditAnnotatingSite}
+            activeSites={activeSites}
+            onReload={() => loadAuditWorkspace()}
+            onMarkVerified={markAuditVerified}
+            onSaveOverride={saveAuditOverride}
+            onRerun={rerunAuditSite}
+            onAnnotate={annotateAuditSite}
           />
         )}
         {activeNav === 'results' && (
@@ -675,6 +902,10 @@ function App() {
             onToggleAutoAnnotate={setAutoAnnotate}
             openaiApiKey={openaiApiKey}
             onOpenaiApiKeyChange={setOpenaiApiKey}
+            llmModel={llmModel}
+            onLlmModelChange={setLlmModel}
+            annotateRunUsage={annotateRunUsage}
+            annotationStats={annotationStats}
             totalCost={totalCost}
             onResetCost={resetCost}
           />

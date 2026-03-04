@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld('scraper', {
   readSummary: (path?: string) => ipcRenderer.invoke('scraper:read-summary', path),
   readState: (path?: string) => ipcRenderer.invoke('scraper:read-state', path),
   readExplorer: (path?: string, limit?: number) => ipcRenderer.invoke('scraper:read-explorer', path, limit),
+  readResults: (path?: string, limit?: number) => ipcRenderer.invoke('scraper:read-results', path, limit),
+  readAuditState: (outDir?: string) => ipcRenderer.invoke('scraper:read-audit-state', outDir),
+  writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) =>
+    ipcRenderer.invoke('scraper:write-audit-state', payload),
   readArtifactText: (options?: { outDir?: string; relativePath?: string }) =>
     ipcRenderer.invoke('scraper:read-artifact-text', options),
   clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) =>
@@ -52,8 +56,10 @@ contextBridge.exposeInMainWorld('scraper', {
     ipcRenderer.removeAllListeners('scraper:exit')
     ipcRenderer.on('scraper:exit', (_evt, data) => callback(data))
   },
+  rerunSite: (options: any) => ipcRenderer.invoke('scraper:rerun-site', options),
   startAnnotate: (options: any) => ipcRenderer.invoke('scraper:start-annotate', options),
   stopAnnotate: () => ipcRenderer.invoke('scraper:stop-annotate'),
+  annotateSite: (options: any) => ipcRenderer.invoke('scraper:annotate-site', options),
   annotationStats: (artifactsDir?: string) => ipcRenderer.invoke('scraper:annotation-stats', artifactsDir),
   readTpCache: (outDir?: string) => ipcRenderer.invoke('scraper:read-tp-cache', outDir),
   onAnnotatorLog: (callback: (event: any) => void) => {

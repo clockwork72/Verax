@@ -17,12 +17,6 @@ function formatExtractionMethod(value?: string | null) {
   return value === 'trafilatura' ? 'Trafilatura' : 'Fallback'
 }
 
-function countWords(text: string) {
-  const trimmed = text.trim()
-  if (!trimmed) return 0
-  return trimmed.split(/\s+/).length
-}
-
 export function ReasoningView({ selection, onGoToConsistency }: ReasoningViewProps) {
   if (!selection) {
     return (
@@ -38,9 +32,6 @@ export function ReasoningView({ selection, onGoToConsistency }: ReasoningViewPro
       </section>
     )
   }
-
-  const fpWords = countWords(selection.firstPartyText)
-  const tpWords = countWords(selection.thirdPartyText)
 
   return (
     <>

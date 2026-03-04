@@ -45,6 +45,43 @@ type ScraperStartOptions = {
   excludeSameEntity?: boolean
 }
 
+type RerunSiteOptions = {
+  site?: string
+  outDir?: string
+  artifactsDir?: string
+  runId?: string
+  trackerRadarIndex?: string
+  trackerDbIndex?: string
+  policyUrlOverride?: string
+  excludeSameEntity?: boolean
+  openaiApiKey?: string
+  llmModel?: string
+}
+
+type AnnotateStartOptions = {
+  artifactsDir?: string
+  openaiApiKey?: string
+  llmModel?: string
+  tokenLimit?: number
+  concurrency?: number
+  force?: boolean
+}
+
+type AnnotateSiteOptions = {
+  site?: string
+  outDir?: string
+  openaiApiKey?: string
+  llmModel?: string
+  tokenLimit?: number
+  force?: boolean
+}
+
+type AuditStateFile = {
+  verifiedSites: string[]
+  urlOverrides: Record<string, string>
+  updatedAt?: string
+}
+
 /**
  * Return the Python interpreter to use for subprocesses.
  *
@@ -139,6 +176,194 @@ function parseJsonl(content: string, limit?: number) {
     }
   }
   return out
+}
+
+function normalizeSiteKey(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function normalizeModelKey(value?: string): string {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return ''
+  return raw.includes('/') ? raw.split('/').pop() || raw : raw
+}
+
+function isDatedModelVariant(key: string, family: string): boolean {
+  if (!key.startsWith(`${family}-`)) return false
+  const suffix = key.slice(family.length + 1)
+  return /^\d/.test(suffix)
+}
+
+function isLowTpmModelKey(key: string): boolean {
+  return (
+    key === 'gpt-4o' ||
+    isDatedModelVariant(key, 'gpt-4o') ||
+    key === 'gpt-4.1' ||
+    isDatedModelVariant(key, 'gpt-4.1')
+  )
+}
+
+function annotatorRateLimitArgs(modelName?: string): string[] {
+  const key = normalizeModelKey(modelName)
+  // Dashboard defaults tuned to avoid TPM spikes on low-TPM models.
+  if (key === 'gpt-4o' || isDatedModelVariant(key, 'gpt-4o')) {
+    return [
+      '--model-tpm', '30000',
+      '--tpm-headroom-ratio', '0.65',
+      '--tpm-safety-factor', '1.30',
+      '--llm-max-output-tokens', '650',
+      '--rate-limit-retries', '12',
+      '--disable-exhaustion-check',
+    ]
+  }
+  if (key === 'gpt-4.1' || isDatedModelVariant(key, 'gpt-4.1')) {
+    return [
+      '--model-tpm', '30000',
+      '--tpm-headroom-ratio', '0.70',
+      '--tpm-safety-factor', '1.25',
+      '--llm-max-output-tokens', '700',
+      '--rate-limit-retries', '10',
+      '--disable-exhaustion-check',
+    ]
+  }
+  if (key === 'gpt-4o-mini' || isDatedModelVariant(key, 'gpt-4o-mini')) {
+    return [
+      '--model-tpm', '200000',
+      '--tpm-headroom-ratio', '0.80',
+      '--tpm-safety-factor', '1.15',
+      '--llm-max-output-tokens', '900',
+      '--rate-limit-retries', '8',
+    ]
+  }
+  if (key === 'gpt-4.1-mini' || isDatedModelVariant(key, 'gpt-4.1-mini')) {
+    return [
+      '--model-tpm', '200000',
+      '--tpm-headroom-ratio', '0.80',
+      '--tpm-safety-factor', '1.15',
+      '--llm-max-output-tokens', '900',
+      '--rate-limit-retries', '8',
+    ]
+  }
+  if (key === 'gpt-4.1-nano' || isDatedModelVariant(key, 'gpt-4.1-nano')) {
+    return [
+      '--model-tpm', '1000000',
+      '--tpm-headroom-ratio', '0.85',
+      '--tpm-safety-factor', '1.10',
+      '--llm-max-output-tokens', '850',
+      '--rate-limit-retries', '8',
+    ]
+  }
+  return []
+}
+
+function getAuditStatePath(outDir?: string): string {
+  return path.join(defaultPaths(outDir).outDir, 'audit_state.json')
+}
+
+async function readAuditStateFile(filePath: string): Promise<AuditStateFile> {
+  if (!fs.existsSync(filePath)) {
+    return { verifiedSites: [], urlOverrides: {} }
+  }
+  try {
+    const raw = await fs.promises.readFile(filePath, 'utf-8')
+    const parsed = JSON.parse(raw)
+    const verifiedRaw = Array.isArray(parsed?.verifiedSites) ? parsed.verifiedSites : []
+    const verifiedSites = verifiedRaw
+      .filter((value: unknown) => typeof value === 'string' && value.trim().length > 0)
+      .map((value: string) => normalizeSiteKey(value))
+    const urlOverridesRaw = (parsed?.urlOverrides && typeof parsed.urlOverrides === 'object')
+      ? parsed.urlOverrides
+      : {}
+    const urlOverrides: Record<string, string> = {}
+    for (const [key, value] of Object.entries(urlOverridesRaw as Record<string, unknown>)) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        urlOverrides[normalizeSiteKey(key)] = value.trim()
+      }
+    }
+    return { verifiedSites, urlOverrides, updatedAt: parsed?.updatedAt }
+  } catch {
+    return { verifiedSites: [], urlOverrides: {} }
+  }
+}
+
+async function launchScraperProcess(
+  args: string[],
+  extraEnv: Record<string, string> = {}
+): Promise<{ ok: boolean; error?: string }> {
+  const pythonCmd = getPythonCmd()
+  try {
+    scraperProcess = spawn(pythonCmd, args, {
+      cwd: REPO_ROOT,
+      env: buildSubprocessEnv(extraEnv),
+    })
+  } catch (error) {
+    scraperProcess = null
+    return { ok: false, error: String(error) }
+  }
+
+  let stdoutBuffer = ''
+  scraperProcess.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk.toString()
+    const lines = stdoutBuffer.split(/\r?\n/)
+    stdoutBuffer = lines.pop() || ''
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const evt = JSON.parse(trimmed)
+        sendToRenderer('scraper:event', evt)
+      } catch {
+        sendToRenderer('scraper:log', { message: trimmed })
+      }
+    }
+  })
+
+  scraperProcess.stderr.on('data', (chunk) => {
+    sendToRenderer('scraper:error', { message: chunk.toString() })
+  })
+
+  scraperProcess.on('error', (error) => {
+    sendToRenderer('scraper:error', { message: String(error) })
+  })
+
+  scraperProcess.on('close', (code, signal) => {
+    sendToRenderer('scraper:exit', { code, signal })
+    scraperProcess = null
+  })
+
+  return { ok: true }
+}
+
+async function launchAnnotatorProcess(
+  args: string[],
+  extraEnv: Record<string, string> = {}
+): Promise<{ ok: boolean; error?: string }> {
+  const pythonCmd = getPythonCmd()
+  try {
+    annotatorProcess = spawn(pythonCmd, args, {
+      cwd: REPO_ROOT,
+      env: buildSubprocessEnv(extraEnv),
+    })
+  } catch (error) {
+    annotatorProcess = null
+    return { ok: false, error: String(error) }
+  }
+
+  annotatorProcess.stdout.on('data', (chunk) => {
+    sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
+  })
+  annotatorProcess.stderr.on('data', (chunk) => {
+    sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
+  })
+  annotatorProcess.on('error', (error) => {
+    sendToRenderer('annotator:log', { message: `Error: ${String(error)}` })
+  })
+  annotatorProcess.on('close', (code, signal) => {
+    sendToRenderer('annotator:exit', { code, signal })
+    annotatorProcess = null
+  })
+
+  return { ok: true }
 }
 
 async function getDirectorySize(dirPath: string): Promise<number> {
@@ -300,6 +525,61 @@ ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?
   }
 })
 
+ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?: number) => {
+  try {
+    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().resultsJsonl
+    if (!fs.existsSync(target)) {
+      return { ok: false, error: 'not_found', path: target }
+    }
+    const raw = await fs.promises.readFile(target, 'utf-8')
+    return { ok: true, data: parseJsonl(raw, limit), path: target }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+})
+
+ipcMain.handle('scraper:read-audit-state', async (_event, outDir?: string) => {
+  try {
+    const statePath = getAuditStatePath(outDir)
+    const data = await readAuditStateFile(statePath)
+    return { ok: true, data, path: statePath }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+})
+
+ipcMain.handle(
+  'scraper:write-audit-state',
+  async (_event, payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => {
+    try {
+      const statePath = getAuditStatePath(payload?.outDir)
+      const dirPath = path.dirname(statePath)
+      await fs.promises.mkdir(dirPath, { recursive: true })
+      const verifiedSites = Array.isArray(payload?.verifiedSites)
+        ? payload.verifiedSites
+            .filter((value) => typeof value === 'string' && value.trim().length > 0)
+            .map((value) => normalizeSiteKey(value))
+        : []
+      const urlOverridesRaw = payload?.urlOverrides || {}
+      const urlOverrides: Record<string, string> = {}
+      for (const [site, url] of Object.entries(urlOverridesRaw)) {
+        if (typeof url === 'string' && url.trim().length > 0) {
+          urlOverrides[normalizeSiteKey(site)] = url.trim()
+        }
+      }
+      const nextState: AuditStateFile = {
+        verifiedSites: Array.from(new Set(verifiedSites)),
+        urlOverrides,
+        updatedAt: new Date().toISOString(),
+      }
+      await fs.promises.writeFile(statePath, JSON.stringify(nextState, null, 2), 'utf-8')
+      return { ok: true, data: nextState, path: statePath }
+    } catch (error) {
+      return { ok: false, error: String(error) }
+    }
+  }
+)
+
 ipcMain.handle('scraper:read-artifact-text', async (_event, options?: { outDir?: string; relativePath?: string }) => {
   try {
     const relativePath = options?.relativePath
@@ -398,7 +678,6 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
   }
 
   const paths = defaultPaths(options.outDir)
-  const pythonCmd = getPythonCmd()
   const args: string[] = [
     '-m',
     'privacy_research_dataset.cli',
@@ -453,47 +732,88 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
     args.push('--exclude-same-entity')
   }
 
-  try {
-    scraperProcess = spawn(pythonCmd, args, {
-      cwd: REPO_ROOT,
-      env: buildSubprocessEnv(),
-    })
-  } catch (error) {
-    scraperProcess = null
-    return { ok: false, error: String(error) }
+  const launched = await launchScraperProcess(args)
+  if (!launched.ok) {
+    return { ok: false, error: launched.error || 'failed_to_start' }
+  }
+  return { ok: true, paths }
+})
+
+ipcMain.handle('scraper:rerun-site', async (_event, options: RerunSiteOptions = {}) => {
+  if (scraperProcess) {
+    return { ok: false, error: 'scraper_already_running' }
+  }
+  if (annotatorProcess) {
+    return { ok: false, error: 'annotator_running' }
   }
 
-  let stdoutBuffer = ''
-  scraperProcess.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString()
-    const lines = stdoutBuffer.split(/\r?\n/)
-    stdoutBuffer = lines.pop() || ''
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      try {
-        const evt = JSON.parse(trimmed)
-        sendToRenderer('scraper:event', evt)
-      } catch (error) {
-        sendToRenderer('scraper:log', { message: trimmed })
-      }
+  const site = String(options.site || '').trim()
+  if (!site) {
+    return { ok: false, error: 'missing_site' }
+  }
+
+  const paths = defaultPaths(options.outDir)
+  const args: string[] = [
+    '-m',
+    'privacy_research_dataset.cli',
+    '--site',
+    site,
+    '--out',
+    paths.resultsJsonl,
+    '--artifacts-dir',
+    options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    '--emit-events',
+    '--state-file',
+    paths.stateJson,
+    '--summary-out',
+    paths.summaryJson,
+    '--explorer-out',
+    paths.explorerJsonl,
+    '--force',
+    '--upsert-by-site',
+    '--concurrency',
+    '1',
+  ]
+
+  if (options.trackerRadarIndex) {
+    const trackerPath = path.resolve(REPO_ROOT, options.trackerRadarIndex)
+    if (fs.existsSync(trackerPath)) {
+      args.push('--tracker-radar-index', trackerPath)
+    } else {
+      sendToRenderer('scraper:error', { message: 'tracker_radar_index_not_found', path: trackerPath })
     }
-  })
+  }
+  if (options.trackerDbIndex) {
+    const trackerDbPath = path.resolve(REPO_ROOT, options.trackerDbIndex)
+    if (fs.existsSync(trackerDbPath)) {
+      args.push('--trackerdb-index', trackerDbPath)
+    } else {
+      sendToRenderer('scraper:error', { message: 'trackerdb_index_not_found', path: trackerDbPath })
+    }
+  }
+  if (options.runId) {
+    args.push('--run-id', options.runId)
+  }
+  if (options.excludeSameEntity) {
+    args.push('--exclude-same-entity')
+  }
+  if (options.policyUrlOverride && options.policyUrlOverride.trim()) {
+    args.push('--policy-url-override', options.policyUrlOverride.trim())
+  }
+  if (options.llmModel && options.llmModel.trim()) {
+    args.push('--llm-model', options.llmModel.trim())
+  }
 
-  scraperProcess.stderr.on('data', (chunk) => {
-    sendToRenderer('scraper:error', { message: chunk.toString() })
-  })
+  const scraperExtra: Record<string, string> = {}
+  if (options.openaiApiKey && options.openaiApiKey.trim()) {
+    scraperExtra.OPENAI_API_KEY = options.openaiApiKey.trim()
+  }
 
-  scraperProcess.on('error', (error) => {
-    sendToRenderer('scraper:error', { message: String(error) })
-  })
-
-  scraperProcess.on('close', (code, signal) => {
-    sendToRenderer('scraper:exit', { code, signal })
-    scraperProcess = null
-  })
-
-  return { ok: true, paths }
+  const launched = await launchScraperProcess(args, scraperExtra)
+  if (!launched.ok) {
+    return { ok: false, error: launched.error || 'failed_to_start' }
+  }
+  return { ok: true, paths, site }
 })
 
 ipcMain.handle('scraper:stop', async () => {
@@ -535,7 +855,13 @@ ipcMain.handle('scraper:clear-results', async (_event, options?: { includeArtifa
   }
 
   const paths = defaultPaths(options?.outDir)
-  const targets = [paths.resultsJsonl, paths.summaryJson, paths.stateJson, paths.explorerJsonl]
+  const targets = [
+    paths.resultsJsonl,
+    paths.summaryJson,
+    paths.stateJson,
+    paths.explorerJsonl,
+    path.join(paths.outDir, 'audit_state.json'),
+  ]
   const removed: string[] = []
   const missing: string[] = []
   const errors: string[] = []
@@ -580,21 +906,11 @@ ipcMain.handle('scraper:delete-output', async (_event, outDir?: string) => {
   }
 })
 
-type AnnotateStartOptions = {
-  artifactsDir?: string
-  openaiApiKey?: string
-  llmModel?: string
-  tokenLimit?: number
-  concurrency?: number
-  force?: boolean
-}
-
 ipcMain.handle('scraper:start-annotate', async (_event, options: AnnotateStartOptions = {}) => {
   if (annotatorProcess) {
     return { ok: false, error: 'annotator_already_running' }
   }
 
-  const pythonCmd = getPythonCmd()
   const artifactsDir = options.artifactsDir
     ? path.resolve(REPO_ROOT, options.artifactsDir)
     : path.join(defaultPaths().outDir, 'artifacts')
@@ -606,35 +922,73 @@ ipcMain.handle('scraper:start-annotate', async (_event, options: AnnotateStartOp
 
   if (options.llmModel) args.push('--llm-model', options.llmModel)
   if (options.tokenLimit) args.push('--token-limit', String(options.tokenLimit))
-  if (options.concurrency) args.push('--concurrency', String(options.concurrency))
+  const modelKey = normalizeModelKey(options.llmModel)
+  const preferredConcurrency = isLowTpmModelKey(modelKey) ? 1 : undefined
+  let requestedConcurrency = options.concurrency || preferredConcurrency
+  if (preferredConcurrency && requestedConcurrency && requestedConcurrency > preferredConcurrency) {
+    requestedConcurrency = preferredConcurrency
+    sendToRenderer('annotator:log', {
+      message: `[info] ${options.llmModel || modelKey}: forcing concurrency ${preferredConcurrency} for TPM stability.`,
+    })
+  }
+  if (requestedConcurrency) args.push('--concurrency', String(requestedConcurrency))
+  args.push(...annotatorRateLimitArgs(options.llmModel))
   if (options.force) args.push('--force')
 
   const annotatorExtra: Record<string, string> = {}
   if (options.openaiApiKey) annotatorExtra.OPENAI_API_KEY = options.openaiApiKey
-  const env = buildSubprocessEnv(annotatorExtra)
+  const launched = await launchAnnotatorProcess(args, annotatorExtra)
+  if (!launched.ok) {
+    return { ok: false, error: launched.error || 'failed_to_start' }
+  }
+  return { ok: true, artifactsDir }
+})
 
-  try {
-    annotatorProcess = spawn(pythonCmd, args, { cwd: REPO_ROOT, env })
-  } catch (error) {
-    annotatorProcess = null
-    return { ok: false, error: String(error) }
+ipcMain.handle('scraper:annotate-site', async (_event, options: AnnotateSiteOptions = {}) => {
+  if (annotatorProcess) {
+    return { ok: false, error: 'annotator_already_running' }
+  }
+  if (scraperProcess) {
+    return { ok: false, error: 'scraper_running' }
   }
 
-  annotatorProcess.stdout.on('data', (chunk) => {
-    sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
-  })
-  annotatorProcess.stderr.on('data', (chunk) => {
-    sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
-  })
-  annotatorProcess.on('error', (error) => {
-    sendToRenderer('annotator:log', { message: `Error: ${String(error)}` })
-  })
-  annotatorProcess.on('close', (code, signal) => {
-    sendToRenderer('annotator:exit', { code, signal })
-    annotatorProcess = null
-  })
+  const site = String(options.site || '').trim()
+  if (!site) {
+    return { ok: false, error: 'missing_site' }
+  }
 
-  return { ok: true, artifactsDir }
+  const paths = defaultPaths(options.outDir)
+  const args: string[] = [
+    '-m',
+    'privacy_research_dataset.annotate_cli',
+    '--artifacts-dir',
+    paths.artifactsDir,
+    '--target-dir',
+    site,
+    '--concurrency',
+    '1',
+  ]
+  if (options.llmModel && options.llmModel.trim()) {
+    args.push('--llm-model', options.llmModel.trim())
+  }
+  args.push(...annotatorRateLimitArgs(options.llmModel))
+  if (typeof options.tokenLimit === 'number' && Number.isFinite(options.tokenLimit)) {
+    args.push('--token-limit', String(options.tokenLimit))
+  }
+  if (options.force !== false) {
+    args.push('--force')
+  }
+
+  const annotatorExtra: Record<string, string> = {}
+  if (options.openaiApiKey && options.openaiApiKey.trim()) {
+    annotatorExtra.OPENAI_API_KEY = options.openaiApiKey.trim()
+  }
+
+  const launched = await launchAnnotatorProcess(args, annotatorExtra)
+  if (!launched.ok) {
+    return { ok: false, error: launched.error || 'failed_to_start' }
+  }
+  return { ok: true, artifactsDir: paths.artifactsDir, site }
 })
 
 ipcMain.handle('scraper:stop-annotate', async () => {

@@ -1,4 +1,6 @@
+import { useMemo, useState } from 'react'
 import { Theme } from '../../types'
+import { estimateAnnotationCost, formatUsd, pricingForModel, TextSizeUnit } from '../../utils/annotationCost'
 
 type SettingsViewProps = {
   theme: Theme
@@ -18,9 +20,42 @@ type SettingsViewProps = {
   onToggleAutoAnnotate?: (v: boolean) => void
   openaiApiKey?: string
   onOpenaiApiKeyChange?: (v: string) => void
+  llmModel?: string
+  onLlmModelChange?: (v: string) => void
+  annotateRunUsage?: { tokensIn: number; tokensOut: number }
+  annotationStats?: any
   totalCost?: number
   onResetCost?: () => void
 }
+
+function normalizeModelKey(value?: string): string {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return ''
+  return raw.includes('/') ? raw.split('/').pop() || raw : raw
+}
+
+function isDatedModelVariant(key: string, family: string): boolean {
+  if (!key.startsWith(`${family}-`)) return false
+  const suffix = key.slice(family.length + 1)
+  return /^\d/.test(suffix)
+}
+
+function isLowTpmModelKey(model?: string): boolean {
+  const key = normalizeModelKey(model)
+  return (
+    key === 'gpt-4o' ||
+    isDatedModelVariant(key, 'gpt-4o') ||
+    key === 'gpt-4.1' ||
+    isDatedModelVariant(key, 'gpt-4.1')
+  )
+}
+
+const MODEL_OPTIONS = [
+  { value: 'gpt-4o-mini', label: 'gpt-4o-mini', price: '$0.15 / $0.60 per 1M tokens' },
+  { value: 'gpt-4o', label: 'gpt-4o', price: '$2.50 / $10.00 per 1M tokens' },
+  { value: 'gpt-4-turbo', label: 'gpt-4-turbo', price: '$10.00 / $30.00 per 1M tokens' },
+  { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo', price: '$0.50 / $1.50 per 1M tokens' },
+]
 
 function ToggleRow({
   label,
@@ -70,9 +105,37 @@ export function SettingsView({
   onToggleAutoAnnotate,
   openaiApiKey = '',
   onOpenaiApiKeyChange,
+  llmModel = 'gpt-4o-mini',
+  onLlmModelChange,
+  annotateRunUsage,
+  annotationStats,
   totalCost = 0,
   onResetCost,
 }: SettingsViewProps) {
+  const [plannerSizeValue, setPlannerSizeValue] = useState('12000')
+  const [plannerSizeUnit, setPlannerSizeUnit] = useState<TextSizeUnit>('words')
+  const [plannerSites, setPlannerSites] = useState('1')
+
+  const runTokensIn = annotateRunUsage?.tokensIn || 0
+  const runTokensOut = annotateRunUsage?.tokensOut || 0
+  const modelRates = pricingForModel(llmModel)
+  const observedRunCost = (runTokensIn / 1e6) * modelRates.input + (runTokensOut / 1e6) * modelRates.output
+  const exhaustionDisabledForModel = isLowTpmModelKey(llmModel)
+  const plannerEstimate = useMemo(() => estimateAnnotationCost({
+    model: llmModel,
+    textSizeValue: Number(plannerSizeValue) || 0,
+    textSizeUnit: plannerSizeUnit,
+    tokenLimit: 500,
+    disableExhaustionCheck: exhaustionDisabledForModel,
+  }), [llmModel, plannerSizeValue, plannerSizeUnit, exhaustionDisabledForModel])
+  const plannerSiteCount = Math.max(
+    1,
+    Number(plannerSites) || Number(annotationStats?.total_sites) || 1
+  )
+  const plannerLow = plannerEstimate.low.usd * plannerSiteCount
+  const plannerMid = plannerEstimate.typical.usd * plannerSiteCount
+  const plannerHigh = plannerEstimate.high.usd * plannerSiteCount
+
   return (
     <>
       <section className="card rounded-2xl p-6">
@@ -212,24 +275,131 @@ export function SettingsView({
       <section className="card rounded-2xl p-6">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Billing</p>
-          <h3 className="text-lg font-semibold">API Cost</h3>
+          <h3 className="text-lg font-semibold">OpenAI Cost & Planning</h3>
           <p className="mt-1 text-xs text-[var(--muted-text)]">
-            Accumulated OpenAI API cost across all annotation runs. Stored locally, not reset between sessions.
+            Track observed annotation usage and estimate full Stage-2 extraction cost by model and policy size.
           </p>
         </div>
-        <div className="mt-4 flex items-center justify-between rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
-          <div>
-            <span className="text-2xl font-semibold tabular-nums text-[var(--color-text)]">
-              ${totalCost.toFixed(4)}
-            </span>
-            <p className="mt-0.5 text-[10px] text-[var(--muted-text)]">total spent since last reset</p>
+        <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+          <div className="rounded-2xl border border-[var(--border-soft)] bg-gradient-to-br from-black/30 to-black/10 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">OpenAI Cost Tracking</p>
+                <h4 className="text-base font-semibold">Observed usage</h4>
+              </div>
+              <select
+                className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-xs text-white"
+                value={llmModel}
+                onChange={(e) => onLlmModelChange?.(e.target.value)}
+              >
+                {MODEL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="mt-1 text-[10px] text-[var(--muted-text)]">
+              Pricing: input ${modelRates.input.toFixed(2)} / output ${modelRates.output.toFixed(2)} per 1M tokens.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 p-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Run input</p>
+                <p className="mt-1 font-mono text-lg text-[var(--color-text)]">{runTokensIn.toLocaleString()}</p>
+                <p className="text-[10px] text-[var(--muted-text)]">prompt tokens</p>
+              </div>
+              <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 p-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Run output</p>
+                <p className="mt-1 font-mono text-lg text-[var(--color-text)]">{runTokensOut.toLocaleString()}</p>
+                <p className="text-[10px] text-[var(--muted-text)]">completion tokens</p>
+              </div>
+              <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 p-3">
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Run cost</p>
+                <p className="mt-1 text-lg font-semibold text-[var(--color-primary)]">{formatUsd(observedRunCost, 4)}</p>
+                <p className="text-[10px] text-[var(--muted-text)]">derived from observed tokens</p>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-between rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Lifetime total</p>
+                <p className="text-sm font-semibold text-[var(--color-text)]">{formatUsd(totalCost, 4)}</p>
+              </div>
+              <button
+                className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] hover:border-[var(--color-danger)] hover:text-[var(--color-danger)]"
+                onClick={() => onResetCost?.()}
+              >
+                Reset
+              </button>
+            </div>
           </div>
-          <button
-            className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] hover:border-[var(--color-danger)] hover:text-[var(--color-danger)]"
-            onClick={() => onResetCost?.()}
-          >
-            Reset
-          </button>
+
+          <div className="rounded-2xl border border-[var(--chip-ring)] bg-gradient-to-br from-[var(--chip-bg)] to-transparent p-4">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">Cost Planner</p>
+            <h4 className="text-base font-semibold">Expected extraction price</h4>
+            <p className="mt-1 text-[11px] text-[var(--muted-text)]">
+              Estimate Stage-2 statement extraction + annotation cost from policy text size.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                min={1}
+                className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
+                value={plannerSizeValue}
+                onChange={(e) => setPlannerSizeValue(e.target.value)}
+                placeholder="Text size"
+              />
+              <select
+                className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
+                value={plannerSizeUnit}
+                onChange={(e) => setPlannerSizeUnit(e.target.value as TextSizeUnit)}
+              >
+                <option value="words">words</option>
+                <option value="chars">chars</option>
+                <option value="tokens">tokens</option>
+                <option value="kb">KB</option>
+              </select>
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-[var(--muted-text)]">Sites</span>
+              <input
+                type="number"
+                min={1}
+                className="focusable w-24 rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
+                value={plannerSites}
+                onChange={(e) => setPlannerSites(e.target.value)}
+              />
+              {annotationStats?.total_sites > 0 && (
+                <span className="text-[10px] text-[var(--muted-text)]">
+                  Detected: {annotationStats.total_sites}
+                </span>
+              )}
+            </div>
+            <div className="mt-3 grid gap-2 text-xs">
+              <div className="flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-black/20 px-3 py-2">
+                <span className="text-[var(--muted-text)]">Per policy (typical)</span>
+                <span className="font-semibold text-[var(--color-text)]">{formatUsd(plannerEstimate.typical.usd, 4)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-black/20 px-3 py-2">
+                <span className="text-[var(--muted-text)]">{plannerSiteCount} policies (range)</span>
+                <span className="font-semibold text-[var(--color-text)]">
+                  {formatUsd(plannerLow, 2)} - {formatUsd(plannerHigh, 2)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-black/20 px-3 py-2">
+                <span className="text-[var(--muted-text)]">Best estimate ({plannerSiteCount} sites)</span>
+                <span className="font-semibold text-[var(--color-primary)]">{formatUsd(plannerMid, 2)}</span>
+              </div>
+            </div>
+            <p className="mt-3 text-[10px] text-[var(--muted-text)]">
+              Inputs: ~{plannerEstimate.inputTokens.toLocaleString()} tokens, ~{plannerEstimate.chunkCount} chunks.
+              {exhaustionDisabledForModel
+                ? ' Exhaustion checks are disabled for this model profile.'
+                : ' Exhaustion checks are included in this estimate.'}
+            </p>
+            <p className="mt-1 text-[10px] text-[var(--muted-text)]">
+              {MODEL_OPTIONS.find((m) => m.value === llmModel)?.price || ''}
+            </p>
+          </div>
         </div>
       </section>
     </>

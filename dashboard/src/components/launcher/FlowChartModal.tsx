@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import ReactFlow, { Background, Controls, Node, Edge, NodeProps, MarkerType, Handle, Position } from 'reactflow'
+import ReactFlow, { Background, BackgroundVariant, Controls, Node, Edge, NodeProps, MarkerType, Handle, Position } from 'reactflow'
 
 type FlowChartModalProps = {
   open: boolean
@@ -155,7 +155,7 @@ function InfoNode({ data }: NodeProps<NodeData>) {
   return <NodeShell title={data.title} subtitle={data.subtitle} width={240} source target />
 }
 
-function OutputNode({ data }: NodeProps<NodeData>) {
+function OutputNode(_: NodeProps<NodeData>) {
   return (
     <NodeShell title="Outputs" subtitle="Artifacts per run" width={240} target>
       <div className="text-[11px] text-[var(--muted-text)]">results.jsonl</div>
@@ -327,7 +327,7 @@ export function FlowChartModal({
             }}
           >
             <Controls />
-            <Background variant="lines" gap={22} size={1} color="var(--border-soft)" />
+            <Background variant={BackgroundVariant.Lines} gap={22} size={1} color="var(--border-soft)" />
           </ReactFlow>
         </div>
       </div>

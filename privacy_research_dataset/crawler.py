@@ -362,6 +362,7 @@ async def _fetch_best_policy(
     *,
     max_candidates: int = 10,
     max_hub_pages: int = 2,
+    policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
 ) -> dict[str, Any]:
     site_et = etld1(site_url) or ""
 
@@ -372,13 +373,17 @@ async def _fetch_best_policy(
     best_key: tuple[float, int] | None = None
 
     async def try_candidate(c: LinkCandidate) -> dict[str, Any]:
-        res = await client.fetch(
-            c.url,
-            capture_network=False,
-            remove_overlays=True,
-            magic=False,
-            scan_full_page=_should_scan_full_page_policy(c.url),
-        )
+        if policy_fetcher is not None:
+            # Reuse previously fetched policy URLs across sites/third-parties.
+            res = await policy_fetcher(c.url)
+        else:
+            res = await client.fetch(
+                c.url,
+                capture_network=False,
+                remove_overlays=True,
+                magic=False,
+                scan_full_page=_should_scan_full_page_policy(c.url),
+            )
         rec = dict(
             url=c.url,
             anchor_text=c.anchor_text,
@@ -506,6 +511,8 @@ async def process_site(
     run_id: str | None = None,
     stage_callback: Callable[[str], None] | None = None,
     exclude_same_entity: bool = False,
+    first_party_policy_url_override: str | None = None,
+    first_party_policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
     third_party_policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
     openai_client: "_openai_t.AsyncOpenAI | None" = None,
     llm_model: str = "gpt-4o-mini",
@@ -563,10 +570,48 @@ async def process_site(
     if stage_callback:
         stage_callback("policy_discovery")
     t_policy = time.perf_counter()
-    policy_info = await _fetch_best_policy(client, home.url, home.cleaned_html)
+    chosen_full: dict[str, Any] | None = None
+    manual_policy_url_override = (first_party_policy_url_override or "").strip() or None
+
+    if manual_policy_url_override:
+        if first_party_policy_fetcher is not None:
+            override_res = await first_party_policy_fetcher(manual_policy_url_override)
+        else:
+            override_res = await client.fetch(
+                manual_policy_url_override,
+                capture_network=False,
+                remove_overlays=True,
+                magic=False,
+                scan_full_page=_should_scan_full_page_policy(manual_policy_url_override),
+            )
+        override_text = (override_res.text or "").strip()
+        if override_res.success and override_text:
+            chosen_full = {
+                "url": override_res.url or manual_policy_url_override,
+                "status_code": override_res.status_code,
+                "likeliness_score": policy_likeliness_score(override_text),
+                "text_len": len(override_text),
+                "text": override_text,
+                "cleaned_html": override_res.cleaned_html,
+                "raw_html": override_res.raw_html,
+                "text_extraction_method": override_res.text_extraction_method or "fallback",
+            }
+        else:
+            warn(
+                f"[{etld1(home.url)}] Manual policy URL override fetch failed "
+                f"({manual_policy_url_override}); falling back to automatic discovery."
+            )
+
+    if chosen_full is None:
+        policy_info = await _fetch_best_policy(
+            client,
+            home.url,
+            home.cleaned_html,
+            policy_fetcher=first_party_policy_fetcher,
+        )
+        chosen_full = policy_info.get("_chosen_full")
     policy_fetch_ms = int((time.perf_counter() - t_policy) * 1000)
 
-    chosen_full = policy_info.get("_chosen_full")
     if chosen_full is None and home.text:
         # If the homepage itself looks like a privacy policy, accept it.
         home_text = (home.text or "").strip()
@@ -791,6 +836,7 @@ async def process_site(
         "policy_fetch_ms": policy_fetch_ms,
         "third_party_extract_ms": third_party_extract_ms,
         "third_party_policy_fetch_ms": third_party_policy_fetch_ms,
+        "first_party_policy_url_override": manual_policy_url_override,
         "total_ms": int((time.perf_counter() - t_total) * 1000),
         "run_id": run_id,
         "started_at": started_at,

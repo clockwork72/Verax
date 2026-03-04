@@ -15,9 +15,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 # Suppress Pydantic serialization warnings from LiteLLM's disk cache
 # (schema version mismatch between cached response models and current LiteLLM internals)
@@ -49,12 +51,49 @@ def _parse_args() -> argparse.Namespace:
         help="Max tokens per document chunk sent to the LLM (default: 500).",
     )
     p.add_argument(
+        "--model-tpm", type=int, default=None,
+        help=(
+            "Override model TPM budget used by local throttling. "
+            "If omitted, defaults are model-specific (e.g. gpt-4o=30000)."
+        ),
+    )
+    p.add_argument(
+        "--llm-max-output-tokens", type=int, default=None,
+        help=(
+            "Cap max output tokens per LLM extraction call. "
+            "If omitted, uses model-specific defaults."
+        ),
+    )
+    p.add_argument(
+        "--rate-limit-retries", type=int, default=8,
+        help="Retries for LLM rate-limit handling (default: 8).",
+    )
+    p.add_argument(
+        "--tpm-headroom-ratio", type=float, default=0.75,
+        help="Use only this fraction of model TPM locally to avoid hitting provider limits (default: 0.75).",
+    )
+    p.add_argument(
+        "--tpm-safety-factor", type=float, default=1.2,
+        help="Multiply estimated request tokens by this factor before throttling (default: 1.2).",
+    )
+    p.add_argument(
+        "--disable-exhaustion-check", action="store_true",
+        help="Skip YES/NO exhaustion checks to reduce extra LLM calls and TPM pressure.",
+    )
+    p.add_argument(
         "--concurrency", type=int, default=3,
         help="Number of sites to annotate in parallel (default: 3).",
     )
     p.add_argument(
         "--force", action="store_true",
         help="Re-annotate even if policy_statements.jsonl already exists.",
+    )
+    p.add_argument(
+        "--target-dir", action="append", default=None,
+        help=(
+            "Annotate only these policy directories (relative to --artifacts-dir), "
+            "e.g. 'twitter.com' or 'twitter.com/third_party/google.com'. Repeatable."
+        ),
     )
     p.add_argument(
         "--verbose", action="store_true",
@@ -101,10 +140,144 @@ def _find_all_policy_dirs(artifacts_dir: Path) -> list[Path]:
     return result
 
 
+def _resolve_target_dirs(artifacts_dir: Path, targets: list[str] | None) -> list[Path]:
+    if not targets:
+        return []
+    root = artifacts_dir.resolve()
+    selected: list[Path] = []
+    seen: set[Path] = set()
+    for raw in targets:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        target = (artifacts_dir / value).resolve()
+        if target != root and not str(target).startswith(str(root) + os.sep):
+            warn(f"[skip] target-dir outside artifacts-dir: {value}")
+            continue
+        if not target.is_dir():
+            warn(f"[skip] target-dir not found: {value}")
+            continue
+        if target in seen:
+            continue
+        seen.add(target)
+        selected.append(target)
+    return selected
+
+
+def _normalize_policy_url(url: str | None) -> str | None:
+    u = (url or "").strip()
+    if not u:
+        return None
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        host = (p.hostname or "").lower()
+        if not host:
+            return u
+        port = p.port
+        default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        netloc = host if (port is None or default_port) else f"{host}:{port}"
+        path = p.path or "/"
+        return urlunparse((scheme, netloc, path, "", p.query, ""))
+    except Exception:
+        return u
+
+
+def _policy_source_url(policy_dir: Path) -> str | None:
+    """Resolve the canonical source URL for a policy directory, if available."""
+    extraction_path = policy_dir / "policy.extraction.json"
+    if extraction_path.exists():
+        try:
+            data = json.loads(extraction_path.read_text(encoding="utf-8"))
+            source = data.get("source_url")
+            if isinstance(source, str) and source.strip():
+                return _normalize_policy_url(source)
+        except Exception:
+            pass
+
+    # Backward compatibility with older artifact layouts.
+    url_txt = policy_dir / "policy.url.txt"
+    if url_txt.exists():
+        try:
+            source = url_txt.read_text(encoding="utf-8").strip()
+            if source:
+                return _normalize_policy_url(source)
+        except Exception:
+            pass
+
+    return None
+
+
+def _has_annotation_outputs(policy_dir: Path) -> bool:
+    return (policy_dir / "annotation_complete.json").exists() or (policy_dir / "policy_statements.jsonl").exists()
+
+
+def _copy_annotation_outputs(
+    src_dir: Path,
+    dst_dir: Path,
+    *,
+    model_name: str,
+    policy_url: str | None = None,
+) -> bool:
+    """Copy annotation outputs from src_dir to dst_dir and write a completion marker."""
+    source_files = [
+        src_dir / "document.json",
+        src_dir / "policy_statements.jsonl",
+        src_dir / "policy_statements_annotated.jsonl",
+    ]
+    if not all(p.exists() for p in source_files):
+        return False
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for src in source_files:
+        shutil.copy2(src, dst_dir / src.name)
+
+    meta: dict = {
+        "status": "ok",
+        "model": model_name,
+        "annotated_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "reused_from": str(src_dir),
+    }
+    if policy_url:
+        meta["source_policy_url"] = policy_url
+
+    src_marker = src_dir / "annotation_complete.json"
+    if src_marker.exists():
+        try:
+            src_meta = json.loads(src_marker.read_text(encoding="utf-8"))
+            if isinstance(src_meta.get("model"), str) and src_meta["model"].strip():
+                meta["model"] = src_meta["model"]
+            for key in ("statements", "chunks", "blocks"):
+                if key in src_meta:
+                    meta[key] = src_meta[key]
+        except Exception:
+            pass
+
+    if "statements" not in meta:
+        try:
+            lines = (dst_dir / "policy_statements.jsonl").read_text(encoding="utf-8").splitlines()
+            meta["statements"] = sum(1 for ln in lines if ln.strip())
+        except Exception:
+            meta["statements"] = 0
+
+    (dst_dir / "annotation_complete.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return True
+
+
 def _annotate_site(
     site_dir: Path,
     model_name: str,
     token_limit: int,
+    *,
+    model_tpm: int | None = None,
+    llm_max_output_tokens: int | None = None,
+    rate_limit_retries: int = 8,
+    tpm_headroom_ratio: float = 0.75,
+    tpm_safety_factor: float = 1.2,
+    disable_exhaustion_check: bool = False,
 ) -> dict:
     """Synchronous: preprocess + annotate one site. Called from a thread executor."""
     policy_text = (site_dir / "policy.txt").read_text(encoding="utf-8").strip()
@@ -117,7 +290,15 @@ def _annotate_site(
     doc_path = site_dir / "document.json"
     doc_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    annotator = Annotator(model_name=model_name)
+    annotator = Annotator(
+        model_name=model_name,
+        model_tpm=model_tpm,
+        llm_max_output_tokens=llm_max_output_tokens,
+        rate_limit_retries=rate_limit_retries,
+        tpm_headroom_ratio=tpm_headroom_ratio,
+        tpm_safety_factor=tpm_safety_factor,
+        disable_exhaustion_check=disable_exhaustion_check,
+    )
     # policy_statements.jsonl          — original format (chunk_index + statement only)
     # policy_statements_annotated.jsonl — includes source_text before the statement
     statements_path = site_dir / "policy_statements.jsonl"
@@ -195,6 +376,17 @@ async def _run(args: argparse.Namespace) -> None:
         return
 
     all_dirs = _find_all_policy_dirs(artifacts_dir)
+    if args.target_dir:
+        targets = _resolve_target_dirs(artifacts_dir, args.target_dir)
+        if not targets:
+            warn("No valid --target-dir entries resolved; nothing to annotate.")
+            return
+        target_set = {p.resolve() for p in targets}
+        all_dirs = [d for d in all_dirs if d.resolve() in target_set]
+        if not all_dirs:
+            warn("No annotatable policy.txt found for the selected --target-dir entries.")
+            return
+
     if not all_dirs:
         warn(f"No policy directories with policy.txt found in {artifacts_dir}")
         return
@@ -212,23 +404,89 @@ async def _run(args: argparse.Namespace) -> None:
             return f"{d.parent.parent.name}/3p/{d.name}"
         return d.name
 
+    policy_groups: dict[str, list[Path]] = {}
+    no_url_dirs: list[Path] = []
+    for d in all_dirs:
+        purl = _policy_source_url(d)
+        if purl:
+            policy_groups.setdefault(purl, []).append(d)
+        else:
+            no_url_dirs.append(d)
+
+    leaders: list[Path] = []
+    leader_set: set[Path] = set()
+    immediate_reuse: list[tuple[Path, Path, str]] = []
+    deferred_reuse: dict[Path, list[tuple[Path, str]]] = {}
+
+    def add_leader(d: Path) -> None:
+        if d not in leader_set:
+            leader_set.add(d)
+            leaders.append(d)
+
+    for d in no_url_dirs:
+        if args.force or not _has_annotation_outputs(d):
+            add_leader(d)
+
+    for policy_url, dirs in policy_groups.items():
+        dirs_sorted = sorted(dirs)
+        if args.force:
+            leader = dirs_sorted[0]
+            add_leader(leader)
+            for dup in dirs_sorted[1:]:
+                deferred_reuse.setdefault(leader, []).append((dup, policy_url))
+            continue
+
+        existing = next((d for d in dirs_sorted if _has_annotation_outputs(d)), None)
+        if existing is not None:
+            for dup in dirs_sorted:
+                if dup == existing or _has_annotation_outputs(dup):
+                    continue
+                immediate_reuse.append((existing, dup, policy_url))
+            continue
+
+        leader = dirs_sorted[0]
+        add_leader(leader)
+        for dup in dirs_sorted[1:]:
+            deferred_reuse.setdefault(leader, []).append((dup, policy_url))
+
+    reused_now = 0
+    for src, dst, policy_url in immediate_reuse:
+        if _copy_annotation_outputs(src, dst, model_name=args.llm_model, policy_url=policy_url):
+            reused_now += 1
+            log(f"[reuse] {_label(dst)} — reused annotation from {_label(src)} (same policy URL)")
+        else:
+            warn(f"[reuse-miss] {_label(dst)} — failed to copy from {_label(src)}, will annotate directly.")
+            add_leader(dst)
+
+    if reused_now:
+        log(f"Reused annotations for {reused_now} duplicate policy directory(ies).")
+    if deferred_reuse:
+        pending = sum(len(v) for v in deferred_reuse.values())
+        log(f"Will reuse annotations for {pending} additional duplicate policy directory(ies) after leader annotation.")
+
     async def process_one(site_dir: Path) -> None:
         async with sem:
             label = _label(site_dir)
             # Primary marker: annotation_complete.json; fallback: policy_statements.jsonl (legacy).
-            if (site_dir / "annotation_complete.json").exists() and not args.force:
+            if _has_annotation_outputs(site_dir) and not args.force:
                 log(f"[skip] {label} — already annotated (use --force to re-annotate)")
-                return
-            stmts_path = site_dir / "policy_statements.jsonl"
-            if stmts_path.exists() and not args.force:
-                log(f"[skip] {label} — policy_statements.jsonl exists (use --force to re-annotate)")
                 return
 
             log(f"[start] {label}")
             try:
                 result = await loop.run_in_executor(
                     None,
-                    lambda d=site_dir: _annotate_site(d, args.llm_model, args.token_limit),
+                    lambda d=site_dir: _annotate_site(
+                        d,
+                        args.llm_model,
+                        args.token_limit,
+                        model_tpm=args.model_tpm,
+                        llm_max_output_tokens=args.llm_max_output_tokens,
+                        rate_limit_retries=args.rate_limit_retries,
+                        tpm_headroom_ratio=args.tpm_headroom_ratio,
+                        tpm_safety_factor=args.tpm_safety_factor,
+                        disable_exhaustion_check=args.disable_exhaustion_check,
+                    ),
                 )
                 if result["status"] == "ok":
                     log(
@@ -236,12 +494,26 @@ async def _run(args: argparse.Namespace) -> None:
                         f"from {result['chunks']} chunks ({result['blocks']} blocks) "
                         f"| {result['tokens_in']:,}↑/{result['tokens_out']:,}↓ tokens"
                     )
+
+                    for dup_dir, policy_url in deferred_reuse.get(site_dir, []):
+                        if (not args.force) and _has_annotation_outputs(dup_dir):
+                            continue
+                        if _copy_annotation_outputs(site_dir, dup_dir, model_name=args.llm_model, policy_url=policy_url):
+                            log(
+                                f"[reuse] {_label(dup_dir)} — reused annotation from {label} "
+                                f"(same policy URL)"
+                            )
+                        else:
+                            warn(
+                                f"[reuse-miss] {_label(dup_dir)} — failed to copy outputs "
+                                f"from {label}; leaving unannotated."
+                            )
                 else:
                     warn(f"[skip] {label} — {result['status']}")
             except Exception as e:
                 warn(f"[error] {label}: {e}")
 
-    await asyncio.gather(*[process_one(d) for d in all_dirs])
+    await asyncio.gather(*[process_one(d) for d in leaders])
     log("Annotation complete.")
 
 

@@ -12,7 +12,9 @@ import logging
 import os
 import re
 import textwrap
+import time
 import warnings
+from collections import deque
 from functools import reduce
 from typing import Callable, Generator, Sequence, TypeAlias
 
@@ -39,6 +41,13 @@ def enable_litellm_disk_cache() -> None:
         litellm.enable_cache(type="disk")
     except Exception:
         pass  # diskcache not installed or other issue; proceed without cache
+    # LiteLLM sometimes prints ANSI-colored debug/help lines on errors.
+    # Prefer concise logs in long-running batch annotation jobs.
+    try:
+        if hasattr(litellm, "suppress_debug_info"):
+            litellm.suppress_debug_info = True
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Document preprocessor (adapted from document_preprocessor.py)
@@ -360,6 +369,82 @@ Output 5:
 []
 '''
 
+_EXHAUSTION_PROMPT = """\
+You are validating extraction completeness for privacy-policy statements.
+Given:
+1) a policy excerpt
+2) statements already extracted from it
+Answer strictly with one token: YES or NO.
+- YES = there are still missing statements about personal-data processing.
+- NO = no additional statements are missing.
+Do not add any other text.
+"""
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+_DEFAULT_MODEL_TPM: dict[str, int] = {
+    "gpt-4o": 30000,
+    "gpt-4o-mini": 200000,
+    "gpt-4.1": 30000,
+    "gpt-4.1-mini": 200000,
+    "gpt-4.1-nano": 1000000,
+}
+
+_DEFAULT_MODEL_MAX_OUTPUT: dict[str, int] = {
+    "gpt-4o": 900,
+    "gpt-4o-mini": 1200,
+    "gpt-4.1": 900,
+    "gpt-4.1-mini": 1200,
+    "gpt-4.1-nano": 1200,
+}
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", value or "")
+
+
+def _model_key(model_name: str) -> str:
+    m = (model_name or "").strip().lower()
+    if "/" in m:
+        m = m.split("/")[-1]
+    return m
+
+
+def _resolve_model_tpm(model_name: str, explicit: int | None = None) -> int | None:
+    if explicit is not None and explicit > 0:
+        return int(explicit)
+    key = _model_key(model_name)
+    exact_env = os.getenv(f"PRIVACY_DATASET_TPM_{re.sub(r'[^A-Za-z0-9]', '_', key).upper()}")
+    if exact_env:
+        try:
+            v = int(exact_env)
+            if v > 0:
+                return v
+        except Exception:
+            pass
+    for prefix, tpm in _DEFAULT_MODEL_TPM.items():
+        if key == prefix or key.startswith(prefix + "-"):
+            return tpm
+    fallback_env = os.getenv("PRIVACY_DATASET_DEFAULT_TPM")
+    if fallback_env:
+        try:
+            v = int(fallback_env)
+            if v > 0:
+                return v
+        except Exception:
+            pass
+    return None
+
+
+def _resolve_model_max_output(model_name: str, explicit: int | None = None) -> int:
+    if explicit is not None and explicit > 0:
+        return int(explicit)
+    key = _model_key(model_name)
+    for prefix, max_out in _DEFAULT_MODEL_MAX_OUTPUT.items():
+        if key == prefix or key.startswith(prefix + "-"):
+            return max_out
+    return 900
+
 
 def get_inflections(word: str) -> set[str]:
     """Get all possible inflections of a word."""
@@ -474,7 +559,7 @@ def match_parameters_to_blocks(
                     if phrase_id[1] != value:
                         logging.info("Value %r matched to %r", value, phrase_id)
                 else:
-                    logging.warning("Value %r not found in any blocks", value)
+                    logging.info("Value %r not found in any blocks", value)
 
     return transformed  # type: ignore
 
@@ -517,11 +602,190 @@ class Annotator:
     globally across the entire document.
     """
 
-    def __init__(self, model_name: str = "gpt-4o-mini") -> None:
+    def __init__(
+        self,
+        model_name: str = "gpt-4o-mini",
+        *,
+        model_tpm: int | None = None,
+        llm_max_output_tokens: int | None = None,
+        rate_limit_retries: int = 8,
+        tpm_headroom_ratio: float = 0.75,
+        tpm_safety_factor: float = 1.2,
+        disable_exhaustion_check: bool = False,
+    ) -> None:
         self.model_name = model_name
         self.reflection_rounds = 3
         self.error_retries = 3
+        self.rate_limit_retries = max(1, int(rate_limit_retries))
+        self.model_tpm = _resolve_model_tpm(model_name, explicit=model_tpm)
+        env_headroom = os.getenv("PRIVACY_DATASET_TPM_HEADROOM")
+        env_safety = os.getenv("PRIVACY_DATASET_TPM_SAFETY_FACTOR")
+        if env_headroom:
+            try:
+                tpm_headroom_ratio = float(env_headroom)
+            except Exception:
+                pass
+        if env_safety:
+            try:
+                tpm_safety_factor = float(env_safety)
+            except Exception:
+                pass
+        self.tpm_headroom_ratio = min(1.0, max(0.3, float(tpm_headroom_ratio)))
+        self.tpm_safety_factor = max(1.0, float(tpm_safety_factor))
+        self.disable_exhaustion_check = bool(disable_exhaustion_check)
+        self.effective_model_tpm = (
+            int(self.model_tpm * self.tpm_headroom_ratio)
+            if self.model_tpm and self.model_tpm > 0
+            else None
+        )
+        self.llm_max_output_tokens = _resolve_model_max_output(model_name, explicit=llm_max_output_tokens)
         self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self._token_events: deque[tuple[float, int]] = deque()
+        self._provider_used_hint: int = 0
+        self._provider_used_hint_ts: float = 0.0
+        logging.info(
+            "Annotator model=%s max_output_tokens=%d model_tpm=%s effective_tpm=%s headroom=%.2f safety=%.2f exhaustion_check=%s",
+            self.model_name,
+            self.llm_max_output_tokens,
+            (str(self.model_tpm) if self.model_tpm else "unlimited"),
+            (str(self.effective_model_tpm) if self.effective_model_tpm else "unlimited"),
+            self.tpm_headroom_ratio,
+            self.tpm_safety_factor,
+            ("off" if self.disable_exhaustion_check else "on"),
+        )
+
+    def _estimate_prompt_tokens(self, messages: list[dict[str, str]]) -> int:
+        try:
+            return int(litellm.token_counter(model=self.model_name, messages=messages))
+        except Exception:
+            chars = sum(len(str(m.get("content") or "")) for m in messages)
+            return max(1, chars // 4)
+
+    def _prune_token_window(self, now: float) -> None:
+        cutoff = now - 60.0
+        while self._token_events and self._token_events[0][0] < cutoff:
+            self._token_events.popleft()
+
+    def _throttle_for_tpm(self, messages: list[dict[str, str]], *, max_tokens: int) -> None:
+        if not self.effective_model_tpm or self.effective_model_tpm <= 0:
+            return
+        prompt_est = self._estimate_prompt_tokens(messages)
+        requested = int((prompt_est + max(0, int(max_tokens))) * self.tpm_safety_factor)
+        if requested <= 0:
+            return
+        # If a single request estimate exceeds TPM, we still attempt once after waiting
+        # for a clear window; caller-level retries will handle residual 429s.
+        requested_for_window = min(requested, self.effective_model_tpm)
+
+        while True:
+            now = time.monotonic()
+            self._prune_token_window(now)
+            used = sum(tokens for _, tokens in self._token_events)
+            # Incorporate provider-side "Used" hints parsed from recent 429 responses.
+            if self._provider_used_hint and (now - self._provider_used_hint_ts) < 60.0:
+                used = max(used, self._provider_used_hint)
+            if used + requested_for_window <= self.effective_model_tpm:
+                self._token_events.append((now, requested_for_window))
+                return
+            if self._token_events:
+                wait_s = max(0.05, (self._token_events[0][0] + 60.0) - now)
+            else:
+                wait_s = 0.5
+            if self._provider_used_hint and (now - self._provider_used_hint_ts) < 60.0:
+                provider_wait = 60.0 - (now - self._provider_used_hint_ts)
+                wait_s = max(wait_s, min(10.0, provider_wait))
+            logging.info(
+                "TPM throttle (%s): used=%d requested=%d limit=%d; sleeping %.2fs",
+                self.model_name,
+                used,
+                requested_for_window,
+                self.effective_model_tpm,
+                wait_s,
+            )
+            time.sleep(wait_s)
+
+    def _is_rate_limit_error(self, err: Exception) -> bool:
+        msg = _strip_ansi(str(err)).lower()
+        cls = err.__class__.__name__.lower()
+        return "ratelimit" in cls or "rate limit" in msg or "429" in msg
+
+    def _retry_after_seconds(self, err: Exception, attempt: int) -> float:
+        for attr in ("retry_after", "retry_after_seconds"):
+            value = getattr(err, attr, None)
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+        msg = _strip_ansi(str(err))
+        m = re.search(r"try again in\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|s)", msg, re.I)
+        if m:
+            num = float(m.group(1))
+            unit = m.group(2).lower()
+            return num / 1000.0 if unit == "ms" else num
+        # Fallback exponential backoff with a small floor.
+        return min(8.0, 0.5 * (2 ** max(0, attempt)))
+
+    def _capture_provider_tpm_hint(self, err: Exception) -> None:
+        msg = _strip_ansi(str(err))
+        m = re.search(r"Limit\s+([0-9]+),\s*Used\s+([0-9]+),\s*Requested\s+([0-9]+)", msg, re.I)
+        if not m:
+            return
+        try:
+            limit = int(m.group(1))
+            used = int(m.group(2))
+        except Exception:
+            return
+        if limit > 0 and used >= 0:
+            now = time.monotonic()
+            self._provider_used_hint = used
+            self._provider_used_hint_ts = now
+            # If provider limit differs from local default (plan/account changes), adapt.
+            if self.model_tpm is None or abs(self.model_tpm - limit) > 100:
+                self.model_tpm = limit
+                self.effective_model_tpm = int(limit * self.tpm_headroom_ratio)
+
+    def _record_usage(self, response) -> None:
+        if hasattr(response, "usage") and response.usage:
+            self.usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
+            self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
+            self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
+
+    def _llm_completion(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        caching: bool,
+        tag: str,
+    ):
+        attempts = max(self.error_retries, self.rate_limit_retries)
+        for i_retry in range(attempts):
+            self._throttle_for_tpm(messages, max_tokens=max_tokens)
+            try:
+                return litellm.completion(
+                    model=self.model_name,
+                    messages=messages,
+                    caching=caching,
+                    temperature=0,
+                    max_tokens=max_tokens,
+                )
+            except Exception as e:
+                clean_err = _strip_ansi(str(e))
+                if self._is_rate_limit_error(e):
+                    self._capture_provider_tpm_hint(e)
+                    delay = self._retry_after_seconds(e, i_retry)
+                    logging.warning(
+                        "%s rate-limited on %s (attempt %d/%d). Backing off %.3fs. %s",
+                        tag,
+                        self.model_name,
+                        i_retry + 1,
+                        attempts,
+                        delay,
+                        clean_err,
+                    )
+                    time.sleep(max(0.05, delay))
+                    continue
+                logging.error("%s failed (attempt %d/%d): %s", tag, i_retry + 1, attempts, clean_err)
+                time.sleep(min(2.0, 0.2 * (i_retry + 1)))
+        return None
 
     def run(self, doc: DocumentJson) -> Generator[tuple[int, Statement], None, None]:
         """Yield (chunk_index, statement) for every statement found in the document."""
@@ -531,7 +795,7 @@ class Annotator:
             statements: list[Statement] = []
 
             for round_i in range(self.reflection_rounds):
-                if statements and self._check_if_exhausted(chunk, statements):
+                if (not self.disable_exhaustion_check) and statements and self._check_if_exhausted(chunk, statements):
                     logging.info("Chunk %d exhausted after %d round(s), %d statements",
                                  chunk_idx, round_i, len(statements))
                     break
@@ -573,21 +837,17 @@ class Annotator:
                     },
                 ])
 
-            try:
-                response = litellm.completion(
-                    model=self.model_name,
-                    messages=messages,
-                    caching=(i_retry == 0),
-                )
-                raw_message = response.choices[0].message.content
-                logging.info("LLM response: %r", raw_message[:200])
-                if hasattr(response, "usage") and response.usage:
-                    self.usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
-                    self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
-                    self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
-            except Exception as e:
-                logging.error("LLM call failed (retry %d): %s", i_retry + 1, e)
+            response = self._llm_completion(
+                messages=messages,
+                max_tokens=self.llm_max_output_tokens,
+                caching=(i_retry == 0),
+                tag="Extraction call",
+            )
+            if response is None:
                 continue
+            raw_message = response.choices[0].message.content
+            logging.info("LLM response: %r", (raw_message or "")[:200])
+            self._record_usage(response)
 
             try:
                 new_statements = extract_json_list(raw_message)
@@ -608,7 +868,7 @@ class Annotator:
     ) -> bool:
         text = chunk["text"]
         messages = [
-            {"role": "system", "content": _PROMPT},
+            {"role": "system", "content": _EXHAUSTION_PROMPT},
             {"role": "user", "content": f"### INPUT\n\n{text}"},
             {
                 "role": "assistant",
@@ -619,15 +879,19 @@ class Annotator:
                 "content": "Are there still more statements to be added? Answer 'YES' or 'NO'.",
             },
         ]
-        try:
-            response = litellm.completion(model=self.model_name, messages=messages)
-            raw_message = response.choices[0].message.content
-            logging.info("Exhaustion check response: %r", raw_message)
-            if hasattr(response, "usage") and response.usage:
-                self.usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
-                self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
-                self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
-            return "YES" not in raw_message
-        except Exception as e:
-            logging.error("Exhaustion check failed: %s", e)
-            return True  # assume exhausted to avoid infinite loops
+        response = self._llm_completion(
+            messages=messages,
+            max_tokens=8,
+            caching=False,
+            tag="Exhaustion check",
+        )
+        if response is None:
+            # Do not assume exhausted on transient failures/rate limits; let extraction continue.
+            logging.warning("Exhaustion check unavailable; continuing extraction rounds.")
+            return False
+
+        raw_message = response.choices[0].message.content
+        clean_message = _strip_ansi(str(raw_message or "")).strip().upper()
+        logging.info("Exhaustion check response: %r", clean_message)
+        self._record_usage(response)
+        return "YES" not in clean_message
