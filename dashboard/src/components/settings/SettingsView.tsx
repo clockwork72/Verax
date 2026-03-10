@@ -18,10 +18,8 @@ type SettingsViewProps = {
   onMappingModeChange?: (mode: 'radar' | 'trackerdb' | 'mixed') => void
   autoAnnotate?: boolean
   onToggleAutoAnnotate?: (v: boolean) => void
-  openaiApiKey?: string
-  onOpenaiApiKeyChange?: (v: string) => void
+  tunnelStatus?: 'checking' | 'online' | 'offline'
   llmModel?: string
-  onLlmModelChange?: (v: string) => void
   annotateRunUsage?: { tokensIn: number; tokensOut: number }
   annotationStats?: any
   totalCost?: number
@@ -50,12 +48,6 @@ function isLowTpmModelKey(model?: string): boolean {
   )
 }
 
-const MODEL_OPTIONS = [
-  { value: 'gpt-4o-mini', label: 'gpt-4o-mini', price: '$0.15 / $0.60 per 1M tokens' },
-  { value: 'gpt-4o', label: 'gpt-4o', price: '$2.50 / $10.00 per 1M tokens' },
-  { value: 'gpt-4-turbo', label: 'gpt-4-turbo', price: '$10.00 / $30.00 per 1M tokens' },
-  { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo', price: '$0.50 / $1.50 per 1M tokens' },
-]
 
 function ToggleRow({
   label,
@@ -103,10 +95,8 @@ export function SettingsView({
   onMappingModeChange,
   autoAnnotate = true,
   onToggleAutoAnnotate,
-  openaiApiKey = '',
-  onOpenaiApiKeyChange,
-  llmModel = 'gpt-4o-mini',
-  onLlmModelChange,
+  tunnelStatus = 'checking' as 'checking' | 'online' | 'offline',
+  llmModel = 'openai/local',
   annotateRunUsage,
   annotationStats,
   totalCost = 0,
@@ -251,17 +241,20 @@ export function SettingsView({
         </div>
         <div className="mt-4 space-y-3">
           <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
-            <p className="mb-2 text-xs text-[var(--color-text)]">OpenAI API key</p>
-            <p className="mb-2 text-[10px] text-[var(--muted-text)]">
-              Used for Stage 2 LLM annotation. Stored in memory only — not persisted to disk.
+            <p className="mb-2 text-xs text-[var(--color-text)]">HPC Tunnel — DeepSeek-R1-70B</p>
+            <p className="mb-3 text-[10px] text-[var(--muted-text)]">
+              Stage 2 LLM annotation runs via SSH tunnel on port 8901. Start with:<br />
+              <code className="font-mono">ssh -N -f -L 8901:&lt;gpu-node&gt;:8901 soufiane.essahli@toubkal.hpc.um6p.ma</code>
             </p>
-            <input
-              type="password"
-              className="focusable w-full rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-white"
-              placeholder="sk-proj-…"
-              value={openaiApiKey}
-              onChange={(e) => onOpenaiApiKeyChange?.(e.target.value)}
-            />
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
+              tunnelStatus === 'online'
+                ? 'border-[var(--color-success)] text-[var(--color-success)]'
+                : tunnelStatus === 'offline'
+                  ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+                  : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+            }`}>
+              {tunnelStatus === 'online' ? '● Tunnel active' : tunnelStatus === 'offline' ? '○ Tunnel offline' : '◌ Checking tunnel…'}
+            </span>
           </div>
           <ToggleRow
             label="Auto-annotate after scraping"
@@ -284,20 +277,15 @@ export function SettingsView({
           <div className="rounded-2xl border border-[var(--border-soft)] bg-gradient-to-br from-black/30 to-black/10 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">OpenAI Cost Tracking</p>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">LLM Cost Tracking</p>
                 <h4 className="text-base font-semibold">Observed usage</h4>
               </div>
-              <select
-                className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-xs text-white"
-                value={llmModel}
-                onChange={(e) => onLlmModelChange?.(e.target.value)}
+              <span
+                className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]"
+                title="DeepSeek-R1-Distill-Llama-70B · HPC GPU node · port 8901"
               >
-                {MODEL_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+                DeepSeek-R1-70B (local)
+              </span>
             </div>
             <p className="mt-1 text-[10px] text-[var(--muted-text)]">
               Pricing: input ${modelRates.input.toFixed(2)} / output ${modelRates.output.toFixed(2)} per 1M tokens.
@@ -397,7 +385,7 @@ export function SettingsView({
                 : ' Exhaustion checks are included in this estimate.'}
             </p>
             <p className="mt-1 text-[10px] text-[var(--muted-text)]">
-              {MODEL_OPTIONS.find((m) => m.value === llmModel)?.price || ''}
+              Local HPC model — no API cost.
             </p>
           </div>
         </div>

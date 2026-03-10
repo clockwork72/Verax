@@ -1,84 +1,89 @@
-# Privacy Research Dataset + Dashboard
+# Privacy Research Dataset
 
-This repository builds a **Step‑1 privacy research dataset** and ships an **Electron dashboard** to run and inspect crawls.
+A research pipeline that crawls websites, discovers and extracts their privacy policies, maps observed third-party trackers to known entities, and annotates policy text with structured statements using a local LLM. An Electron dashboard provides a full UI for launching, monitoring, and inspecting runs.
 
-## What this project does
+---
 
-**Scraper (Python)**
-- Website → first‑party privacy policy URL + extracted text
-- Website → observed third‑party domains (from network requests)
-- Third‑party domain → entity/category/policy URL (DuckDuckGo Tracker Radar or Ghostery TrackerDB)
-- Third‑party policy URL → extracted policy text (best‑effort)
+## What it does
 
-**Dashboard (Electron + Vite)**
-- Launch the scraper with live progress + logs
-- Inspect results, entities, categories, and prevalence
-- Browse sites + policies via the Explorer
-- Run history and per‑run output folders
-- Mapping mode selection (Tracker Radar / TrackerDB / Mixed)
-- Clear results/artifacts from the database view
+**Stage 1 — Scraping**
+- Fetches the home page of each site and discovers its first-party privacy policy URL
+- Extracts clean policy text via Trafilatura / Readability
+- Observes third-party network requests and maps domains to tracker entities (via DuckDuckGo Tracker Radar or Ghostery TrackerDB)
+- Fetches and extracts third-party policy text where available
+- Deduplicates artifacts: if two sites share the same policy URL, the text is scraped and cleaned once
 
-**No LLMs / DeepSeek.** The pipeline is deterministic + heuristic filtering.
+**Stage 2 — LLM Annotation**
+- Preprocesses policy text into chunks (pandoc AST → overlapping token windows)
+- Runs iterative extraction with DeepSeek-R1-70B on a local HPC GPU node via SSH tunnel (port 8901)
+- Produces structured statements: `action`, `data`, `processor`, `purpose`, `context`, `prohibition`
+- Streams chain-of-thought reasoning live to the dashboard UI
+
+**Dashboard (Electron + React)**
+- Launch and monitor Stage 1 scrapes with live progress, ETA, and log window
+- Run Stage 2 annotation with live streaming: reasoning panel, extraction output, and color-coded entity chips
+- Explore results by site, policy, and third-party entity
+- Audit workspace for per-site re-scraping and re-annotation
+- Run history with per-folder load/delete
+- Settings: themes, CrUX filter toggle, entity filter, mapping mode
 
 ---
 
 ## Repository layout
 
-- `privacy_research_dataset/` — core scraper package
-- `scripts/` — helper scripts (Tracker Radar/TrackerDB index, Tranco fetch)
-- `tracker-radar/` — DuckDuckGo Tracker Radar repo (clone here)
-- `trackerdb/` — Ghostery TrackerDB repo (clone here, optional)
-- `dashboard/` — Electron + Vite UI
-- `outputs/` — per‑run outputs (`outputs/output_<runid>/`)
+```
+privacy_research_dataset/   # core Python package (scraper + annotator)
+scripts/                    # index builders, Tranco helpers
+tracker-radar/              # DuckDuckGo Tracker Radar (clone here)
+trackerdb/                  # Ghostery TrackerDB (clone here, optional)
+dashboard/                  # Electron + Vite UI
+outputs/                    # per-run output folders
+hpc/                        # HPC job scripts (DeepSeek tunnel)
+```
 
 ---
 
-## Quick start (scraper only)
+## Installation
 
-### 1) Python setup
+### Requirements
+
+- Python 3.10+
+- conda (recommended) or venv
+- Node.js 18+
+- pandoc (for policy text preprocessing)
+- An active conda environment with the package installed
+
+### Python setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# create and activate environment
+conda create -n privacy python=3.11
+conda activate privacy
 
-# Crawl4AI uses Playwright
+# install the package + dependencies
+pip install -e .
+
+# Crawl4AI uses Playwright for browser automation
 python -m playwright install chromium
 ```
 
-### 2) Tracker Radar index
+### Build tracker indexes
 
 ```bash
+# DuckDuckGo Tracker Radar (required for entity mapping)
 git clone https://github.com/duckduckgo/tracker-radar.git tracker-radar
-python scripts/build_tracker_radar_index.py --tracker-radar-dir tracker-radar --out tracker_radar_index.json
-```
+python scripts/build_tracker_radar_index.py \
+  --tracker-radar-dir tracker-radar --out tracker_radar_index.json
 
-### 3) Ghostery TrackerDB index (optional)
-
-```bash
+# Ghostery TrackerDB (optional, used as fallback)
 git clone https://github.com/ghostery/trackerdb trackerdb
-python scripts/build_trackerdb_index.py --trackerdb-dir trackerdb --out trackerdb_index.json
-```
-
-### 4) Run a crawl
-
-```bash
-privacy-dataset --tranco-top 100 --tranco-date 2026-01-01 \
-  --tracker-radar-index tracker_radar_index.json \
-  --trackerdb-index trackerdb_index.json \
-  --out outputs/results.jsonl \
-  --artifacts-dir outputs/artifacts
+python scripts/build_trackerdb_index.py \
+  --trackerdb-dir trackerdb --out trackerdb_index.json
 ```
 
 ---
 
-## Dashboard setup (Electron + Vite)
-
-### Requirements
-- Node.js 18+ (recommended)
-- Python + scraper dependencies installed
-
-### Install & run
+## Running the dashboard
 
 ```bash
 cd dashboard
@@ -86,126 +91,75 @@ npm install
 npm run dev
 ```
 
-The dashboard can **start the scraper directly** via IPC. If your Python is not `python` on PATH, set:
+The dashboard launches the scraper and annotator as subprocesses. If `python` on PATH is not the right environment, point to it explicitly:
 
 ```bash
-export PRIVACY_DATASET_PYTHON=/path/to/python
+export PRIVACY_DATASET_PYTHON=/path/to/conda/envs/privacy/bin/python
 ```
 
 ---
 
-## Dashboard → Scraper integration
+## HPC tunnel (Stage 2 annotation)
 
-When launched from the dashboard, each run is stored under:
+Stage 2 uses DeepSeek-R1-Distill-Llama-70B served by llama.cpp on a GPU node. Open the SSH tunnel before running annotation:
 
+```bash
+ssh -N -f -L 8901:<gpu-node>:8901 <user>@toubkal.hpc.um6p.ma
 ```
-outputs/output_<runid>/
-```
 
-Each run folder contains:
+The dashboard polls `http://localhost:8901/health` every 15 s and shows **Tunnel active / offline** in the annotation controls. Annotation is blocked until the tunnel is reachable.
 
-- `results.jsonl` — raw results
-- `results.summary.json` — aggregated summary (includes mapping mode + counts)
-- `run_state.json` — live run counters (includes mapping counters)
-- `explorer.jsonl` — explorer data
+---
 
-These are produced when you run with:
+## CLI usage (without dashboard)
+
+**Stage 1 — scrape**
 
 ```bash
 privacy-dataset \
-  --emit-events \
-  --state-file outputs/output_<runid>/run_state.json \
-  --summary-out outputs/output_<runid>/results.summary.json \
-  --explorer-out outputs/output_<runid>/explorer.jsonl \
-  --out outputs/output_<runid>/results.jsonl \
-  --artifacts-dir outputs/output_<runid>/artifacts
+  --tranco-top 100 \
+  --tranco-date 2026-01-01 \
+  --tracker-radar-index tracker_radar_index.json \
+  --trackerdb-index trackerdb_index.json \
+  --out outputs/results.jsonl \
+  --artifacts-dir outputs/artifacts
 ```
 
-The Electron app uses these files to power:
-- **Results tab** (summary + categories + entities)
-- **Explorer tab** (sites + policy links)
-- **Analytics tab** (run state)
-- **Database tab** (run history + load/delete runs)
+**Stage 2 — annotate**
+
+```bash
+privacy-dataset-annotate \
+  --artifacts-dir outputs/artifacts \
+  --concurrency 3
+```
 
 ---
 
-## Scraper CLI options (important)
+## Output structure
 
-- `--tranco-top N` / `--tranco-date YYYY-MM-DD` — reproducible Tranco list
-- `--tracker-radar-index` — enables entity/category mapping via Tracker Radar
-- `--trackerdb-index` — enables entity/category mapping via Ghostery TrackerDB (used as fallback if Tracker Radar misses)
-- `--third-party-engine crawl4ai|openwpm` — network collection
-- `--no-third-party-policy-fetch` — disable third‑party policy fetch
+Each run stores its files under `outputs/output_<runid>/`:
 
-**Integration / telemetry**
-- `--emit-events` — JSON events to stdout
-- `--state-file` — run state JSON
-- `--summary-out` — aggregated summary JSON
-- `--explorer-out` — explorer JSON/JSONL
-- `--run-id` — set a fixed run id
-
-**CrUX filter (browsable origins)**
-- `--crux-filter` — keep only sites present in Chrome UX Report
-- `--crux-api-key` or `CRUX_API_KEY` env var
-- `--crux-concurrency`, `--crux-timeout-ms`
-
-**Entity filtering**
-- `--exclude-same-entity` — exclude third‑party domains owned by same entity as first‑party (requires a mapping index)
-
-**Browsable-only (optional)**
-- `--prefilter-websites` — lightweight HTML check before crawl
-- `--skip-home-fetch-failed` — do not write results when home fetch fails
-
----
-
-## Output schema (high‑level)
-
-Each line in `results.jsonl` contains:
-- `status`: `ok`, `policy_not_found`, `non_browsable`, `home_fetch_failed`, `exception`
-- `first_party_policy`: URL + score + length
-- `third_parties`: eTLD+1 + entity + categories + prevalence + policy_url
-- `third_parties`: may include `tracker_radar_source_domain_file` and `trackerdb_source_*` fields
-- timing fields: `home_fetch_ms`, `policy_fetch_ms`, `third_party_extract_ms`, `third_party_policy_fetch_ms`, `total_ms`
-- `run_id`, `started_at`, `ended_at`
-
-Artifacts live under `outputs/output_<runid>/artifacts/<site>/`.
-
----
-
-## Dashboard features (summary)
-
-- **Launcher**: Tranco Top‑N, CrUX filter, mapping mode (Radar / TrackerDB / Mixed), exclude same‑entity, start/stop run.
-- **Live progress**: step indicator, ETA, streaming logs, and “Open full log” in its own window.
-- **Results**: split site vs third‑party stats, tooltips, status bar legend, mapping mode + mixed counts.
-- **Explorer**: gallery view, search + status + minimum 3P filter, embedded policy viewer with “Open in window” fallback.
-- **Database**: run history table, load any run, show folder size, clear/delete outputs.
-- **Settings**: themes (dark, VS Code red, academia).
+| File | Contents |
+|---|---|
+| `results.jsonl` | Per-site scrape results |
+| `results.summary.json` | Aggregated counts and mapping stats |
+| `run_state.json` | Live run counters |
+| `explorer.jsonl` | Site + policy + third-party data for the Explorer tab |
+| `artifacts/<site>/policy.txt` | Extracted policy text |
+| `artifacts/<site>/policy_statements.jsonl` | Annotated statements |
 
 ---
 
 ## Troubleshooting
 
-**CrUX returns 403/401**
-- Ensure Chrome UX Report API is enabled for your key
-- Check referrer / IP restrictions in Google Cloud
+**Dashboard cannot start the scraper**
+Set `PRIVACY_DATASET_PYTHON` to the full path of the Python interpreter in the correct conda environment.
 
-**Dashboard cannot start scraper**
-- Set `PRIVACY_DATASET_PYTHON` to correct Python
-- Ensure `privacy_research_dataset` is importable in that environment
+**Annotation shows "Tunnel offline"**
+Start the SSH tunnel as shown above. The health check hits `http://localhost:8901/health`.
 
-**No results in Explorer**
-- Ensure `--explorer-out outputs/explorer.jsonl` is used
-- The dashboard expects JSONL records with `site`, `rank`, `policyUrl`, and `thirdParties`
+**No results in the Explorer tab**
+Make sure the run was started from the dashboard or used `--explorer-out` and `--emit-events` flags.
 
----
-
-## Optional: OpenWPM
-
-```bash
-privacy-dataset --tranco-top 1000 --tranco-date 2026-01-01 \
-  --tracker-radar-index tracker_radar_index.json \
-  --third-party-engine openwpm --concurrency 1 \
-  --out outputs/results.jsonl --artifacts-dir outputs/artifacts
-```
-
-OpenWPM is heavier and typically installed via its Docker/conda instructions.
+**CrUX filter returns 403**
+Enable the Chrome UX Report API for your key in Google Cloud Console.

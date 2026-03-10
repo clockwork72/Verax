@@ -35,6 +35,26 @@ from .annotation_types import (
 )
 
 
+# ---------------------------------------------------------------------------
+# DeepSeek / HPC SSH tunnel configuration
+# ---------------------------------------------------------------------------
+
+DEEPSEEK_ENDPOINT = "http://localhost:8901/v1"
+DEEPSEEK_HEALTH_URL = "http://localhost:8901/health"
+DEEPSEEK_MODEL_ID = "openai/local"   # LiteLLM prefix for OpenAI-compatible API
+_TUNNEL_PROBE_TIMEOUT = 3.0
+
+
+def check_tunnel_connection(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> bool:
+    """Return True if the HPC SSH tunnel (port 8901 → DeepSeek) is reachable."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(DEEPSEEK_HEALTH_URL, timeout=timeout) as resp:
+            return resp.status < 400
+    except Exception:
+        return False
+
+
 def enable_litellm_disk_cache() -> None:
     """Enable LiteLLM disk caching (call once from CLI, not on import)."""
     try:
@@ -388,6 +408,8 @@ _DEFAULT_MODEL_TPM: dict[str, int] = {
     "gpt-4.1": 30000,
     "gpt-4.1-mini": 200000,
     "gpt-4.1-nano": 1000000,
+    # Local HPC model: no remote quota — throughput bounded by GPU, not API tier.
+    "local": 0,
 }
 
 _DEFAULT_MODEL_MAX_OUTPUT: dict[str, int] = {
@@ -396,6 +418,8 @@ _DEFAULT_MODEL_MAX_OUTPUT: dict[str, int] = {
     "gpt-4.1": 900,
     "gpt-4.1-mini": 1200,
     "gpt-4.1-nano": 1200,
+    # DeepSeek-R1-Distill-Llama-70B (Q4_K_M, 131k context) on HPC GPU node.
+    "local": 2048,
 }
 
 
@@ -643,6 +667,11 @@ class Annotator:
         self._token_events: deque[tuple[float, int]] = deque()
         self._provider_used_hint: int = 0
         self._provider_used_hint_ts: float = 0.0
+        # Streaming context — set externally before annotating each site/chunk
+        self.current_site: str = ""
+        self._current_chunk_idx: int = 0
+        self._current_chunk_total: int = 0
+        self._current_round: int = 0
         logging.info(
             "Annotator model=%s max_output_tokens=%d model_tpm=%s effective_tpm=%s headroom=%.2f safety=%.2f exhaustion_check=%s",
             self.model_name,
@@ -655,6 +684,10 @@ class Annotator:
         )
 
     def _estimate_prompt_tokens(self, messages: list[dict[str, str]]) -> int:
+        if _model_key(self.model_name) == "local":
+            # tiktoken has no encoding for "local"; use char-based estimate.
+            chars = sum(len(str(m.get("content") or "")) for m in messages)
+            return max(1, chars // 4)
         try:
             return int(litellm.token_counter(model=self.model_name, messages=messages))
         except Exception:
@@ -748,6 +781,88 @@ class Annotator:
             self.usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
             self.usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
 
+    def _llm_completion_streaming(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        tag: str,
+        extra: dict,
+    ):
+        """Stream a local-model completion, emitting [STREAM] JSON lines per delta to stdout."""
+        import sys
+
+        is_exhaustion = "exhaustion" in tag.lower()
+        stream_gen = litellm.completion(
+            model=self.model_name,
+            messages=messages,
+            temperature=0,
+            max_tokens=max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+            **extra,
+        )
+        parts: list[str] = []
+        in_think = False
+        usage_data: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        for chunk in stream_gen:
+            if not getattr(chunk, "choices", None):
+                # Final usage-only chunk
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage_data["prompt_tokens"] = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    usage_data["completion_tokens"] = getattr(chunk.usage, "completion_tokens", 0) or 0
+                    usage_data["total_tokens"] = getattr(chunk.usage, "total_tokens", 0) or 0
+                continue
+            delta_obj = chunk.choices[0].delta
+            delta = getattr(delta_obj, "content", None) or ""
+            if not delta:
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage_data["prompt_tokens"] = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    usage_data["completion_tokens"] = getattr(chunk.usage, "completion_tokens", 0) or 0
+                    usage_data["total_tokens"] = getattr(chunk.usage, "total_tokens", 0) or 0
+                continue
+
+            if "<think>" in delta:
+                in_think = True
+            phase = "exhaustion" if is_exhaustion else ("reasoning" if in_think else "extraction")
+            parts.append(delta)
+
+            event = json.dumps({
+                "site": self.current_site,
+                "chunk_idx": self._current_chunk_idx,
+                "chunk_total": self._current_chunk_total,
+                "round": self._current_round,
+                "phase": phase,
+                "tag": tag,
+                "delta": delta,
+            }, ensure_ascii=False)
+            sys.stdout.write(f"[STREAM] {event}\n")
+            sys.stdout.flush()
+
+            if "</think>" in delta:
+                in_think = False
+
+        text = "".join(parts)
+
+        # Build a minimal response-compatible object
+        class _Msg:
+            content = text
+
+        class _Choice:
+            message = _Msg()
+
+        class _Usage:
+            prompt_tokens = usage_data["prompt_tokens"]
+            completion_tokens = usage_data["completion_tokens"]
+            total_tokens = usage_data["total_tokens"]
+
+        class _Response:
+            choices = [_Choice()]
+            usage = _Usage()
+
+        return _Response()
+
     def _llm_completion(
         self,
         *,
@@ -760,12 +875,26 @@ class Annotator:
         for i_retry in range(attempts):
             self._throttle_for_tpm(messages, max_tokens=max_tokens)
             try:
+                # Route to the local HPC endpoint for DeepSeek (openai/local).
+                extra: dict = {}
+                is_local = _model_key(self.model_name) == "local"
+                if is_local:
+                    extra["api_base"] = DEEPSEEK_ENDPOINT
+                    extra["api_key"] = "not-needed"
+                    # Stream local model and emit [STREAM] events for live UI
+                    return self._llm_completion_streaming(
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        tag=tag,
+                        extra=extra,
+                    )
                 return litellm.completion(
                     model=self.model_name,
                     messages=messages,
                     caching=caching,
                     temperature=0,
                     max_tokens=max_tokens,
+                    **extra,
                 )
             except Exception as e:
                 clean_err = _strip_ansi(str(e))
@@ -790,11 +919,15 @@ class Annotator:
     def run(self, doc: DocumentJson) -> Generator[tuple[int, Statement], None, None]:
         """Yield (chunk_index, statement) for every statement found in the document."""
         seen_statements: set[str] = set()
+        chunks = doc["chunks"]
+        self._current_chunk_total = len(chunks)
 
-        for chunk_idx, chunk in enumerate(doc["chunks"]):
+        for chunk_idx, chunk in enumerate(chunks):
+            self._current_chunk_idx = chunk_idx
             statements: list[Statement] = []
 
             for round_i in range(self.reflection_rounds):
+                self._current_round = round_i
                 if (not self.disable_exhaustion_check) and statements and self._check_if_exhausted(chunk, statements):
                     logging.info("Chunk %d exhausted after %d round(s), %d statements",
                                  chunk_idx, round_i, len(statements))

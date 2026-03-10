@@ -22,14 +22,12 @@ type ScraperRerunSiteOptions = {
   trackerDbIndex?: string
   policyUrlOverride?: string
   excludeSameEntity?: boolean
-  openaiApiKey?: string
   llmModel?: string
 }
 
 type AnnotateSiteOptions = {
   site: string
   outDir?: string
-  openaiApiKey?: string
   llmModel?: string
   tokenLimit?: number
   force?: boolean
@@ -59,15 +57,27 @@ declare global {
       onError: (callback: (event: any) => void) => void
       onExit: (callback: (event: any) => void) => void
       rerunSite: (options: ScraperRerunSiteOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string>; site?: string }>
-      startAnnotate: (options: { artifactsDir?: string; openaiApiKey?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
+      startAnnotate: (options: { artifactsDir?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
+      checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string }>
       stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
       annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
       annotationStats: (artifactsDir?: string) => Promise<{ ok: boolean; error?: string; total_sites?: number; annotated_sites?: number; total_statements?: number; per_site?: { site: string; count: number; has_statements: boolean }[] }>
       readTpCache: (outDir?: string) => Promise<{ ok: boolean; error?: string; total?: number; fetched?: number; failed?: number; by_status?: Record<string, number> }>
       onAnnotatorLog: (callback: (event: any) => void) => void
       onAnnotatorExit: (callback: (event: any) => void) => void
+      onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
     }
   }
+}
+
+export type AnnotatorStreamEvent = {
+  site: string
+  chunk_idx: number
+  chunk_total: number
+  round: number
+  phase: 'reasoning' | 'extraction' | 'exhaustion'
+  tag: string
+  delta: string
 }
 
 export {}

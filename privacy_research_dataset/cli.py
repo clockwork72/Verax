@@ -88,14 +88,10 @@ def _parse_args() -> argparse.Namespace:
     crux.add_argument("--crux-concurrency", type=int, default=20, help="Concurrent CrUX API requests.")
     crux.add_argument("--crux-allow-http", action="store_true", help="Fallback to http origin if https isn't found.")
 
-    llm = p.add_argument_group("LLM semantic cleaning")
+    llm = p.add_argument_group("LLM semantic cleaning (DeepSeek via HPC tunnel)")
     llm.add_argument(
-        "--openai-api-key", type=str, default=None,
-        help="OpenAI API key for LLM-based policy cleaning (or set OPENAI_API_KEY env var).",
-    )
-    llm.add_argument(
-        "--llm-model", type=str, default="gpt-4o-mini",
-        help="OpenAI model used for semantic cleaning. Default: gpt-4o-mini.",
+        "--llm-model", type=str, default="openai/local",
+        help="LiteLLM model for policy cleaning. Default: openai/local (DeepSeek on HPC).",
     )
     llm.add_argument(
         "--no-llm-clean", action="store_true",
@@ -617,19 +613,25 @@ async def _run(args: argparse.Namespace) -> None:
     tracker_radar = TrackerRadarIndex(args.tracker_radar_index) if args.tracker_radar_index else None
     trackerdb = TrackerDbIndex(args.trackerdb_index) if args.trackerdb_index else None
 
-    # --- OpenAI client for LLM semantic cleaning ---
+    # --- OpenAI-compatible client for LLM semantic cleaning (local DeepSeek) ---
     openai_client = None
     if not getattr(args, "no_llm_clean", False):
-        api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
-        if api_key:
+        from .annotator import check_tunnel_connection, DEEPSEEK_ENDPOINT
+        if check_tunnel_connection():
             try:
                 import openai as _openai
-                openai_client = _openai.AsyncOpenAI(api_key=api_key)
-                log(f"LLM semantic cleaning enabled (model: {args.llm_model}).")
+                openai_client = _openai.AsyncOpenAI(
+                    base_url=DEEPSEEK_ENDPOINT,
+                    api_key="not-needed",
+                )
+                log(f"LLM semantic cleaning enabled via DeepSeek HPC (model: {args.llm_model}).")
             except ImportError:
                 warn("openai package not installed. Install with: pip install openai. LLM cleaning disabled.")
         else:
-            warn("No OpenAI API key found. LLM cleaning disabled. Use --openai-api-key or set OPENAI_API_KEY.")
+            warn(
+                "HPC tunnel not reachable (http://localhost:8901/health). "
+                "LLM semantic cleaning disabled. Start the SSH tunnel to enable it."
+            )
     mapping_mode = (
         "mixed"
         if tracker_radar and trackerdb
@@ -773,6 +775,12 @@ async def _run(args: argparse.Namespace) -> None:
         policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
         policy_url_aliases: dict[str, str] = {}
         policy_cache_lock = asyncio.Lock()
+
+        # Shared registry: normalized policy URL → artifact dir (first writer wins).
+        # Prevents re-scraping, LLM cleaning, and re-writing when two sites or
+        # third-parties share the same privacy policy URL (e.g. google.com + youtube.com).
+        policy_artifact_registry: dict[str, Path] = {}
+        policy_artifact_lock = asyncio.Lock()
 
         async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
             req_key = _normalize_policy_url(policy_url) or policy_url
@@ -976,6 +984,8 @@ async def _run(args: argparse.Namespace) -> None:
                         third_party_policy_fetcher=fetch_policy_cached,
                         openai_client=openai_client,
                         llm_model=args.llm_model,
+                        policy_artifact_registry=policy_artifact_registry,
+                        policy_artifact_lock=policy_artifact_lock,
                         stage_callback=lambda stage: emit_event({
                             "type": "site_stage",
                             "run_id": run_id,

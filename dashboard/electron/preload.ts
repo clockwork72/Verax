@@ -70,4 +70,9 @@ contextBridge.exposeInMainWorld('scraper', {
     ipcRenderer.removeAllListeners('annotator:exit')
     ipcRenderer.on('annotator:exit', (_evt, data) => callback(data))
   },
+  onAnnotatorStream: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('annotator:stream')
+    ipcRenderer.on('annotator:stream', (_evt, data) => callback(data))
+  },
+  checkTunnel: () => ipcRenderer.invoke('scraper:check-tunnel'),
 })

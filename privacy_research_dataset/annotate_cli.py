@@ -25,7 +25,15 @@ from urllib.parse import urlparse, urlunparse
 # (schema version mismatch between cached response models and current LiteLLM internals)
 warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
-from .annotator import Annotator, enable_litellm_disk_cache, preprocess_policy
+from .annotator import (
+    Annotator,
+    check_tunnel_connection,
+    enable_litellm_disk_cache,
+    preprocess_policy,
+    DEEPSEEK_ENDPOINT,
+    DEEPSEEK_HEALTH_URL,
+    DEEPSEEK_MODEL_ID,
+)
 from .utils.logging import log, warn
 
 
@@ -39,12 +47,8 @@ def _parse_args() -> argparse.Namespace:
         help="Stage 1 artifacts directory (contains per-site subdirectories).",
     )
     p.add_argument(
-        "--openai-api-key", type=str, default=None,
-        help="OpenAI API key (or set OPENAI_API_KEY env var).",
-    )
-    p.add_argument(
-        "--llm-model", type=str, default="gpt-4o-mini",
-        help="LiteLLM model name for statement extraction (default: gpt-4o-mini).",
+        "--llm-model", type=str, default=DEEPSEEK_MODEL_ID,
+        help=f"LiteLLM model name for statement extraction (default: {DEEPSEEK_MODEL_ID} — local DeepSeek via HPC tunnel).",
     )
     p.add_argument(
         "--token-limit", type=int, default=500,
@@ -299,6 +303,7 @@ def _annotate_site(
         tpm_safety_factor=tpm_safety_factor,
         disable_exhaustion_check=disable_exhaustion_check,
     )
+    annotator.current_site = site_dir.name
     # policy_statements.jsonl          — original format (chunk_index + statement only)
     # policy_statements_annotated.jsonl — includes source_text before the statement
     statements_path = site_dir / "policy_statements.jsonl"
@@ -363,12 +368,21 @@ def _annotate_site(
 async def _run(args: argparse.Namespace) -> None:
     enable_litellm_disk_cache()
 
-    # Set OpenAI key for LiteLLM
-    api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        warn("No OpenAI API key found. Set OPENAI_API_KEY or use --openai-api-key.")
+    # Verify the HPC SSH tunnel is up before starting any LLM work.
+    log(f"Checking HPC tunnel connection ({DEEPSEEK_HEALTH_URL}) …")
+    if not check_tunnel_connection():
+        warn(
+            "Cannot reach DeepSeek model at http://localhost:8901/health.\n"
+            "Start the SSH tunnel first:\n"
+            "  ssh -N -f -L 8901:<gpu-node>:8901 soufiane.essahli@toubkal.hpc.um6p.ma\n"
+            "Then re-run the annotator."
+        )
         return
-    os.environ["OPENAI_API_KEY"] = api_key
+    log("Tunnel active — DeepSeek endpoint reachable.")
+
+    # LiteLLM's openai/ provider still reads OPENAI_API_KEY; set a placeholder
+    # so it doesn't raise an auth-configuration error for the local server.
+    os.environ.setdefault("OPENAI_API_KEY", "not-needed")
 
     artifacts_dir = Path(args.artifacts_dir)
     if not artifacts_dir.is_dir():

@@ -54,13 +54,11 @@ type RerunSiteOptions = {
   trackerDbIndex?: string
   policyUrlOverride?: string
   excludeSameEntity?: boolean
-  openaiApiKey?: string
   llmModel?: string
 }
 
 type AnnotateStartOptions = {
   artifactsDir?: string
-  openaiApiKey?: string
   llmModel?: string
   tokenLimit?: number
   concurrency?: number
@@ -70,7 +68,6 @@ type AnnotateStartOptions = {
 type AnnotateSiteOptions = {
   site?: string
   outDir?: string
-  openaiApiKey?: string
   llmModel?: string
   tokenLimit?: number
   force?: boolean
@@ -205,6 +202,10 @@ function isLowTpmModelKey(key: string): boolean {
 
 function annotatorRateLimitArgs(modelName?: string): string[] {
   const key = normalizeModelKey(modelName)
+  // Local DeepSeek on HPC: no remote TPM quota — skip all rate-limit args.
+  if (key === 'local') {
+    return ['--llm-max-output-tokens', '2048', '--disable-exhaustion-check']
+  }
   // Dashboard defaults tuned to avoid TPM spikes on low-TPM models.
   if (key === 'gpt-4o' || isDatedModelVariant(key, 'gpt-4o')) {
     return [
@@ -349,8 +350,24 @@ async function launchAnnotatorProcess(
     return { ok: false, error: String(error) }
   }
 
+  let annotatorStdoutBuf = ''
   annotatorProcess.stdout.on('data', (chunk) => {
-    sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
+    annotatorStdoutBuf += chunk.toString()
+    const lines = annotatorStdoutBuf.split(/\r?\n/)
+    annotatorStdoutBuf = lines.pop() || ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      if (line.startsWith('[STREAM] ')) {
+        try {
+          const payload = JSON.parse(line.slice(9))
+          sendToRenderer('annotator:stream', payload)
+        } catch {
+          sendToRenderer('annotator:log', { message: line })
+        }
+      } else {
+        sendToRenderer('annotator:log', { message: line })
+      }
+    }
   })
   annotatorProcess.stderr.on('data', (chunk) => {
     sendToRenderer('annotator:log', { message: chunk.toString().trimEnd() })
@@ -804,12 +821,7 @@ ipcMain.handle('scraper:rerun-site', async (_event, options: RerunSiteOptions = 
     args.push('--llm-model', options.llmModel.trim())
   }
 
-  const scraperExtra: Record<string, string> = {}
-  if (options.openaiApiKey && options.openaiApiKey.trim()) {
-    scraperExtra.OPENAI_API_KEY = options.openaiApiKey.trim()
-  }
-
-  const launched = await launchScraperProcess(args, scraperExtra)
+  const launched = await launchScraperProcess(args)
   if (!launched.ok) {
     return { ok: false, error: launched.error || 'failed_to_start' }
   }
@@ -935,9 +947,7 @@ ipcMain.handle('scraper:start-annotate', async (_event, options: AnnotateStartOp
   args.push(...annotatorRateLimitArgs(options.llmModel))
   if (options.force) args.push('--force')
 
-  const annotatorExtra: Record<string, string> = {}
-  if (options.openaiApiKey) annotatorExtra.OPENAI_API_KEY = options.openaiApiKey
-  const launched = await launchAnnotatorProcess(args, annotatorExtra)
+  const launched = await launchAnnotatorProcess(args)
   if (!launched.ok) {
     return { ok: false, error: launched.error || 'failed_to_start' }
   }
@@ -979,12 +989,7 @@ ipcMain.handle('scraper:annotate-site', async (_event, options: AnnotateSiteOpti
     args.push('--force')
   }
 
-  const annotatorExtra: Record<string, string> = {}
-  if (options.openaiApiKey && options.openaiApiKey.trim()) {
-    annotatorExtra.OPENAI_API_KEY = options.openaiApiKey.trim()
-  }
-
-  const launched = await launchAnnotatorProcess(args, annotatorExtra)
+  const launched = await launchAnnotatorProcess(args)
   if (!launched.ok) {
     return { ok: false, error: launched.error || 'failed_to_start' }
   }
@@ -995,6 +1000,27 @@ ipcMain.handle('scraper:stop-annotate', async () => {
   if (!annotatorProcess) return { ok: false, error: 'not_running' }
   annotatorProcess.kill()
   return { ok: true }
+})
+
+/**
+ * Probe whether the HPC SSH tunnel to the DeepSeek GPU node is reachable.
+ * The Python backend connects to the same port (8901); this check lets the
+ * dashboard surface "Tunnel active / offline" status before launching jobs.
+ */
+ipcMain.handle('scraper:check-tunnel', async () => {
+  const http = await import('node:http')
+  return new Promise<{ ok: boolean; status?: number; error?: string }>((resolve) => {
+    const req = http.default.get(
+      { hostname: '::1', port: 8901, path: '/health', timeout: 3000 } as any,
+      (res) => {
+        res.resume() // drain body
+        const ok = typeof res.statusCode === 'number' && res.statusCode < 400
+        resolve({ ok, status: res.statusCode })
+      },
+    )
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }) })
+    req.on('error', (err) => resolve({ ok: false, error: err.message }))
+  })
 })
 
 ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string) => {

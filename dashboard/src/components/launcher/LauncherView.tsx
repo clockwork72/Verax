@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { parseAnnotationUsage, pricingForModel } from '../../utils/annotationCost'
+import { LiveAnnotatorPanel } from './LiveAnnotatorPanel'
+import type { AnnotatorStreamEvent } from '../../vite-env'
 
 type AnnotateSiteStatus = 'active' | 'done' | 'skip' | 'error'
 type AnnotateSiteEntry = { site: string; status: AnnotateSiteStatus; statements?: number }
@@ -53,12 +55,8 @@ function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-const MODEL_OPTIONS = [
-  { value: 'gpt-4o-mini',   label: 'gpt-4o-mini',   price: '$0.15 / $0.60 per 1M' },
-  { value: 'gpt-4o',        label: 'gpt-4o',         price: '$2.50 / $10 per 1M'   },
-  { value: 'gpt-4-turbo',   label: 'gpt-4-turbo',    price: '$10 / $30 per 1M'     },
-  { value: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo',  price: '$0.50 / $1.50 per 1M' },
-]
+// DeepSeek-R1-Distill-Llama-70B served locally via HPC SSH tunnel
+const DEEPSEEK_MODEL = { value: 'openai/local', label: 'DeepSeek-R1-70B (HPC)', price: 'local — no cost' }
 import { FlowChartModal } from './FlowChartModal'
 
 const logLines = [
@@ -95,10 +93,9 @@ type LauncherViewProps = {
   activeSites?: Record<string, ActiveSiteInfo>
   recentCompleted?: CompletedSiteInfo[]
   // Stage 2 — Annotation
-  openaiApiKey?: string
-  onOpenAiKeyChange?: (value: string) => void
+  tunnelStatus?: 'checking' | 'online' | 'offline'
   llmModel?: string
-  onLlmModelChange?: (value: string) => void
+  latestStreamEvent?: AnnotatorStreamEvent | null
   annotateRunning?: boolean
   annotateLogs?: string[]
   annotationStats?: any
@@ -134,10 +131,9 @@ export function LauncherView({
   onOpenLogWindow,
   activeSites = {},
   recentCompleted = [],
-  openaiApiKey = '',
-  onOpenAiKeyChange,
-  llmModel = 'gpt-4o-mini',
-  onLlmModelChange,
+  tunnelStatus = 'checking',
+  llmModel = 'openai/local',
+  latestStreamEvent = null,
   annotateRunning = false,
   annotateLogs = [],
   annotationStats,
@@ -512,31 +508,23 @@ export function LauncherView({
 
               {/* Controls row */}
               <div className="mt-4 flex flex-wrap items-center gap-3">
-                {!openaiApiKey && (
-                  <input
-                    type="password"
-                    className="focusable w-72 rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-white"
-                    placeholder="OpenAI API key — or set in Settings"
-                    value={openaiApiKey}
-                    onChange={(e) => onOpenAiKeyChange?.(e.target.value)}
-                  />
-                )}
-                {openaiApiKey && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-success)] px-3 py-1 text-xs text-[var(--color-success)]">
-                    ✓ API key set
-                  </span>
-                )}
-                <select
-                  className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
-                  value={llmModel}
-                  onChange={(e) => onLlmModelChange?.(e.target.value)}
+                {/* HPC tunnel status */}
+                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
+                  tunnelStatus === 'online'
+                    ? 'border-[var(--color-success)] text-[var(--color-success)]'
+                    : tunnelStatus === 'offline'
+                      ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+                      : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                }`}>
+                  {tunnelStatus === 'online' ? '● Tunnel active' : tunnelStatus === 'offline' ? '○ Tunnel offline' : '◌ Checking tunnel…'}
+                </span>
+                {/* DeepSeek model — read-only chip */}
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]"
+                  title="DeepSeek-R1-Distill-Llama-70B (Q4_K_M) · HPC GPU node · port 8901"
                 >
-                  {MODEL_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label} — {opt.price}
-                    </option>
-                  ))}
-                </select>
+                  {DEEPSEEK_MODEL.label} — {DEEPSEEK_MODEL.price}
+                </span>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-[var(--muted-text)]">Concurrency</span>
                   <input
@@ -639,6 +627,12 @@ export function LauncherView({
                   </div>
                 </div>
               )}
+
+              {/* Live streaming panel */}
+              <LiveAnnotatorPanel
+                streamEvent={latestStreamEvent}
+                annotateRunning={annotateRunning}
+              />
 
               {/* Annotator logs */}
               {annotateLogs.length > 0 && (

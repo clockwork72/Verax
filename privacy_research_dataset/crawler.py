@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 from datetime import datetime
 import time
 from pathlib import Path
@@ -497,6 +498,64 @@ async def _fetch_best_policy(
         "_chosen_full": chosen,  # internal (includes text/html)
     }
 
+def _normalize_url(url: str | None) -> str:
+    """Normalize a URL for use as a registry key (lowercase host, strip default ports, drop fragment)."""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    try:
+        p = urlparse(u)
+        scheme = (p.scheme or "https").lower()
+        host = (p.hostname or "").lower()
+        if not host:
+            return u
+        port = p.port
+        default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        netloc = host if (port is None or default_port) else f"{host}:{port}"
+        path = p.path or "/"
+        return urlunparse((scheme, netloc, path, "", p.query, ""))
+    except Exception:
+        return u
+
+
+async def _copy_policy_artifact(
+    norm_url: str,
+    dst_dir: Path,
+    registry: dict[str, Path],
+    lock: asyncio.Lock,
+) -> bool:
+    """Copy policy.txt + policy.extraction.json from registry src to dst_dir.
+
+    Returns True if a valid artifact was found and copied; False otherwise.
+    """
+    async with lock:
+        src_dir = registry.get(norm_url)
+    if src_dir is None or src_dir == dst_dir:
+        return False
+    src_policy = src_dir / "policy.txt"
+    if not src_policy.exists() or src_policy.stat().st_size == 0:
+        return False
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_policy, dst_dir / "policy.txt")
+    src_extraction = src_dir / "policy.extraction.json"
+    if src_extraction.exists():
+        shutil.copy2(src_extraction, dst_dir / "policy.extraction.json")
+    return True
+
+
+async def _register_policy_artifact(
+    norm_url: str,
+    art_dir: Path,
+    registry: dict[str, Path],
+    lock: asyncio.Lock,
+) -> None:
+    """Register art_dir as the canonical artifact location for norm_url (first writer wins)."""
+    if not norm_url:
+        return
+    async with lock:
+        registry.setdefault(norm_url, art_dir)
+
+
 async def process_site(
     client: Crawl4AIClient,
     domain_or_url: str,
@@ -516,6 +575,8 @@ async def process_site(
     third_party_policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
     openai_client: "_openai_t.AsyncOpenAI | None" = None,
     llm_model: str = "gpt-4o-mini",
+    policy_artifact_registry: dict[str, Path] | None = None,
+    policy_artifact_lock: asyncio.Lock | None = None,
 ) -> dict[str, Any]:
     """
     Process a single website:
@@ -629,33 +690,72 @@ async def process_site(
             }
     first_party_policy = None
     if chosen_full:
-        raw_text = chosen_full.get("text") or ""
-        llm_cleaned: str | None = None
-        if openai_client is not None and raw_text:
-            llm_cleaned = await _llm_clean_policy_text(
-                raw_text, client=openai_client, model=llm_model
-            )
-        cleaned_text = llm_cleaned if llm_cleaned else raw_text
-        base_method = chosen_full.get("text_extraction_method") or "fallback"
-        final_method = "llm_cleaned" if llm_cleaned else base_method
-        first_party_policy = {
-            "url": chosen_full.get("url"),
-            "status_code": chosen_full.get("status_code"),
-            "likeliness_score": chosen_full.get("likeliness_score"),
-            "text_len": len(cleaned_text),
-            "text_len_raw": len(raw_text),
-            "extraction_method": final_method,
-        }
-        _write_text(site_art_dir / "policy.txt", cleaned_text)
-        _write_json(
-            site_art_dir / "policy.extraction.json",
-            {
-                "method": final_method,
-                "base_extraction": base_method,
-                "llm_model": llm_model if llm_cleaned else None,
-                "source_url": chosen_full.get("url"),
-            },
+        fp_url = chosen_full.get("url") or ""
+        norm_fp_url = _normalize_url(fp_url)
+        use_registry = (
+            bool(norm_fp_url)
+            and policy_artifact_registry is not None
+            and policy_artifact_lock is not None
         )
+
+        reused_fp = False
+        if use_registry:
+            reused_fp = await _copy_policy_artifact(
+                norm_fp_url, site_art_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
+            )
+            if reused_fp:
+                log(f"[{etld1(site_url)}] Reused first-party policy artifact for {fp_url}")
+
+        if reused_fp:
+            # Read back what was copied so we can populate the metadata record.
+            policy_txt_path = site_art_dir / "policy.txt"
+            cleaned_text = policy_txt_path.read_text(encoding="utf-8") if policy_txt_path.exists() else ""
+            raw_text = chosen_full.get("text") or ""
+            try:
+                ext_data = json.loads((site_art_dir / "policy.extraction.json").read_text(encoding="utf-8"))
+            except Exception:
+                ext_data = {}
+            final_method = ext_data.get("method") or "reused"
+            first_party_policy = {
+                "url": fp_url,
+                "status_code": chosen_full.get("status_code"),
+                "likeliness_score": chosen_full.get("likeliness_score"),
+                "text_len": len(cleaned_text),
+                "text_len_raw": len(raw_text),
+                "extraction_method": final_method,
+            }
+        else:
+            raw_text = chosen_full.get("text") or ""
+            llm_cleaned: str | None = None
+            if openai_client is not None and raw_text:
+                llm_cleaned = await _llm_clean_policy_text(
+                    raw_text, client=openai_client, model=llm_model
+                )
+            cleaned_text = llm_cleaned if llm_cleaned else raw_text
+            base_method = chosen_full.get("text_extraction_method") or "fallback"
+            final_method = "llm_cleaned" if llm_cleaned else base_method
+            first_party_policy = {
+                "url": fp_url,
+                "status_code": chosen_full.get("status_code"),
+                "likeliness_score": chosen_full.get("likeliness_score"),
+                "text_len": len(cleaned_text),
+                "text_len_raw": len(raw_text),
+                "extraction_method": final_method,
+            }
+            _write_text(site_art_dir / "policy.txt", cleaned_text)
+            _write_json(
+                site_art_dir / "policy.extraction.json",
+                {
+                    "method": final_method,
+                    "base_extraction": base_method,
+                    "llm_model": llm_model if llm_cleaned else None,
+                    "source_url": fp_url,
+                },
+            )
+            if use_registry:
+                await _register_policy_artifact(
+                    norm_fp_url, site_art_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
+                )
 
     # 3) Third-party extraction
     if stage_callback:
@@ -752,47 +852,85 @@ async def process_site(
             purl = rec.get("policy_url")
             if not purl:
                 continue
-            tp_dir = site_art_dir / "third_party" / _safe_dirname(rec["third_party_etld1"])
-            tp_dir.mkdir(parents=True, exist_ok=True)
-            if third_party_policy_fetcher is not None:
-                res = await third_party_policy_fetcher(purl)
-            else:
-                res = await client.fetch(
-                    purl,
-                    capture_network=False,
-                    remove_overlays=True,
-                    magic=False,
-                    scan_full_page=_should_scan_full_page_policy(purl),
-                )
-            tp_text_raw = (res.text or "").strip()
-            tp_llm_cleaned: str | None = None
-            if openai_client is not None and tp_text_raw:
-                tp_llm_cleaned = await _llm_clean_policy_text(
-                    tp_text_raw, client=openai_client, model=llm_model
-                )
-            tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
-            tp_base_method = res.text_extraction_method or "fallback"
-            tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
-            _write_text(tp_dir / "policy.txt", tp_text)
-            _write_json(
-                tp_dir / "policy.extraction.json",
-                {
-                    "method": tp_method,
-                    "base_extraction": tp_base_method,
-                    "llm_model": llm_model if tp_llm_cleaned else None,
-                    "source_url": purl,
-                },
+            norm_tp_url = _normalize_url(purl)
+            use_tp_registry = (
+                bool(norm_tp_url)
+                and policy_artifact_registry is not None
+                and policy_artifact_lock is not None
             )
-            third_party_policy_fetches.append({
-                "third_party_etld1": rec["third_party_etld1"],
-                "policy_url": purl,
-                "fetch_success": res.success,
-                "status_code": res.status_code,
-                "text_len": len(tp_text),
-                "text_len_raw": len(tp_text_raw),
-                "extraction_method": tp_method,
-                "error_message": res.error_message,
-            })
+            tp_dir = site_art_dir / "third_party" / _safe_dirname(rec["third_party_etld1"])
+
+            reused_tp = False
+            if use_tp_registry:
+                reused_tp = await _copy_policy_artifact(
+                    norm_tp_url, tp_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
+                )
+                if reused_tp:
+                    log(f"[{etld1(site_url)}] Reused third-party policy artifact for {purl}")
+
+            if reused_tp:
+                tp_policy_path = tp_dir / "policy.txt"
+                tp_text = tp_policy_path.read_text(encoding="utf-8") if tp_policy_path.exists() else ""
+                try:
+                    tp_ext_data = json.loads((tp_dir / "policy.extraction.json").read_text(encoding="utf-8"))
+                except Exception:
+                    tp_ext_data = {}
+                tp_method = tp_ext_data.get("method") or "reused"
+                third_party_policy_fetches.append({
+                    "third_party_etld1": rec["third_party_etld1"],
+                    "policy_url": purl,
+                    "fetch_success": True,
+                    "status_code": None,
+                    "text_len": len(tp_text),
+                    "text_len_raw": len(tp_text),
+                    "extraction_method": tp_method,
+                    "error_message": None,
+                })
+            else:
+                tp_dir.mkdir(parents=True, exist_ok=True)
+                if third_party_policy_fetcher is not None:
+                    res = await third_party_policy_fetcher(purl)
+                else:
+                    res = await client.fetch(
+                        purl,
+                        capture_network=False,
+                        remove_overlays=True,
+                        magic=False,
+                        scan_full_page=_should_scan_full_page_policy(purl),
+                    )
+                tp_text_raw = (res.text or "").strip()
+                tp_llm_cleaned: str | None = None
+                if openai_client is not None and tp_text_raw:
+                    tp_llm_cleaned = await _llm_clean_policy_text(
+                        tp_text_raw, client=openai_client, model=llm_model
+                    )
+                tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
+                tp_base_method = res.text_extraction_method or "fallback"
+                tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
+                _write_text(tp_dir / "policy.txt", tp_text)
+                _write_json(
+                    tp_dir / "policy.extraction.json",
+                    {
+                        "method": tp_method,
+                        "base_extraction": tp_base_method,
+                        "llm_model": llm_model if tp_llm_cleaned else None,
+                        "source_url": purl,
+                    },
+                )
+                if use_tp_registry:
+                    await _register_policy_artifact(
+                        norm_tp_url, tp_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
+                    )
+                third_party_policy_fetches.append({
+                    "third_party_etld1": rec["third_party_etld1"],
+                    "policy_url": purl,
+                    "fetch_success": res.success,
+                    "status_code": res.status_code,
+                    "text_len": len(tp_text),
+                    "text_len_raw": len(tp_text_raw),
+                    "extraction_method": tp_method,
+                    "error_message": res.error_message,
+                })
     third_party_policy_fetch_ms = int((time.perf_counter() - t_tp_policy) * 1000)
 
     fetch_method_by_tp = {

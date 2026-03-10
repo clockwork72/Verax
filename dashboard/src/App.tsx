@@ -68,14 +68,15 @@ function App() {
   const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
   const [auditAnnotatingSite, setAuditAnnotatingSite] = useState<string | null>(null)
   // Stage 2 — Annotation state
-  const [openaiApiKey, setOpenaiApiKey] = useState('')
-  const [llmModel, setLlmModel] = useState('gpt-4o-mini')
+  const [tunnelStatus, setTunnelStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
   const [annotateRunUsage, setAnnotateRunUsage] = useState<{ tokensIn: number; tokensOut: number }>({ tokensIn: 0, tokensOut: 0 })
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
+  const [latestStreamEvent, setLatestStreamEvent] = useState<import('./vite-env').AnnotatorStreamEvent | null>(null)
   const [totalCost, setTotalCost] = useState<number>(() => {
     try {
       const raw = localStorage.getItem('privacy-dashboard.totalCost')
@@ -85,6 +86,18 @@ function App() {
   const annotateLogsRef = useRef<string[]>([])
   const annotateRunUsageRef = useRef(annotateRunUsage)
   const llmModelRef = useRef(llmModel)
+
+  // Poll HPC tunnel status every 15 s
+  useEffect(() => {
+    const check = async () => {
+      if (!window.scraper?.checkTunnel) return
+      const res = await window.scraper.checkTunnel()
+      setTunnelStatus(res?.ok ? 'online' : 'offline')
+    }
+    check()
+    const id = setInterval(check, 15_000)
+    return () => clearInterval(id)
+  }, [])
 
   const addToCost = useCallback((amount: number) => {
     setTotalCost((prev) => {
@@ -222,8 +235,15 @@ function App() {
       })
     }
 
+    if (scraper.onAnnotatorStream) {
+      scraper.onAnnotatorStream((evt) => {
+        setLatestStreamEvent(evt)
+      })
+    }
+
     if (scraper.onAnnotatorExit) {
       scraper.onAnnotatorExit(() => {
+        setLatestStreamEvent(null)
         setAnnotateRunning(false)
         setAuditAnnotatingSite(null)
         // Parse token usage from logs and accumulate cost.
@@ -349,7 +369,6 @@ function App() {
       trackerDbIndex,
       policyUrlOverride: normalizedOverride || undefined,
       excludeSameEntity,
-      openaiApiKey: openaiApiKey || undefined,
       llmModel,
     })
     if (!res?.ok) {
@@ -367,7 +386,6 @@ function App() {
     mappingMode,
     outDir,
     excludeSameEntity,
-    openaiApiKey,
     llmModel,
   ])
 
@@ -383,7 +401,6 @@ function App() {
     const res = await window.scraper.annotateSite({
       site,
       outDir,
-      openaiApiKey: openaiApiKey || undefined,
       llmModel,
       force: true,
     })
@@ -393,7 +410,7 @@ function App() {
       return { ok: false, error: res?.error || 'Failed to start annotation.' }
     }
     return { ok: true }
-  }, [outDir, openaiApiKey, llmModel])
+  }, [outDir, llmModel])
 
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
     if (!window.scraper?.startAnnotate) return
@@ -403,7 +420,6 @@ function App() {
     setAnnotateRunning(true)
     const res = await window.scraper.startAnnotate({
       artifactsDir: `${outDir}/artifacts`,
-      openaiApiKey,
       llmModel: opts.llmModel ?? llmModel,
       concurrency: opts.concurrency ?? 3,
       force: opts.force ?? false,
@@ -412,7 +428,7 @@ function App() {
       setAnnotateRunning(false)
       setAnnotateLogs([`Failed to start annotator: ${res?.error ?? 'unknown error'}`])
     }
-  }, [outDir, openaiApiKey, llmModel])
+  }, [outDir, llmModel])
 
   const stopAnnotate = async () => {
     if (!window.scraper?.stopAnnotate) return
@@ -765,10 +781,9 @@ function App() {
             mappingMode={mappingMode}
             onMappingModeChange={setMappingMode}
             onOpenLogWindow={openLogWindow}
-            openaiApiKey={openaiApiKey}
-            onOpenAiKeyChange={setOpenaiApiKey}
+            tunnelStatus={tunnelStatus}
             llmModel={llmModel}
-            onLlmModelChange={setLlmModel}
+            latestStreamEvent={latestStreamEvent}
             annotateRunning={annotateRunning}
             annotateLogs={annotateLogs}
             annotationStats={annotationStats}
@@ -900,10 +915,8 @@ function App() {
             onMappingModeChange={setMappingMode}
             autoAnnotate={autoAnnotate}
             onToggleAutoAnnotate={setAutoAnnotate}
-            openaiApiKey={openaiApiKey}
-            onOpenaiApiKeyChange={setOpenaiApiKey}
+            tunnelStatus={tunnelStatus}
             llmModel={llmModel}
-            onLlmModelChange={setLlmModel}
             annotateRunUsage={annotateRunUsage}
             annotationStats={annotationStats}
             totalCost={totalCost}
