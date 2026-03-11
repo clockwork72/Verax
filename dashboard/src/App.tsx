@@ -77,6 +77,10 @@ type BridgeSnapshot = {
   db_port?: number
   current_out_dir?: string
   checked_at?: string
+  probe_error?: string
+  probe_detail?: string
+  local_port_listening?: boolean
+  tunnel_state?: 'stale' | 'offline'
 }
 
 function App() {
@@ -150,8 +154,13 @@ function App() {
         setBridgeHealthyAt(checkedAt)
         return
       }
+      setBackendStatus(res?.data || null)
       setBridgeFailures((prev) => {
         const next = prev + 1
+        if (res?.data?.local_port_listening) {
+          setTunnelStatus('degraded')
+          return next
+        }
         setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
         return next
       })
@@ -258,6 +267,8 @@ function App() {
     ? 'Probing local tunnel'
     : tunnelStatus === 'offline'
       ? 'Tunnel offline'
+      : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
+        ? 'Tunnel attached to stale target'
       : !backendStatus?.service_ready
         ? 'Remote control plane booting'
         : !backendStatus?.database_ready
@@ -271,6 +282,8 @@ function App() {
     ? 'Waiting for port 8910 to answer from the workstation side.'
     : tunnelStatus === 'offline'
       ? 'Start or restore the SSH tunnel before using the remote pipeline.'
+      : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
+        ? 'Local port 8910 is still forwarded, but the remote orchestrator behind that tunnel is not answering. Reattach the tunnel to the current compute node.'
       : !backendStatus?.service_ready
         ? 'Tunnel is up, but the orchestrator API is still coming online.'
         : !backendStatus?.database_ready

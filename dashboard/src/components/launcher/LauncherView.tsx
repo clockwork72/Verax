@@ -203,7 +203,7 @@ export function LauncherView({
   const bridgeBadgeLabel = tunnelStatus === 'online'
     ? '● Bridge live'
     : tunnelStatus === 'degraded'
-      ? '◐ Tunnel unstable'
+      ? '◐ Bridge degraded'
       : tunnelStatus === 'offline'
         ? '○ Bridge offline'
         : '◌ Checking bridge…'
@@ -211,7 +211,7 @@ export function LauncherView({
     {
       label: 'SSH tunnel',
       state: tunnelStatus === 'online' ? 'ready' : tunnelStatus === 'degraded' ? 'warn' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
-      detail: tunnelStatus === 'online' ? 'Port 8910 forwarding clean' : tunnelStatus === 'degraded' ? 'Heartbeat missed' : tunnelStatus === 'offline' ? 'No local bridge' : 'Handshake pending',
+      detail: tunnelStatus === 'online' ? 'Port 8910 forwarding clean' : tunnelStatus === 'degraded' ? 'Local port still listens, but the target is unhealthy' : tunnelStatus === 'offline' ? 'No local bridge' : 'Handshake pending',
     },
     {
       label: 'Control API',
@@ -667,7 +667,7 @@ export function LauncherView({
                       ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
                       : 'border-[var(--border-soft)] text-[var(--muted-text)]'
                 }`}>
-                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'degraded' ? '◐ Cluster bridge unstable' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
+                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'degraded' ? '◐ Cluster bridge degraded' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
                 </span>
                 {/* DeepSeek model — read-only chip */}
                 <span

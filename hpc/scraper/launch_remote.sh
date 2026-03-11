@@ -51,6 +51,7 @@ if [ -z "${NODE}" ] || [ "${NODE}" = "(null)" ]; then
 fi
 
 echo "Service node: ${NODE}"
+echo "Reattach later with: ${ROOT_DIR}/hpc/scraper/attach_tunnel.sh ${NODE}"
 echo "Opening local tunnel on port ${SERVICE_PORT}"
 exec ssh "${SSH_OPTS[@]}" -t -L "${SERVICE_PORT}:localhost:${SERVICE_PORT}" "${SSH_HOST}" \
   ssh -N -L "${SERVICE_PORT}:localhost:${SERVICE_PORT}" "${NODE}"

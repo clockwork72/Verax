@@ -283,10 +283,12 @@ The job log prints the compute node name and a suggested tunnel command.
 After the job is running, open the tunnel from your workstation:
 
 ```bash
-ssh -fNT -L 8910:<compute-node>:8910 soufiane.essahli@toubkal.hpc.um6p.ma
+hpc/scraper/attach_tunnel.sh
 ```
 
-Replace `<compute-node>` with the node printed by the job, for example:
+That script resolves the currently running `scraper-orch` node, kills stale local `8910` forwards, and reopens the tunnel.
+
+If you need to target a specific node manually, you can still do it directly:
 
 ```bash
 ssh -fNT -L 8910:slurm-compute-h21c8-u30-svn1:8910 soufiane.essahli@toubkal.hpc.um6p.ma
@@ -402,8 +404,7 @@ Most likely cause:
 Check locally:
 
 ```bash
-curl http://127.0.0.1:8910/health
-ss -ltn '( sport = :8910 )'
+hpc/scraper/check_bridge.sh
 ```
 
 If nothing is listening locally, open the tunnel.
@@ -415,6 +416,12 @@ Check:
 - the Slurm job is still running
 - the correct compute node is being tunneled
 - local port `8910` is actually forwarded
+
+Fast repair:
+
+```bash
+hpc/scraper/attach_tunnel.sh
+```
 
 ### Deployment keeps asking for TOTP multiple times
 

@@ -68,6 +68,10 @@ type HpcBridgeStatus = {
   current_out_dir?: string
   checked_at?: string
   dbReady?: boolean
+  probe_error?: string
+  probe_detail?: string
+  local_port_listening?: boolean
+  tunnel_state?: 'stale' | 'offline'
 }
 
 declare global {

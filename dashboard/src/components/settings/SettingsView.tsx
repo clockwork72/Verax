@@ -268,7 +268,7 @@ export function SettingsView({
                 <p className="mt-1 text-[10px] text-[var(--muted-text)]">{bridgeDetail}</p>
               </div>
               <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${bridgeBadgeClass}`}>
-                {tunnelStatus === 'online' ? '● Bridge live' : tunnelStatus === 'degraded' ? '◐ Tunnel unstable' : tunnelStatus === 'offline' ? '○ Bridge offline' : '◌ Checking bridge…'}
+                {tunnelStatus === 'online' ? '● Bridge live' : tunnelStatus === 'degraded' ? '◐ Bridge degraded' : tunnelStatus === 'offline' ? '○ Bridge offline' : '◌ Checking bridge…'}
               </span>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">

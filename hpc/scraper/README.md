@@ -20,6 +20,11 @@ Quick meaning of each script:
   - push code, install runtime, submit the job, and open the tunnel
   - reuses the same SSH session across deploy steps to reduce repeated MFA prompts
   - passes `SCRAPER_LLM_BASE_URL` and `SCRAPER_LLM_HEALTH_URL` through to the Slurm job when set
+- [`attach_tunnel.sh`](/mnt/storage/projects/hpc/scraper/attach_tunnel.sh)
+  - reattach local port `8910` to the currently running orchestrator node
+  - kills stale local `8910` forwards before opening a fresh tunnel
+- [`check_bridge.sh`](/mnt/storage/projects/hpc/scraper/check_bridge.sh)
+  - show the local tunnel state, `curl` health result, and the current Slurm node when reachable
 - [`pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
   - list remote runs or copy one run back to local storage
   - also reuses the shared SSH control socket during one pull
@@ -36,6 +41,8 @@ Common commands:
 ```bash
 hpc/scraper/push_code.sh
 hpc/scraper/launch_remote.sh
+hpc/scraper/check_bridge.sh
+hpc/scraper/attach_tunnel.sh
 hpc/scraper/pull_run.sh --list
 hpc/scraper/pull_run.sh <run_dir>
 ```

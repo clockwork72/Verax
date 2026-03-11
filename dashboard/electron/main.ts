@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import net from 'node:net'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -44,9 +45,19 @@ async function hpcRequest(pathname: string, init?: RequestInit): Promise<any> {
   }
 }
 
-async function hpcHealth(): Promise<any | null> {
-  const response = await hpcRequest('/health')
-  return response?.ok ? response : null
+async function probeLocalBridgePort(port: number, host = '127.0.0.1', timeoutMs = 1000): Promise<{ ok: boolean; error?: string }> {
+  return await new Promise((resolve) => {
+    const socket = net.createConnection({ host, port })
+    const finish = (payload: { ok: boolean; error?: string }) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(payload)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish({ ok: true }))
+    socket.once('timeout', () => finish({ ok: false, error: 'timeout' }))
+    socket.once('error', (error) => finish({ ok: false, error: String(error) }))
+  })
 }
 
 function encode(value: string | undefined): string {
@@ -313,16 +324,27 @@ ipcMain.handle('scraper:stop-annotate', async () => {
 })
 
 ipcMain.handle('scraper:check-tunnel', async () => {
-  const health = await hpcHealth()
-  if (!health) {
-    return { ok: false, error: 'offline' }
+  const healthResponse = await hpcRequest('/health')
+  if (!healthResponse?.ok) {
+    const localPort = await probeLocalBridgePort(8910)
+    return {
+      ok: false,
+      error: localPort.ok ? 'stale_tunnel' : 'offline',
+      data: {
+        probe_error: healthResponse?.error || 'offline',
+        probe_detail: healthResponse?.detail,
+        local_port_listening: localPort.ok,
+        tunnel_state: localPort.ok ? 'stale' : 'offline',
+        checked_at: new Date().toISOString(),
+      },
+    }
   }
   const status = await hpcRequest('/api/status')
   return {
     ok: true,
     status: 200,
     data: {
-      ...health,
+      ...healthResponse,
       ...(status?.ok ? status : {}),
       checked_at: new Date().toISOString(),
     },
