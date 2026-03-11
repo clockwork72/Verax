@@ -1,0 +1,68 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REMOTE_NAME="${SYNC_REMOTE_NAME:-origin}"
+SOURCE_BRANCH="${SYNC_SOURCE_BRANCH:-main}"
+TARGET_BRANCH="${SYNC_TARGET_BRANCH:-hpc-v}"
+PUSH_CHANGES=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/sync_main_to_hpc.sh [--push]
+
+Behavior:
+  - fetches origin/main and origin/hpc-v
+  - checks out hpc-v
+  - merges main into hpc-v
+  - optionally pushes the updated hpc-v branch
+
+Environment overrides:
+  SYNC_REMOTE_NAME
+  SYNC_SOURCE_BRANCH
+  SYNC_TARGET_BRANCH
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --push)
+      PUSH_CHANGES=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+cd "${ROOT_DIR}"
+
+if [ -n "$(git status --short)" ]; then
+  echo "Working tree is not clean. Commit or stash changes before syncing." >&2
+  exit 1
+fi
+
+git fetch "${REMOTE_NAME}" "${SOURCE_BRANCH}" "${TARGET_BRANCH}"
+git checkout -B "${TARGET_BRANCH}" "${REMOTE_NAME}/${TARGET_BRANCH}"
+
+if git merge --no-edit "${REMOTE_NAME}/${SOURCE_BRANCH}"; then
+  echo "Merged ${REMOTE_NAME}/${SOURCE_BRANCH} into ${TARGET_BRANCH}."
+else
+  echo "Merge conflict while syncing ${SOURCE_BRANCH} into ${TARGET_BRANCH}." >&2
+  echo "Conflicted files:" >&2
+  git diff --name-only --diff-filter=U >&2
+  exit 1
+fi
+
+if [ "${PUSH_CHANGES}" -eq 1 ]; then
+  git push "${REMOTE_NAME}" "HEAD:${TARGET_BRANCH}"
+  echo "Pushed ${TARGET_BRANCH} to ${REMOTE_NAME}."
+fi
