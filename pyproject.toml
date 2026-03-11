@@ -45,6 +45,7 @@ openwpm = [
 [project.scripts]
 privacy-dataset = "privacy_research_dataset.cli:main"
 privacy-dataset-annotate = "privacy_research_dataset.annotate_cli:main"
+privacy-dataset-hpc-service = "privacy_research_dataset.hpc_service:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

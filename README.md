@@ -41,6 +41,7 @@ trackerdb/                  # optional source checkout for rebuilding indexes
 dashboard/                  # Electron + Vite UI
 outputs/                    # per-run output folders
 hpc/                        # HPC job scripts (optional)
+hpc/scraper/                # Toubkal Slurm orchestrator + deployment helpers
 ```
 
 ---
@@ -124,6 +125,20 @@ export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
 cd dashboard
 npm run dev
 ```
+
+## HPC cluster mode
+
+For the `hpc-v` branch, the scraper stack can be migrated to Toubkal and exposed locally over SSH tunnel port `8910`.
+
+```bash
+hpc/scraper/launch_remote.sh
+```
+
+That helper syncs the repository to:
+
+`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
+
+It then installs the remote Python runtime, submits the Slurm orchestrator job, and opens the local bridge that the Electron dashboard probes at `http://127.0.0.1:8910`.
 
 The dashboard launches the scraper and annotator as subprocesses. The most reliable setup is to point it at the repository virtualenv explicitly:
 

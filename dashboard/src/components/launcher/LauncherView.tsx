@@ -549,7 +549,7 @@ export function LauncherView({
 
               {/* Controls row */}
               <div className="mt-4 flex flex-wrap items-center gap-3">
-                {/* HPC tunnel status */}
+                {/* Cluster bridge status */}
                 <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
                   tunnelStatus === 'online'
                     ? 'border-[var(--color-success)] text-[var(--color-success)]'
@@ -557,12 +557,12 @@ export function LauncherView({
                       ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
                       : 'border-[var(--border-soft)] text-[var(--muted-text)]'
                 }`}>
-                  {tunnelStatus === 'online' ? '● Tunnel active' : tunnelStatus === 'offline' ? '○ Tunnel offline' : '◌ Checking tunnel…'}
+                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
                 </span>
                 {/* DeepSeek model — read-only chip */}
                 <span
                   className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]"
-                  title="DeepSeek-R1-Distill-Llama-70B (Q4_K_M) · HPC GPU node · port 8901"
+                  title="Remote Slurm orchestrator via SSH tunnel on port 8910"
                 >
                   {DEEPSEEK_MODEL.label} — {DEEPSEEK_MODEL.price}
                 </span>

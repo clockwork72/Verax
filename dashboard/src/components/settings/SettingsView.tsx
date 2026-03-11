@@ -237,10 +237,10 @@ export function SettingsView({
         </div>
         <div className="mt-4 space-y-3">
           <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
-            <p className="mb-2 text-xs text-[var(--color-text)]">HPC Tunnel — DeepSeek-R1-70B</p>
+            <p className="mb-2 text-xs text-[var(--color-text)]">Cluster Bridge</p>
             <p className="mb-3 text-[10px] text-[var(--muted-text)]">
-              Stage 2 LLM annotation runs via SSH tunnel on port 8901. Start with:<br />
-              <code className="font-mono">ssh -N -f -L 8901:&lt;gpu-node&gt;:8901 &lt;user&gt;@&lt;hpc-hostname&gt;</code>
+              The Slurm orchestrator API is exposed locally through SSH tunnel port 8910. Start it with:<br />
+              <code className="font-mono">hpc/scraper/launch_remote.sh</code>
             </p>
             <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
               tunnelStatus === 'online'
@@ -249,7 +249,7 @@ export function SettingsView({
                   ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
                   : 'border-[var(--border-soft)] text-[var(--muted-text)]'
             }`}>
-              {tunnelStatus === 'online' ? '● Tunnel active' : tunnelStatus === 'offline' ? '○ Tunnel offline' : '◌ Checking tunnel…'}
+              {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
             </span>
           </div>
           <ToggleRow

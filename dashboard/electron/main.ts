@@ -24,12 +24,15 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 const REPO_ROOT = path.resolve(process.env.APP_ROOT, '..')
+const HPC_SERVICE_ORIGIN = process.env.PRIVACY_DATASET_HPC_ORIGIN || 'http://127.0.0.1:8910'
 
 let win: BrowserWindow | null
 let scraperProcess: ChildProcessWithoutNullStreams | null = null
 let annotatorProcess: ChildProcessWithoutNullStreams | null = null
 const policyWindows = new Set<BrowserWindow>()
 const logWindows = new Set<BrowserWindow>()
+let hpcPollCursor = 0
+let hpcPollTimer: NodeJS.Timeout | null = null
 
 // Keep dashboard-triggered scraping conservative to avoid host freezes.
 const DASHBOARD_SAFE_CONCURRENCY = 2
@@ -175,6 +178,55 @@ function sendToRenderer(channel: string, payload: unknown) {
   if (win && !win.isDestroyed()) {
     win.webContents.send(channel, payload)
   }
+}
+
+async function hpcRequest(pathname: string, init?: RequestInit) {
+  const response = await fetch(`${HPC_SERVICE_ORIGIN}${pathname}`, {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...(init?.headers || {}),
+    },
+  })
+  return response.json()
+}
+
+async function hpcHealth(): Promise<any | null> {
+  try {
+    return await hpcRequest('/health')
+  } catch {
+    return null
+  }
+}
+
+async function hpcAvailable(): Promise<boolean> {
+  const health = await hpcHealth()
+  return !!health?.ok
+}
+
+function ensureHpcPoller() {
+  if (hpcPollTimer) return
+  hpcPollTimer = setInterval(async () => {
+    if (!win || win.isDestroyed()) return
+    try {
+      const res: any = await hpcRequest(`/api/poll?cursor=${hpcPollCursor}`)
+      if (!res?.ok) return
+      hpcPollCursor = Number(res.cursor || hpcPollCursor)
+      for (const item of res.items || []) {
+        if (item?.channel) {
+          sendToRenderer(item.channel, item.payload)
+        }
+      }
+    } catch {
+      // Tunnel/service unavailable; keep quiet and retry on next tick.
+    }
+  }, 1500)
+}
+
+function stopHpcPoller() {
+  if (!hpcPollTimer) return
+  clearInterval(hpcPollTimer)
+  hpcPollTimer = null
 }
 
 function defaultPaths(outDir?: string) {
@@ -538,6 +590,7 @@ function createWindow() {
     // win.loadFile('dist/index.html')
     win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
+  ensureHpcPoller()
 }
 
 function createPolicyWindow(url: string) {
@@ -615,11 +668,18 @@ function createLogWindow(content: string, title?: string) {
   return logWin
 }
 
-ipcMain.handle('scraper:get-paths', (_event, outDir?: string) => {
+ipcMain.handle('scraper:get-paths', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    const res = await hpcRequest(`/api/paths?outDir=${encodeURIComponent(String(outDir || ''))}`)
+    return res?.data || defaultPaths(outDir)
+  }
   return defaultPaths(outDir)
 })
 
 ipcMain.handle('scraper:read-summary', async (_event, filePath?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/summary?filePath=${encodeURIComponent(String(filePath || ''))}`)
+  }
   try {
     const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().summaryJson
     if (!fs.existsSync(target)) {
@@ -633,6 +693,9 @@ ipcMain.handle('scraper:read-summary', async (_event, filePath?: string) => {
 })
 
 ipcMain.handle('scraper:read-state', async (_event, filePath?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/state?filePath=${encodeURIComponent(String(filePath || ''))}`)
+  }
   try {
     const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().stateJson
     if (!fs.existsSync(target)) {
@@ -646,6 +709,12 @@ ipcMain.handle('scraper:read-state', async (_event, filePath?: string) => {
 })
 
 ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?: number) => {
+  if (await hpcAvailable()) {
+    const params = new URLSearchParams()
+    if (filePath) params.set('filePath', String(filePath))
+    if (limit) params.set('limit', String(limit))
+    return hpcRequest(`/api/explorer?${params.toString()}`)
+  }
   try {
     const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().explorerJsonl
     if (!fs.existsSync(target)) {
@@ -661,6 +730,12 @@ ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?
 })
 
 ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?: number) => {
+  if (await hpcAvailable()) {
+    const params = new URLSearchParams()
+    if (filePath) params.set('filePath', String(filePath))
+    if (limit) params.set('limit', String(limit))
+    return hpcRequest(`/api/results?${params.toString()}`)
+  }
   try {
     const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().resultsJsonl
     if (!fs.existsSync(target)) {
@@ -674,6 +749,9 @@ ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?:
 })
 
 ipcMain.handle('scraper:read-audit-state', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/audit-state?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const statePath = getAuditStatePath(outDir)
     const data = await readAuditStateFile(statePath)
@@ -684,6 +762,9 @@ ipcMain.handle('scraper:read-audit-state', async (_event, outDir?: string) => {
 })
 
 ipcMain.handle('scraper:read-run-manifest', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/run-manifest?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const manifestPath = getRunManifestPath(outDir)
     if (!fs.existsSync(manifestPath)) {
@@ -699,6 +780,12 @@ ipcMain.handle('scraper:read-run-manifest', async (_event, outDir?: string) => {
 ipcMain.handle(
   'scraper:write-audit-state',
   async (_event, payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => {
+    if (await hpcAvailable()) {
+      return hpcRequest('/api/write-audit-state', {
+        method: 'POST',
+        body: JSON.stringify(payload || {}),
+      })
+    }
     try {
       const statePath = getAuditStatePath(payload?.outDir)
       const dirPath = path.dirname(statePath)
@@ -729,6 +816,12 @@ ipcMain.handle(
 )
 
 ipcMain.handle('scraper:read-artifact-text', async (_event, options?: { outDir?: string; relativePath?: string }) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/artifact-text', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   try {
     const relativePath = options?.relativePath
     if (!relativePath) {
@@ -751,6 +844,9 @@ ipcMain.handle('scraper:read-artifact-text', async (_event, options?: { outDir?:
 })
 
 ipcMain.handle('scraper:folder-size', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/folder-size?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir
     if (!fs.existsSync(target)) {
@@ -764,6 +860,9 @@ ipcMain.handle('scraper:folder-size', async (_event, outDir?: string) => {
 })
 
 ipcMain.handle('scraper:list-runs', async (_event, baseOutDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/list-runs?baseOutDir=${encodeURIComponent(String(baseOutDir || ''))}`)
+  }
   try {
     const root = baseOutDir ? path.resolve(REPO_ROOT, baseOutDir) : defaultPaths().outDir
     if (!fs.existsSync(root)) {
@@ -821,6 +920,12 @@ ipcMain.handle('scraper:list-runs', async (_event, baseOutDir?: string) => {
 })
 
 ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/start-run', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   if (scraperProcess) {
     return { ok: false, error: 'scraper_already_running' }
   }
@@ -936,6 +1041,12 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
 })
 
 ipcMain.handle('scraper:rerun-site', async (_event, options: RerunSiteOptions = {}) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/rerun-site', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   if (scraperProcess) {
     return { ok: false, error: 'scraper_already_running' }
   }
@@ -1010,6 +1121,12 @@ ipcMain.handle('scraper:rerun-site', async (_event, options: RerunSiteOptions = 
 })
 
 ipcMain.handle('scraper:stop', async () => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/stop-run', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  }
   if (!scraperProcess) return { ok: false, error: 'not_running' }
   scraperProcess.kill()
   return { ok: true }
@@ -1043,6 +1160,12 @@ ipcMain.handle('scraper:open-policy-window', async (_event, url?: string) => {
 })
 
 ipcMain.handle('scraper:clear-results', async (_event, options?: { includeArtifacts?: boolean; outDir?: string }) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/clear-results', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   if (scraperProcess) {
     return { ok: false, error: 'scraper_running' }
   }
@@ -1088,6 +1211,12 @@ ipcMain.handle('scraper:clear-results', async (_event, options?: { includeArtifa
 })
 
 ipcMain.handle('scraper:delete-output', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/delete-output', {
+      method: 'POST',
+      body: JSON.stringify({ outDir }),
+    })
+  }
   try {
     const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir
     if (!fs.existsSync(target)) {
@@ -1101,6 +1230,12 @@ ipcMain.handle('scraper:delete-output', async (_event, outDir?: string) => {
 })
 
 ipcMain.handle('scraper:start-annotate', async (_event, options: AnnotateStartOptions = {}) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/start-annotate', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   if (annotatorProcess) {
     return { ok: false, error: 'annotator_already_running' }
   }
@@ -1137,6 +1272,12 @@ ipcMain.handle('scraper:start-annotate', async (_event, options: AnnotateStartOp
 })
 
 ipcMain.handle('scraper:annotate-site', async (_event, options: AnnotateSiteOptions = {}) => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/annotate-site', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    })
+  }
   if (annotatorProcess) {
     return { ok: false, error: 'annotator_already_running' }
   }
@@ -1179,6 +1320,12 @@ ipcMain.handle('scraper:annotate-site', async (_event, options: AnnotateSiteOpti
 })
 
 ipcMain.handle('scraper:stop-annotate', async () => {
+  if (await hpcAvailable()) {
+    return hpcRequest('/api/stop-annotate', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  }
   if (!annotatorProcess) return { ok: false, error: 'not_running' }
   annotatorProcess.kill()
   return { ok: true }
@@ -1190,22 +1337,17 @@ ipcMain.handle('scraper:stop-annotate', async () => {
  * dashboard surface "Tunnel active / offline" status before launching jobs.
  */
 ipcMain.handle('scraper:check-tunnel', async () => {
-  const http = await import('node:http')
-  return new Promise<{ ok: boolean; status?: number; error?: string }>((resolve) => {
-    const req = http.default.get(
-      { hostname: '::1', port: 8901, path: '/health', timeout: 3000 } as any,
-      (res) => {
-        res.resume() // drain body
-        const ok = typeof res.statusCode === 'number' && res.statusCode < 400
-        resolve({ ok, status: res.statusCode })
-      },
-    )
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }) })
-    req.on('error', (err) => resolve({ ok: false, error: err.message }))
-  })
+  const health = await hpcHealth()
+  if (!health) {
+    return { ok: false, error: 'offline' }
+  }
+  return { ok: true, status: 200, data: health }
 })
 
 ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/annotation-stats?artifactsDir=${encodeURIComponent(String(artifactsDir || ''))}`)
+  }
   try {
     const targetDir = artifactsDir
       ? path.resolve(REPO_ROOT, artifactsDir)
@@ -1280,6 +1422,9 @@ ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string)
 })
 
 ipcMain.handle('scraper:count-ok-artifacts', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/count-ok-artifacts?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const paths = defaultPaths(outDir)
     const okDir = paths.artifactsOkDir
@@ -1295,6 +1440,9 @@ ipcMain.handle('scraper:count-ok-artifacts', async (_event, outDir?: string) => 
 })
 
 ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/read-tp-cache?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const root = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir
     const cachePath = path.join(root, 'results.tp_cache.json')
@@ -1324,6 +1472,9 @@ ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
 })
 
 ipcMain.handle('scraper:crux-cache-stats', async (_event, outDir?: string) => {
+  if (await hpcAvailable()) {
+    return hpcRequest(`/api/crux-cache-stats?outDir=${encodeURIComponent(String(outDir || ''))}`)
+  }
   try {
     const paths = defaultPaths(outDir)
     const cachePath = paths.cruxCacheJson
@@ -1345,6 +1496,7 @@ ipcMain.handle('scraper:crux-cache-stats', async (_event, outDir?: string) => {
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
+  stopHpcPoller()
   if (process.platform !== 'darwin') {
     app.quit()
     win = null

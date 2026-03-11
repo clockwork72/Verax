@@ -53,6 +53,19 @@ type AnnotateSiteOptions = {
   force?: boolean
 }
 
+type HpcBridgeStatus = {
+  service_ready?: boolean
+  database_ready?: boolean
+  scraper_connected?: boolean
+  dashboard_locked?: boolean
+  active_run?: boolean
+  annotator_running?: boolean
+  node?: string
+  port?: number
+  db_port?: number
+  current_out_dir?: string
+}
+
 declare global {
   interface Window {
     scraper?: {
@@ -79,7 +92,7 @@ declare global {
       onExit: (callback: (event: any) => void) => void
       rerunSite: (options: ScraperRerunSiteOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string>; site?: string }>
       startAnnotate: (options: { artifactsDir?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
-      checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string }>
+      checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string; data?: HpcBridgeStatus }>
       stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
       annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
       annotationStats: (artifactsDir?: string) => Promise<{ ok: boolean; error?: string; total_sites?: number; annotated_sites?: number; total_statements?: number; per_site?: { site: string; count: number; has_statements: boolean }[] }>

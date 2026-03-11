@@ -90,6 +90,7 @@ function App() {
   const [auditAnnotatingSite, setAuditAnnotatingSite] = useState<string | null>(null)
   // Stage 2 — Annotation state
   const [tunnelStatus, setTunnelStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+  const [backendStatus, setBackendStatus] = useState<any | null>(null)
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
@@ -106,12 +107,21 @@ function App() {
     const check = async () => {
       if (!window.scraper?.checkTunnel) return
       const res = await window.scraper.checkTunnel()
+      setBackendStatus(res?.data || null)
       setTunnelStatus(res?.ok ? 'online' : 'offline')
     }
     check()
     const id = setInterval(check, 15_000)
     return () => clearInterval(id)
   }, [])
+
+  const dashboardLocked = tunnelStatus !== 'online' || Boolean(backendStatus?.dashboard_locked)
+
+  useEffect(() => {
+    if (dashboardLocked && activeNav !== 'launcher') {
+      setActiveNav('launcher')
+    }
+  }, [dashboardLocked, activeNav])
 
   type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
   type CompletedSiteInfo = { site: string; status: string; cached: boolean; annotated?: boolean }
@@ -224,7 +234,9 @@ function App() {
       : `Resume ${outDir} after ${datasetState.lastSuccessfulSite || `rank #${datasetState.lastSuccessfulRank ?? 0}`} to reach ${datasetState.totalSites} sites.`
     : launcherMode === 'append'
       ? `Append ${appendTargetsSummary.newSites.length} new website(s) to ${outDir}.`
-      : 'Choose how many sites to crawl. Press Enter to start.'
+      : dashboardLocked
+        ? 'Cluster bridge offline. Start the orchestrator and SSH tunnel with hpc/scraper/launch_remote.sh.'
+        : 'Choose how many sites to crawl. Press Enter to start.'
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -525,6 +537,10 @@ function App() {
 
   const startRun = async () => {
     if (running) return
+    if (dashboardLocked) {
+      setErrorMessage('Cluster bridge is offline. Start the remote orchestrator and port 8910 tunnel first.')
+      return
+    }
     if (launcherMode === 'start' && (!topN || Number(topN) <= 0)) return
     const runId = createRunId()
     const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
