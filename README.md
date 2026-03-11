@@ -47,6 +47,31 @@ Important remote paths:
 The remote repo is a deployment mirror, not the source of truth.
 You should treat local code as authoritative and remote code as disposable.
 
+## Branch Sync Strategy
+
+This repository now includes an automatic sync path from `main` into `hpc-v`.
+
+The automation is:
+
+- [`scripts/sync_main_to_hpc.sh`](/mnt/storage/projects/scripts/sync_main_to_hpc.sh)
+  - fetches `main` and `hpc-v`
+  - checks out `hpc-v`
+  - merges `main` into it
+  - optionally pushes the updated branch
+- [sync-main-into-hpc.yml](/mnt/storage/projects/.github/workflows/sync-main-into-hpc.yml)
+  - runs on every push to `main`
+  - executes the sync script
+  - pushes `hpc-v` automatically if the merge is clean
+
+What this means operationally:
+
+- small changes merged into `main` will propagate to `hpc-v` automatically
+- no manual sync is needed for every minor update
+- if a real merge conflict happens, the workflow stops and you resolve that conflict once
+
+The most likely conflict zone is still the local dashboard bridge files, because `hpc-v` intentionally changes how the local UI connects to the remote runtime.
+So the automation removes routine sync work, but it does not make conflicting edits mathematically disappear.
+
 ## Architecture
 
 The branch works like this:
@@ -277,8 +302,16 @@ Follow these rules to avoid drift and confusion:
 
 - write code locally
 - commit code locally
+- merge feature work into `main`
 - push code to Toubkal with `push_code.sh`
 - avoid editing remote code directly
+
+### Branches
+
+- treat `main` as the upstream application branch
+- treat `hpc-v` as the HPC deployment branch
+- let the sync workflow pull `main` forward into `hpc-v`
+- keep HPC-specific logic isolated where possible so merges stay easy
 
 ### Remote repo
 
@@ -359,6 +392,17 @@ hpc/scraper/push_code.sh
 ```
 
 Then restart the orchestrator if needed.
+
+### A change exists on `main` but is missing from `hpc-v`
+
+Check the branch sync workflow.
+
+If the automatic merge failed, there is likely a real conflict that needs review.
+Run this locally to reproduce the sync behavior:
+
+```bash
+bash scripts/sync_main_to_hpc.sh
+```
 
 ## Quick Reference
 

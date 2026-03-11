@@ -5,6 +5,7 @@ This folder contains the scripts used to deploy, run, and retrieve scraper jobs 
 For the full branch workflow, read the top-level guide:
 
 - [`README.md`](/mnt/storage/projects/README.md)
+- [`scripts/sync_main_to_hpc.sh`](/mnt/storage/projects/scripts/sync_main_to_hpc.sh)
 
 Quick meaning of each script:
 
