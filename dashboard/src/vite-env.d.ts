@@ -60,10 +60,14 @@ type HpcBridgeStatus = {
   dashboard_locked?: boolean
   active_run?: boolean
   annotator_running?: boolean
+  running?: boolean
+  annotateRunning?: boolean
   node?: string
   port?: number
   db_port?: number
   current_out_dir?: string
+  checked_at?: string
+  dbReady?: boolean
 }
 
 declare global {

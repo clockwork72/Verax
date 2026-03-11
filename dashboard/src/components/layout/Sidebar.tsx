@@ -3,6 +3,8 @@ import { NavId } from '../../types'
 type SidebarProps = {
   activeNav: NavId
   onSelect: (id: NavId) => void
+  disabledNavs?: Record<NavId, boolean>
+  bridgeStatus?: 'checking' | 'online' | 'degraded' | 'offline'
 }
 
 const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
@@ -97,17 +99,35 @@ const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
   },
 ]
 
-export function Sidebar({ activeNav, onSelect }: SidebarProps) {
+export function Sidebar({
+  activeNav,
+  onSelect,
+  disabledNavs,
+  bridgeStatus = 'checking',
+}: SidebarProps) {
+  const bridgeClass = bridgeStatus === 'online'
+    ? 'bg-[var(--color-success)]'
+    : bridgeStatus === 'degraded'
+      ? 'bg-[var(--color-warn)]'
+      : bridgeStatus === 'offline'
+        ? 'bg-[var(--color-danger)]'
+        : 'bg-[var(--muted-text)]'
+
   return (
     <aside className="rail fixed left-0 top-0 flex h-screen w-[72px] flex-col items-center gap-4 py-6">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-soft)]" />
+      <div className="relative flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--border-soft)]">
+        <span className={`absolute right-2 top-2 h-2.5 w-2.5 rounded-full ${bridgeClass}`} />
+      </div>
       <nav className="flex flex-1 flex-col items-center gap-3">
         {navItems.map((item) => (
           <button
             key={item.id}
-            className={`rail-btn focusable ${activeNav === item.id ? 'active' : ''}`}
+            className={`rail-btn focusable ${activeNav === item.id ? 'active' : ''} ${disabledNavs?.[item.id] ? 'cursor-not-allowed opacity-35' : ''}`}
             aria-label={item.label}
+            aria-disabled={disabledNavs?.[item.id] ? 'true' : 'false'}
             onClick={() => onSelect(item.id)}
+            disabled={disabledNavs?.[item.id]}
+            title={disabledNavs?.[item.id] ? `${item.label} unlocks when the cluster bridge is ready.` : item.label}
           >
             {item.icon}
           </button>

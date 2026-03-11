@@ -20,7 +20,15 @@ type SettingsViewProps = {
   onMappingModeChange?: (mode: 'radar' | 'trackerdb' | 'mixed') => void
   autoAnnotate?: boolean
   onToggleAutoAnnotate?: (v: boolean) => void
-  tunnelStatus?: 'checking' | 'online' | 'offline'
+  tunnelStatus?: 'checking' | 'online' | 'degraded' | 'offline'
+  bridgeReady?: boolean
+  bridgeHeadline?: string
+  bridgeDetail?: string
+  bridgeNode?: string
+  bridgeCurrentOutDir?: string
+  bridgeCheckedAt?: string
+  bridgeHealthyAt?: string
+  bridgeFailures?: number
 }
 
 function ToggleRow({
@@ -70,7 +78,15 @@ export function SettingsView({
   onMappingModeChange,
   autoAnnotate = true,
   onToggleAutoAnnotate,
-  tunnelStatus = 'checking' as 'checking' | 'online' | 'offline',
+  tunnelStatus = 'checking' as 'checking' | 'online' | 'degraded' | 'offline',
+  bridgeReady = false,
+  bridgeHeadline = 'Probing local tunnel',
+  bridgeDetail = 'Waiting for the workstation to connect to the remote control plane.',
+  bridgeNode,
+  bridgeCurrentOutDir,
+  bridgeCheckedAt = 'never',
+  bridgeHealthyAt = 'never',
+  bridgeFailures = 0,
 }: SettingsViewProps) {
   const [cruxCache, setCruxCache] = useState<CruxCacheStats | null>(null)
 
@@ -85,6 +101,14 @@ export function SettingsView({
   }, [outDir])
 
   useEffect(() => { void refreshCruxCache() }, [refreshCruxCache])
+
+  const bridgeBadgeClass = tunnelStatus === 'online'
+    ? 'border-[var(--color-success)] text-[var(--color-success)]'
+    : tunnelStatus === 'degraded'
+      ? 'border-[var(--color-warn)] text-[var(--color-warn)]'
+      : tunnelStatus === 'offline'
+        ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+        : 'border-[var(--border-soft)] text-[var(--muted-text)]'
 
   return (
     <>
@@ -233,24 +257,41 @@ export function SettingsView({
       <section className="card rounded-2xl p-6">
         <div>
           <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Automation</p>
-          <h3 className="text-lg font-semibold">Post-scrape actions</h3>
+          <h3 className="text-lg font-semibold">Cluster bridge</h3>
         </div>
         <div className="mt-4 space-y-3">
-          <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
-            <p className="mb-2 text-xs text-[var(--color-text)]">Cluster Bridge</p>
-            <p className="mb-3 text-[10px] text-[var(--muted-text)]">
-              The Slurm orchestrator API is exposed locally through SSH tunnel port 8910. Start it with:<br />
-              <code className="font-mono">hpc/scraper/launch_remote.sh</code>
-            </p>
-            <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
-              tunnelStatus === 'online'
-                ? 'border-[var(--color-success)] text-[var(--color-success)]'
-                : tunnelStatus === 'offline'
-                  ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
-                  : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-            }`}>
-              {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
-            </span>
+          <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs text-[var(--color-text)]">Cluster bridge</p>
+                <p className="mt-1 text-[10px] text-[var(--muted-text)]">{bridgeHeadline}</p>
+                <p className="mt-1 text-[10px] text-[var(--muted-text)]">{bridgeDetail}</p>
+              </div>
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${bridgeBadgeClass}`}>
+                {tunnelStatus === 'online' ? '● Bridge live' : tunnelStatus === 'degraded' ? '◐ Tunnel unstable' : tunnelStatus === 'offline' ? '○ Bridge offline' : '◌ Checking bridge…'}
+              </span>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-[11px] text-[var(--muted-text)]">
+                <div className="font-semibold text-[var(--color-text)]">Launch command</div>
+                <code className="mt-2 block font-mono">hpc/scraper/launch_remote.sh</code>
+              </div>
+              <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-[11px] text-[var(--muted-text)]">
+                <div className="font-semibold text-[var(--color-text)]">Bridge telemetry</div>
+                <div className="mt-2 flex flex-col gap-1">
+                  <span>Node {bridgeNode || 'pending'}</span>
+                  <span>Remote out {bridgeCurrentOutDir || 'pending'}</span>
+                  <span>Checked {bridgeCheckedAt}</span>
+                  <span>Last healthy {bridgeHealthyAt}</span>
+                  {bridgeFailures > 0 && tunnelStatus !== 'online' && <span>{bridgeFailures} missed heartbeat{bridgeFailures > 1 ? 's' : ''}</span>}
+                </div>
+              </div>
+            </div>
+            {!bridgeReady && (
+              <p className="mt-3 text-[10px] text-[var(--color-danger)]">
+                Non-launcher workspace views stay locked until the tunnel, orchestrator API, and database are all synchronized.
+              </p>
+            )}
           </div>
           <ToggleRow
             label="Auto-annotate after scraping"

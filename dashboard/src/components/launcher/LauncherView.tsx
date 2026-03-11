@@ -95,7 +95,16 @@ type LauncherViewProps = {
   activeSites?: Record<string, ActiveSiteInfo>
   recentCompleted?: CompletedSiteInfo[]
   // Stage 2 — Annotation
-  tunnelStatus?: 'checking' | 'online' | 'offline'
+  tunnelStatus?: 'checking' | 'online' | 'degraded' | 'offline'
+  bridgeReady?: boolean
+  bridgeHeadline?: string
+  bridgeDetail?: string
+  bridgeNode?: string
+  bridgeCurrentOutDir?: string
+  bridgeCheckedAt?: string
+  bridgeHealthyAt?: string
+  bridgeFailures?: number
+  workspaceReady?: boolean
   llmModel?: string
   latestStreamEvent?: AnnotatorStreamEvent | null
   annotateRunning?: boolean
@@ -140,6 +149,15 @@ export function LauncherView({
   activeSites = {},
   recentCompleted = [],
   tunnelStatus = 'checking',
+  bridgeReady = false,
+  bridgeHeadline = 'Probing local tunnel',
+  bridgeDetail = 'Waiting for the workstation to connect to the cluster bridge.',
+  bridgeNode,
+  bridgeCurrentOutDir,
+  bridgeCheckedAt = 'never',
+  bridgeHealthyAt = 'never',
+  bridgeFailures = 0,
+  workspaceReady = false,
   llmModel = 'openai/local',
   latestStreamEvent = null,
   annotateRunning = false,
@@ -175,6 +193,43 @@ export function LauncherView({
     annotateLogRef.current.scrollTop = annotateLogRef.current.scrollHeight
   }, [annotateLogs])
 
+  const bridgeBadgeClass = tunnelStatus === 'online'
+    ? 'border-[var(--color-success)] text-[var(--color-success)]'
+    : tunnelStatus === 'degraded'
+      ? 'border-[var(--color-warn)] text-[var(--color-warn)]'
+      : tunnelStatus === 'offline'
+        ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+        : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+  const bridgeBadgeLabel = tunnelStatus === 'online'
+    ? '● Bridge live'
+    : tunnelStatus === 'degraded'
+      ? '◐ Tunnel unstable'
+      : tunnelStatus === 'offline'
+        ? '○ Bridge offline'
+        : '◌ Checking bridge…'
+  const bridgeSteps = [
+    {
+      label: 'SSH tunnel',
+      state: tunnelStatus === 'online' ? 'ready' : tunnelStatus === 'degraded' ? 'warn' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
+      detail: tunnelStatus === 'online' ? 'Port 8910 forwarding clean' : tunnelStatus === 'degraded' ? 'Heartbeat missed' : tunnelStatus === 'offline' ? 'No local bridge' : 'Handshake pending',
+    },
+    {
+      label: 'Control API',
+      state: bridgeReady || tunnelStatus === 'degraded' ? 'ready' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
+      detail: bridgeReady || tunnelStatus === 'degraded' ? 'Remote orchestrator reachable' : 'Waiting for health probe',
+    },
+    {
+      label: 'PostgreSQL',
+      state: bridgeReady || tunnelStatus === 'degraded' ? 'ready' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
+      detail: bridgeReady || tunnelStatus === 'degraded' ? 'Database session confirmed' : 'Service still warming up',
+    },
+    {
+      label: 'Workspace',
+      state: workspaceReady ? 'ready' : bridgeReady ? 'pending' : 'blocked',
+      detail: workspaceReady ? 'Remote state synced locally' : bridgeReady ? 'Waiting for a remote run' : 'Locked behind bridge gate',
+    },
+  ] as const
+
   return (
     <>
       <section className="card rounded-2xl p-6">
@@ -197,10 +252,62 @@ export function LauncherView({
               <button
                 className="focusable rounded-full bg-[var(--color-primary)] px-4 py-2 text-xs font-semibold text-white"
                 onClick={onStart}
-                disabled={running}
+                disabled={running || !bridgeReady}
               >
                 {primaryActionLabel}
               </button>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-[var(--border-soft)] bg-black/15 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="max-w-2xl">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">Cluster bridge</p>
+                <h3 className="text-sm font-semibold">{bridgeHeadline}</h3>
+                <p className="mt-1 text-xs text-[var(--muted-text)]">{bridgeDetail}</p>
+              </div>
+              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${bridgeBadgeClass}`}>
+                {bridgeBadgeLabel}
+              </span>
+            </div>
+            <div className="mt-4 grid gap-2 md:grid-cols-4">
+              {bridgeSteps.map((step) => (
+                <div
+                  key={step.label}
+                  className={`rounded-xl border px-3 py-3 ${
+                    step.state === 'ready'
+                      ? 'border-[var(--color-success)] bg-emerald-950/20'
+                      : step.state === 'warn'
+                        ? 'border-[var(--color-warn)] bg-amber-950/20'
+                        : step.state === 'blocked'
+                          ? 'border-[var(--color-danger)] bg-rose-950/20'
+                          : 'border-[var(--border-soft)] bg-black/20'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className={`inline-block h-2 w-2 rounded-full ${
+                      step.state === 'ready'
+                        ? 'bg-[var(--color-success)]'
+                        : step.state === 'warn'
+                          ? 'bg-[var(--color-warn)]'
+                          : step.state === 'blocked'
+                            ? 'bg-[var(--color-danger)]'
+                            : 'bg-[var(--muted-text)]'
+                    }`} />
+                    <span className="font-semibold text-[var(--color-text)]">{step.label}</span>
+                  </div>
+                  <p className="mt-2 text-[11px] text-[var(--muted-text)]">{step.detail}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-[var(--muted-text)]">
+              <code className="rounded-lg border border-[var(--border-soft)] bg-black/30 px-2.5 py-1 font-mono">
+                hpc/scraper/launch_remote.sh
+              </code>
+              {bridgeNode && <span>Node {bridgeNode}</span>}
+              {bridgeCurrentOutDir && <span>Remote out {bridgeCurrentOutDir}</span>}
+              <span>Checked {bridgeCheckedAt}</span>
+              <span>Last healthy {bridgeHealthyAt}</span>
+              {bridgeFailures > 0 && tunnelStatus !== 'online' && <span>{bridgeFailures} missed heartbeat{bridgeFailures > 1 ? 's' : ''}</span>}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-text)]">
@@ -214,6 +321,7 @@ export function LauncherView({
               Stop run
             </button>
             {running && <span>Stopping will keep partial results.</span>}
+            {!bridgeReady && <span>Launcher stays locked until the SSH tunnel, orchestrator API, and database are all healthy.</span>}
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -227,7 +335,7 @@ export function LauncherView({
               }}
               className="focusable w-40 rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-white"
               placeholder="1000"
-              disabled={topNLocked}
+              disabled={topNLocked || !bridgeReady}
             />
             <span className="text-xs text-[var(--muted-text)]">
               {topNLocked ? 'Target locked to loaded dataset' : 'sites from Tranco list'}
@@ -553,11 +661,13 @@ export function LauncherView({
                 <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
                   tunnelStatus === 'online'
                     ? 'border-[var(--color-success)] text-[var(--color-success)]'
+                    : tunnelStatus === 'degraded'
+                      ? 'border-[var(--color-warn)] text-[var(--color-warn)]'
                     : tunnelStatus === 'offline'
                       ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
                       : 'border-[var(--border-soft)] text-[var(--muted-text)]'
                 }`}>
-                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
+                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'degraded' ? '◐ Cluster bridge unstable' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
                 </span>
                 {/* DeepSeek model — read-only chip */}
                 <span

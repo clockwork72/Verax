@@ -25,6 +25,19 @@ function formatDuration(ms: number) {
   return `${seconds}s`
 }
 
+function formatAgeLabel(timestamp: number | null) {
+  if (!timestamp) return 'never'
+  const deltaMs = Date.now() - timestamp
+  if (deltaMs < 15_000) return 'just now'
+  const totalSeconds = Math.floor(deltaMs / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  if (minutes <= 0) return `${seconds}s ago`
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
 function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -46,6 +59,24 @@ function parseTargetSites(value: string): string[] {
 function resultSiteKey(record: any): string {
   const candidate = record?.site_etld1 || record?.input || record?.site || ''
   return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
+}
+
+type TunnelStatus = 'checking' | 'online' | 'degraded' | 'offline'
+
+type BridgeSnapshot = {
+  service_ready?: boolean
+  database_ready?: boolean
+  scraper_connected?: boolean
+  dashboard_locked?: boolean
+  active_run?: boolean
+  annotator_running?: boolean
+  running?: boolean
+  annotateRunning?: boolean
+  node?: string
+  port?: number
+  db_port?: number
+  current_out_dir?: string
+  checked_at?: string
 }
 
 function App() {
@@ -89,8 +120,11 @@ function App() {
   const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
   const [auditAnnotatingSite, setAuditAnnotatingSite] = useState<string | null>(null)
   // Stage 2 — Annotation state
-  const [tunnelStatus, setTunnelStatus] = useState<'checking' | 'online' | 'offline'>('checking')
-  const [backendStatus, setBackendStatus] = useState<any | null>(null)
+  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus>('checking')
+  const [backendStatus, setBackendStatus] = useState<BridgeSnapshot | null>(null)
+  const [bridgeFailures, setBridgeFailures] = useState(0)
+  const [bridgeCheckedAt, setBridgeCheckedAt] = useState<number | null>(null)
+  const [bridgeHealthyAt, setBridgeHealthyAt] = useState<number | null>(null)
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
@@ -102,20 +136,38 @@ function App() {
   const annotateLogsRef = useRef<string[]>([])
   const llmModelRef = useRef(llmModel)
 
-  // Poll HPC tunnel status every 15 s
+  // Poll the SSH-backed bridge and avoid tearing the UI down on a single missed heartbeat.
   useEffect(() => {
     const check = async () => {
       if (!window.scraper?.checkTunnel) return
+      const checkedAt = Date.now()
       const res = await window.scraper.checkTunnel()
-      setBackendStatus(res?.data || null)
-      setTunnelStatus(res?.ok ? 'online' : 'offline')
+      setBridgeCheckedAt(checkedAt)
+      if (res?.ok) {
+        setBackendStatus(res.data || null)
+        setTunnelStatus('online')
+        setBridgeFailures(0)
+        setBridgeHealthyAt(checkedAt)
+        return
+      }
+      setBridgeFailures((prev) => {
+        const next = prev + 1
+        setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
+        return next
+      })
     }
     check()
-    const id = setInterval(check, 15_000)
+    const id = setInterval(check, 5_000)
     return () => clearInterval(id)
-  }, [])
+  }, [bridgeHealthyAt])
 
-  const dashboardLocked = tunnelStatus !== 'online' || Boolean(backendStatus?.dashboard_locked)
+  const dashboardLocked = (
+    tunnelStatus === 'checking'
+    || tunnelStatus === 'offline'
+    || !backendStatus?.service_ready
+    || !backendStatus?.database_ready
+    || Boolean(backendStatus?.dashboard_locked)
+  )
 
   useEffect(() => {
     if (dashboardLocked && activeNav !== 'launcher') {
@@ -200,6 +252,60 @@ function App() {
       manifestCruxFilter: typeof runManifest?.cruxFilter === 'boolean' ? runManifest.cruxFilter : undefined,
     }
   }, [summaryData, stateData, resultsData, runManifest])
+  const bridgeReady = !dashboardLocked
+  const workspaceReady = bridgeReady && (running || hasRun || datasetState.hasDataset)
+  const bridgeHeadline = tunnelStatus === 'checking'
+    ? 'Probing local tunnel'
+    : tunnelStatus === 'offline'
+      ? 'Tunnel offline'
+      : !backendStatus?.service_ready
+        ? 'Remote control plane booting'
+        : !backendStatus?.database_ready
+          ? 'PostgreSQL warming up'
+          : running || backendStatus?.active_run || backendStatus?.running
+            ? 'Cluster pipeline active'
+            : workspaceReady
+              ? 'Cluster workspace synchronized'
+              : 'Bridge ready for launch'
+  const bridgeDetail = tunnelStatus === 'checking'
+    ? 'Waiting for port 8910 to answer from the workstation side.'
+    : tunnelStatus === 'offline'
+      ? 'Start or restore the SSH tunnel before using the remote pipeline.'
+      : !backendStatus?.service_ready
+        ? 'Tunnel is up, but the orchestrator API is still coming online.'
+        : !backendStatus?.database_ready
+          ? 'Control plane is reachable, but PostgreSQL has not finished initializing.'
+          : running || backendStatus?.active_run || backendStatus?.running
+            ? 'The workstation is attached to a live remote run and status is streaming from the cluster.'
+            : workspaceReady
+              ? 'Remote state is synced and downstream views are unlocked.'
+              : 'Bridge is healthy. Launch a remote job to unlock the full workspace.'
+  const disabledNavs = {
+    launcher: false,
+    settings: false,
+    database: !bridgeReady,
+    results: !workspaceReady,
+    audit: !workspaceReady,
+    explorer: !workspaceReady,
+    annotations: !workspaceReady,
+    consistency: !workspaceReady,
+  } satisfies Record<NavId, boolean>
+  const handleSelectNav = useCallback((next: NavId) => {
+    if (!disabledNavs[next]) {
+      setActiveNav(next)
+      return
+    }
+    setErrorMessage(
+      next === 'database'
+        ? 'Remote orchestrator is not ready yet. Bring the bridge online first.'
+        : 'This view unlocks after the tunnel is healthy and a remote workspace is available.'
+    )
+    setActiveNav('launcher')
+  }, [disabledNavs])
+  useEffect(() => {
+    if (!disabledNavs[activeNav]) return
+    setActiveNav('launcher')
+  }, [activeNav, disabledNavs])
   const appendTargets = useMemo(() => parseTargetSites(appendTargetsText), [appendTargetsText])
   const appendTargetsSummary = useMemo(() => {
     const newSites = appendTargets.filter((site) => !datasetState.siteKeys.has(normalizeSiteKey(site)))
@@ -974,7 +1080,12 @@ function App() {
 
   return (
     <div className="min-h-screen">
-      <Sidebar activeNav={activeNav} onSelect={setActiveNav} />
+      <Sidebar
+        activeNav={activeNav}
+        onSelect={handleSelectNav}
+        disabledNavs={disabledNavs}
+        bridgeStatus={tunnelStatus}
+      />
       <PageShell title={pageTitle} subtitle={pageSubtitle}>
         {activeNav === 'launcher' && (
           <LauncherView
@@ -1000,6 +1111,15 @@ function App() {
             onMappingModeChange={setMappingMode}
             onOpenLogWindow={openLogWindow}
             tunnelStatus={tunnelStatus}
+            bridgeReady={bridgeReady}
+            bridgeHeadline={bridgeHeadline}
+            bridgeDetail={bridgeDetail}
+            bridgeNode={backendStatus?.node}
+            bridgeCurrentOutDir={backendStatus?.current_out_dir}
+            bridgeCheckedAt={formatAgeLabel(bridgeCheckedAt)}
+            bridgeHealthyAt={formatAgeLabel(bridgeHealthyAt)}
+            bridgeFailures={bridgeFailures}
+            workspaceReady={workspaceReady}
             llmModel={llmModel}
             latestStreamEvent={latestStreamEvent}
             annotateRunning={annotateRunning}
@@ -1145,6 +1265,14 @@ function App() {
             autoAnnotate={autoAnnotate}
             onToggleAutoAnnotate={setAutoAnnotate}
             tunnelStatus={tunnelStatus}
+            bridgeReady={bridgeReady}
+            bridgeHeadline={bridgeHeadline}
+            bridgeDetail={bridgeDetail}
+            bridgeNode={backendStatus?.node}
+            bridgeCurrentOutDir={backendStatus?.current_out_dir}
+            bridgeCheckedAt={formatAgeLabel(bridgeCheckedAt)}
+            bridgeHealthyAt={formatAgeLabel(bridgeHealthyAt)}
+            bridgeFailures={bridgeFailures}
           />
         )}
       </PageShell>
