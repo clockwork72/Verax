@@ -25,6 +25,50 @@ from .summary import SummaryBuilder, site_to_explorer_record
 
 
 # ---------------------------
+# Language detection (stop-word heuristic, no extra dependency)
+# ---------------------------
+
+_EN_STOPWORDS = frozenset({
+    "the", "and", "of", "to", "in", "a", "is", "that", "for", "on", "are",
+    "with", "as", "at", "be", "by", "from", "or", "an", "we", "our", "you",
+    "your", "may", "this", "will", "not", "have", "it", "they", "their",
+    "us", "any", "all", "can", "when", "if", "use", "such", "other",
+    "which", "these", "those", "has", "been", "its", "about", "also",
+    "more", "who", "but", "do", "how", "information", "data", "personal",
+})
+_EN_WORD_RE = re.compile(r"\b[a-z]{2,}\b")
+
+
+def _is_english(text: str, min_ratio: float = 0.07) -> bool:
+    """Return True if *text* appears to be English based on stop-word frequency.
+
+    Uses a simple ratio: (English stop-word hits) / (total lowercase alpha words).
+    A ratio >= 0.07 reliably separates English from other Latin-script languages
+    (French, Spanish, Portuguese, German, etc.).
+    Texts shorter than 80 words are accepted unconditionally.
+    """
+    words = _EN_WORD_RE.findall(text.lower())
+    if len(words) < 80:
+        return True  # too short to classify — accept
+    hit = sum(1 for w in words if w in _EN_STOPWORDS)
+    return (hit / len(words)) >= min_ratio
+
+
+def _has_third_party_policy(site_art_dir: "Path") -> bool:
+    """Return True if at least one third-party policy.txt with non-empty content exists."""
+    tp_root = site_art_dir / "third_party"
+    if not tp_root.is_dir():
+        return False
+    for tp_dir in tp_root.iterdir():
+        if not tp_dir.is_dir():
+            continue
+        p = tp_dir / "policy.txt"
+        if p.exists() and p.stat().st_size > 0:
+            return True
+    return False
+
+
+# ---------------------------
 # Prefilter defaults
 # ---------------------------
 
@@ -55,6 +99,14 @@ def _parse_args() -> argparse.Namespace:
     out = p.add_argument_group("Output")
     out.add_argument("--out", type=str, required=True, help="Output JSONL path (one record per site).")
     out.add_argument("--artifacts-dir", type=str, required=True, help="Directory to store HTML/text artifacts per site.")
+    out.add_argument(
+        "--artifacts-ok-dir", type=str, default=None,
+        help=(
+            "Directory that mirrors artifacts/ but contains only sites with a successful scrape "
+            "(status=ok, non-empty policy.txt). Each site entry is a symlink into artifacts/. "
+            "Defaults to <artifacts-dir>_ok."
+        ),
+    )
 
     radar = p.add_argument_group("Tracker Radar")
     radar.add_argument("--tracker-radar-index", type=str, default=None, help="Path to tracker_radar_index.json (built with scripts/build_tracker_radar_index.py).")
@@ -87,6 +139,14 @@ def _parse_args() -> argparse.Namespace:
     crux.add_argument("--crux-timeout-ms", type=int, default=7000, help="Timeout for CrUX API requests (ms).")
     crux.add_argument("--crux-concurrency", type=int, default=20, help="Concurrent CrUX API requests.")
     crux.add_argument("--crux-allow-http", action="store_true", help="Fallback to http origin if https isn't found.")
+    crux.add_argument(
+        "--crux-cache-file", type=str, default=None,
+        help=(
+            "Persistent JSON cache for CrUX origin lookups (origin → bool). "
+            "Hits are served from this file without hitting the API. "
+            "Defaults to <out>.crux_cache.json alongside --out."
+        ),
+    )
 
     llm = p.add_argument_group("LLM semantic cleaning (DeepSeek via HPC tunnel)")
     llm.add_argument(
@@ -338,6 +398,28 @@ def _origin_for_site(site: str) -> str | None:
         return None
 
 
+def _load_crux_cache(cache_path: Path) -> dict[str, bool]:
+    """Load the persistent CrUX origin cache from disk (origin → present bool)."""
+    if not cache_path.exists():
+        return {}
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        return {k: bool(v) for k, v in raw.items() if isinstance(k, str)}
+    except Exception:
+        return {}
+
+
+def _save_crux_cache(cache_path: Path, cache: dict[str, bool]) -> None:
+    """Persist the CrUX origin cache to disk."""
+    try:
+        cache_path.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        warn(f"Failed to write CrUX cache to {cache_path}: {e}")
+
+
 async def _crux_has_record(
     session: aiohttp.ClientSession,
     *,
@@ -364,21 +446,39 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
         warn("CrUX filter requested but no API key provided. Skipping CrUX filter.")
         return sites
 
+    # Resolve disk cache path (mirrors --tp-cache-file convention).
+    out_path = Path(args.out)
+    crux_cache_path = Path(
+        args.crux_cache_file
+        if getattr(args, "crux_cache_file", None)
+        else out_path.with_name(out_path.stem + ".crux_cache.json")
+    )
+    disk_cache: dict[str, bool] = _load_crux_cache(crux_cache_path)
+    if disk_cache:
+        log(f"CrUX cache: loaded {len(disk_cache)} origin(s) from {crux_cache_path}")
+
     sem = asyncio.Semaphore(max(1, int(args.crux_concurrency)))
+    cache_lock = asyncio.Lock()
     headers = {"Content-Type": "application/json"}
-    cache: dict[str, bool] = {}
+    # Start with disk cache as the in-memory cache; new hits are added here too.
+    cache: dict[str, bool] = dict(disk_cache)
     status_counts: dict[str, int] = {}
     restricted_hits: dict[str, int] = {}
+    new_entries = 0
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async def check_one(rec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+            nonlocal new_entries
             async with sem:
                 dom = str(rec["site"]).strip()
                 origin = _origin_for_site(dom)
                 if not origin:
                     return rec, False
-                if origin in cache:
-                    return rec, cache[origin]
+
+                async with cache_lock:
+                    if origin in cache:
+                        return rec, cache[origin]
+
                 ok, status, err = await _crux_has_record(
                     session,
                     api_key=api_key,
@@ -393,7 +493,7 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
                     status_counts[err] = status_counts.get(err, 0) + 1
 
                 if (not ok) and args.crux_allow_http and origin.startswith("https://"):
-                    origin_http = "http://" + origin[len("https://") :]
+                    origin_http = "http://" + origin[len("https://"):]
                     ok, status, err = await _crux_has_record(
                         session,
                         api_key=api_key,
@@ -406,11 +506,19 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
                             restricted_hits[origin_http] = restricted_hits.get(origin_http, 0) + 1
                     elif err:
                         status_counts[err] = status_counts.get(err, 0) + 1
-                cache[origin] = ok
+
+                async with cache_lock:
+                    if origin not in cache:
+                        cache[origin] = ok
+                        new_entries += 1
                 return rec, ok
 
         results = await asyncio.gather(*(check_one(r) for r in sites))
         kept = [rec for (rec, ok) in results if ok]
+
+    if new_entries:
+        _save_crux_cache(crux_cache_path, cache)
+        log(f"CrUX cache: saved {new_entries} new origin(s) to {crux_cache_path}")
 
     log(f"CrUX filter: kept {len(kept)}/{len(sites)} sites present in CrUX dataset.")
     if status_counts:
@@ -501,6 +609,26 @@ def _upsert_explorer_jsonl(path: Path, record: dict[str, Any]) -> None:
     _write_jsonl_records(path, existing)
 
 
+def _count_english_from_artifacts(artifacts_dir: Path) -> int:
+    """Count sites whose scrape_complete.json has policy_is_english=True."""
+    count = 0
+    if not artifacts_dir.is_dir():
+        return count
+    for site_dir in artifacts_dir.iterdir():
+        if not site_dir.is_dir():
+            continue
+        marker = site_dir / "scrape_complete.json"
+        if not marker.exists():
+            continue
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if data.get("policy_is_english"):
+                count += 1
+        except Exception:
+            pass
+    return count
+
+
 def _build_summary_from_results(out_path: Path, *, run_id: str, mapping_mode: str) -> dict[str, Any]:
     records = list(_iter_jsonl(out_path))
     sites_seen: set[str] = set()
@@ -511,7 +639,13 @@ def _build_summary_from_results(out_path: Path, *, run_id: str, mapping_mode: st
     sb = SummaryBuilder(run_id=run_id, total_sites=len(sites_seen), mapping_mode=mapping_mode)
     for rec in records:
         sb.update(rec)
-    return sb.to_summary()
+    result = sb.to_summary()
+    # If records don't carry policy_is_english (older runs), scan artifacts directly.
+    if not result.get("english_policy_count"):
+        artifacts_dir = out_path.parent / "artifacts"
+        if artifacts_dir.is_dir():
+            result["english_policy_count"] = _count_english_from_artifacts(artifacts_dir)
+    return result
 
 
 def _state_from_summary(summary: dict[str, Any], *, run_id: str, total_sites: int) -> dict[str, Any]:
@@ -1005,6 +1139,18 @@ async def _run(args: argparse.Namespace) -> None:
                         "run_id": run_id,
                     }
 
+                # Tag result with English flag for summary tracking.
+                if result.get("status") == "ok" and args.artifacts_dir:
+                    _site_key_pre = result.get("site_etld1") or site
+                    _policy_txt_pre = Path(args.artifacts_dir) / _site_key_pre / "policy.txt"
+                    if _policy_txt_pre.exists() and _policy_txt_pre.stat().st_size > 0:
+                        try:
+                            result["policy_is_english"] = _is_english(
+                                _policy_txt_pre.read_text(encoding="utf-8", errors="ignore")
+                            )
+                        except Exception:
+                            result["policy_is_english"] = False
+
                 async with write_lock:
                     should_skip_output = args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"
                     if should_skip_output:
@@ -1061,6 +1207,7 @@ async def _run(args: argparse.Namespace) -> None:
                     site_art_dir = Path(args.artifacts_dir) / site_key
                     policy_txt = site_art_dir / "policy.txt"
                     if policy_txt.exists() and policy_txt.stat().st_size > 0:
+                        is_en = bool(result.get("policy_is_english"))
                         try:
                             (site_art_dir / "scrape_complete.json").write_text(
                                 json.dumps({
@@ -1068,11 +1215,28 @@ async def _run(args: argparse.Namespace) -> None:
                                     "run_id": run_id,
                                     "scraped_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                                     "policy_text_len": policy_txt.stat().st_size,
+                                    "policy_is_english": is_en,
                                 }, ensure_ascii=False, indent=2),
                                 encoding="utf-8",
                             )
                         except Exception as e:
                             warn(f"Failed to write scrape_complete.json for {site_key}: {e}")
+
+                        # Mirror into artifacts_ok_dir if the policy is English
+                        # AND at least one third-party policy was extracted.
+                        artifacts_ok_dir_str = getattr(args, "artifacts_ok_dir", None) or (
+                            str(Path(args.artifacts_dir).parent / (Path(args.artifacts_dir).name + "_ok"))
+                        )
+                        try:
+                            qualifies = is_en and _has_third_party_policy(site_art_dir)
+                            if qualifies:
+                                ok_dir = Path(artifacts_ok_dir_str)
+                                ok_dir.mkdir(parents=True, exist_ok=True)
+                                ok_link = ok_dir / site_key
+                                if not ok_link.exists() and not ok_link.is_symlink():
+                                    ok_link.symlink_to(site_art_dir.resolve())
+                        except Exception as e:
+                            warn(f"Failed to create artifacts_ok symlink for {site_key}: {e}")
 
                 emit_event({
                     "type": "site_finished",

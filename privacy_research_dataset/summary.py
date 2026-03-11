@@ -5,6 +5,65 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Category normalisation table
+# ---------------------------------------------------------------------------
+# Raw category strings from Tracker Radar (TR) and TrackerDB (TDB) are mapped
+# to a shared set of 9 consolidated labels.  The lookup is case-insensitive and
+# stripped.  Any category not listed here passes through unchanged.
+_CATEGORY_MAP: dict[str, str] = {
+    # ── Advertising ─────────────────────────────────────────────────────────
+    "advertising":                        "Advertising",
+    "ad motivated tracking":              "Advertising",
+    "action pixels":                      "Advertising",
+    "third-party analytics marketing":    "Advertising",
+    "ad fraud":                           "Advertising",
+    "adult advertising":                  "Advertising",          # TDB
+    # ── Analytics ───────────────────────────────────────────────────────────
+    "analytics":                          "Analytics",
+    "audience measurement":               "Analytics",
+    "session replay":                     "Analytics",
+    "site analytics":                     "Analytics",            # TDB
+    # ── Social Media ────────────────────────────────────────────────────────
+    "social network":                     "Social Media",
+    "social - share":                     "Social Media",
+    "social - comment":                   "Social Media",
+    "social media":                       "Social Media",         # TDB
+    # ── CDN & Hosting ───────────────────────────────────────────────────────
+    "cdn":                                "CDN & Hosting",
+    "hosting":                            "CDN & Hosting",        # TDB
+    "misc":                               "CDN & Hosting",        # TDB
+    # ── Tag Management ──────────────────────────────────────────────────────
+    "tag manager":                        "Tag Management",
+    "non-tracking":                       "Tag Management",
+    "utilities":                          "Tag Management",       # TDB
+    "extensions":                         "Tag Management",       # TDB
+    # ── Consent Management ──────────────────────────────────────────────────
+    "consent management platform":        "Consent Management",
+    "consent management":                 "Consent Management",   # TDB
+    # ── Identity & Payment ──────────────────────────────────────────────────
+    "federated login":                    "Identity & Payment",
+    "sso":                                "Identity & Payment",
+    "fraud prevention":                   "Identity & Payment",
+    "online payment":                     "Identity & Payment",
+    # ── Embedded Content ────────────────────────────────────────────────────
+    "embedded content":                   "Embedded Content",
+    "badge":                              "Embedded Content",
+    "support chat widget":                "Embedded Content",
+    "audio/video player":                 "Embedded Content",     # TDB
+    "customer interaction":               "Embedded Content",     # TDB
+    # ── High Risk ───────────────────────────────────────────────────────────
+    "malware":                            "High Risk",
+    "unknown high risk behavior":         "High Risk",
+    "obscure ownership":                  "High Risk",
+}
+
+
+def normalize_tracker_category(raw: str) -> str:
+    """Map a raw Tracker Radar / TrackerDB category string to a consolidated label."""
+    return _CATEGORY_MAP.get(raw.strip().lower(), raw)
+
+
 @dataclass
 class SummaryBuilder:
     run_id: str
@@ -14,11 +73,14 @@ class SummaryBuilder:
     status_counts: Counter = field(default_factory=Counter)
     third_party_total: int = 0
     third_party_unique_domains: set = field(default_factory=set)
+    third_party_unique_mapped_domains: set = field(default_factory=set)
+    third_party_unique_policy_domains: set = field(default_factory=set)
     third_party_mapped: int = 0
     third_party_unmapped: int = 0
     third_party_no_policy_url: int = 0
     third_party_radar_mapped: int = 0
     third_party_trackerdb_mapped: int = 0
+    english_policy_count: int = 0
     category_counts: Counter = field(default_factory=Counter)
     entity_counts: Counter = field(default_factory=Counter)
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
@@ -49,11 +111,16 @@ class SummaryBuilder:
             )
             if mapped:
                 self.third_party_mapped += 1
+                if isinstance(domain, str) and domain:
+                    self.third_party_unique_mapped_domains.add(domain)
             else:
                 self.third_party_unmapped += 1
 
             if mapped and not tp.get("policy_url"):
                 self.third_party_no_policy_url += 1
+            elif mapped and tp.get("policy_url"):
+                if isinstance(domain, str) and domain:
+                    self.third_party_unique_policy_domains.add(domain)
 
             if tp.get("tracker_radar_source_domain_file"):
                 self.third_party_radar_mapped += 1
@@ -62,7 +129,7 @@ class SummaryBuilder:
 
             for cat in tp.get("categories") or []:
                 if isinstance(cat, str) and cat.strip():
-                    self.category_counts[cat] += 1
+                    self.category_counts[normalize_tracker_category(cat)] += 1
 
             entity = tp.get("entity")
             if isinstance(entity, str) and entity.strip():
@@ -71,11 +138,18 @@ class SummaryBuilder:
                 if isinstance(prev, (int, float)):
                     self.entity_prevalence_sum[entity] = self.entity_prevalence_sum.get(entity, 0.0) + float(prev)
                     self.entity_prevalence_max[entity] = max(self.entity_prevalence_max.get(entity, 0.0), float(prev))
-                cats = [c for c in (tp.get("categories") or []) if isinstance(c, str) and c.strip()]
+                cats = [
+                    normalize_tracker_category(c)
+                    for c in (tp.get("categories") or [])
+                    if isinstance(c, str) and c.strip()
+                ]
                 if cats:
                     if entity not in self.entity_categories:
                         self.entity_categories[entity] = Counter()
                     self.entity_categories[entity].update(cats)
+
+        if result.get("policy_is_english"):
+            self.english_policy_count += 1
 
         self.updated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
@@ -116,9 +190,12 @@ class SummaryBuilder:
                 "total": self.third_party_total,
                 "unique": len(self.third_party_unique_domains),
                 "mapped": self.third_party_mapped,
+                "unique_mapped": len(self.third_party_unique_mapped_domains),
+                "unique_with_policy": len(self.third_party_unique_policy_domains),
                 "unmapped": self.third_party_unmapped,
                 "no_policy_url": self.third_party_no_policy_url,
             },
+            "english_policy_count": self.english_policy_count,
             "mapping": {
                 "mode": self.mapping_mode,
                 "radar_mapped": self.third_party_radar_mapped,

@@ -1,5 +1,6 @@
 import { baseResults } from '../../data/results'
 import { ResultsMetrics } from '../../utils/results'
+import { CATEGORY_ORDER } from '../../utils/trackerCategories'
 
 type ResultsViewProps = {
   hasRun: boolean
@@ -46,12 +47,32 @@ export function ResultsView({
   const thirdParty = summary?.third_party || {}
   const thirdPartyDetected =
     thirdParty.unique ?? thirdParty.total ?? (hasSummary ? 0 : Math.max(0, metrics.radarMapped + metrics.radarUnmapped))
-  const radarMapped = thirdParty.mapped ?? (hasSummary ? 0 : metrics.radarMapped)
+  const uniqueMapped = thirdParty.unique_mapped ?? (hasSummary ? 0 : metrics.radarMapped)
+  const uniqueWithPolicy = thirdParty.unique_with_policy ?? null
   const radarUnmapped = thirdParty.unmapped ?? (hasSummary ? 0 : metrics.radarUnmapped)
   const radarNoPolicy = thirdParty.no_policy_url ?? (hasSummary ? 0 : metrics.radarNoPolicy)
-  const thirdPartyPoliciesFound = Math.max(0, thirdPartyDetected - radarNoPolicy)
+  const englishPolicyCount = summary?.english_policy_count ?? null
 
-  const summaryCategories = summary?.categories || (hasSummary ? [] : baseResults.categories)
+  const rawCategories: { name: string; count: number }[] =
+    summary?.categories || (hasSummary ? [] : baseResults.categories)
+  // Merge counts for categories that share a consolidated label, then sort
+  // by canonical order followed by any unknown categories by count desc.
+  const summaryCategories = (() => {
+    const merged = new Map<string, number>()
+    for (const { name, count } of rawCategories) {
+      merged.set(name, (merged.get(name) ?? 0) + (count || 0))
+    }
+    return [...merged.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => {
+        const ai = CATEGORY_ORDER.indexOf(a.name)
+        const bi = CATEGORY_ORDER.indexOf(b.name)
+        if (ai !== -1 && bi !== -1) return ai - bi
+        if (ai !== -1) return -1
+        if (bi !== -1) return 1
+        return b.count - a.count
+      })
+  })()
   const summaryEntities = summary?.entities || (hasSummary ? [] : baseResults.entities)
   const categoryMax = summaryCategories.reduce((max: number, cat: any) => Math.max(max, cat.count || 0), 1)
   const entityMax = summaryEntities.reduce((max: number, entity: any) => {
@@ -76,13 +97,14 @@ export function ResultsView({
   let mappingRadar = radarMappedCount
   let mappingDb = trackerdbMappedCount
   if (mappingRadar === null && mappingDb === null) {
-    if (mappingLabel === 'Tracker Radar') mappingRadar = radarMapped
-    if (mappingLabel === 'TrackerDB') mappingDb = radarMapped
+    if (mappingLabel === 'Tracker Radar') mappingRadar = uniqueMapped
+    if (mappingLabel === 'TrackerDB') mappingDb = uniqueMapped
   }
   const mappingTotal = (mappingRadar ?? 0) + (mappingDb ?? 0)
   const mappingUnmapped = mapping?.unmapped ?? Math.max(0, thirdPartyDetected - mappingTotal)
   const radarPct = thirdPartyDetected ? Math.round(((mappingRadar ?? 0) / thirdPartyDetected) * 100) : 0
   const trackerdbPct = thirdPartyDetected ? Math.round(((mappingDb ?? 0) / thirdPartyDetected) * 100) : 0
+  const successOk = statusOk
   const unmappedPct = Math.max(0, 100 - radarPct - trackerdbPct)
   const targetSites =
     typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || metrics.totalSitesProcessed
@@ -110,9 +132,19 @@ export function ResultsView({
       info: 'Total sites scheduled for this run after filters (Tranco/CrUX).',
     },
     {
+      label: 'Policy found',
+      value: successOk,
+      info: 'Sites where a first-party privacy policy was found and extracted.',
+    },
+    {
       label: 'Success rate',
       value: `${summary?.success_rate ?? metrics.successRate}%`,
       info: 'Percent of processed sites where a first-party privacy policy was found.',
+    },
+    {
+      label: 'English policies',
+      value: englishPolicyCount,
+      info: 'Sites with a first-party policy detected as English-language.',
     },
     {
       label: 'Policy not found',
@@ -133,24 +165,24 @@ export function ResultsView({
       info: 'Unique third-party eTLD+1 domains observed across all crawled sites.',
     },
     {
-      label: '3P policies found',
-      value: thirdPartyPoliciesFound,
-      info: 'Third-party services that have a privacy policy URL in the mapping index.',
+      label: '3P services mapped',
+      value: uniqueMapped,
+      info: 'Unique third-party domains matched in at least one mapping index (Tracker Radar or TrackerDB).',
     },
     {
-      label: 'Mapped in Tracker Radar',
-      value: radarMapped,
-      info: 'Third-party services matched to Tracker Radar.',
+      label: '3P with policy URL',
+      value: uniqueWithPolicy,
+      info: 'Unique mapped third-party domains that provide a privacy policy URL in the index.',
     },
     {
       label: 'Unmapped services',
       value: radarUnmapped,
-      info: 'Third-party services with no mapping record in the active index.',
+      info: 'Third-party service occurrences with no record in any mapping index.',
     },
     {
       label: 'No policy URL',
       value: radarNoPolicy,
-      info: 'Mapped services that do not provide a policy URL in the index.',
+      info: 'Mapped service occurrences that do not include a policy URL in the index.',
     },
   ]
 
@@ -331,7 +363,7 @@ export function ResultsView({
               </div>
             </div>
             <div className="text-xs text-[var(--muted-text)]">
-              {radarMapped.toLocaleString()} mapped • {radarUnmapped.toLocaleString()} unmapped •{' '}
+              {uniqueMapped.toLocaleString()} unique mapped • {radarUnmapped.toLocaleString()} unmapped •{' '}
               {radarNoPolicy.toLocaleString()} no policy URL
             </div>
           </div>

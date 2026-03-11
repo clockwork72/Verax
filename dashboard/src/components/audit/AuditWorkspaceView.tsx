@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 
 type FirstPartyPolicy = {
   url?: string | null
@@ -106,6 +106,18 @@ export function AuditWorkspaceView({
   const [overrideInput, setOverrideInput] = useState('')
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNote, setActionNote] = useState<string | null>(null)
+  const [okSites, setOkSites] = useState<Set<string>>(new Set())
+  const [showSuccessfulOnly, setShowSuccessfulOnly] = useState(false)
+
+  const refreshOkCount = useCallback(async () => {
+    if (!window.scraper?.countOkArtifacts) return
+    const res = await window.scraper.countOkArtifacts(outDir)
+    if (res?.ok && res.sites) setOkSites(new Set(res.sites))
+  }, [outDir])
+
+  useEffect(() => {
+    void refreshOkCount()
+  }, [refreshOkCount, records])
 
   const verifiedSet = useMemo(
     () => new Set(verifiedSites.map((value) => normalizeSiteKey(value))),
@@ -122,10 +134,15 @@ export function AuditWorkspaceView({
     return next
   }, [records])
 
-  const activeRecords = useMemo(
-    () => orderedRecords.filter((record) => !verifiedSet.has(normalizeSiteKey(siteKey(record)))),
-    [orderedRecords, verifiedSet]
-  )
+  const activeRecords = useMemo(() => {
+    let filtered = orderedRecords.filter(
+      (record) => !verifiedSet.has(normalizeSiteKey(siteKey(record)))
+    )
+    if (showSuccessfulOnly && okSites.size > 0) {
+      filtered = filtered.filter((record) => okSites.has(siteKey(record)))
+    }
+    return filtered
+  }, [orderedRecords, verifiedSet, showSuccessfulOnly, okSites])
 
   const selectedRecord = useMemo(
     () => activeRecords.find((record) => siteKey(record) === selectedSite) || null,
@@ -254,14 +271,30 @@ export function AuditWorkspaceView({
           </div>
           <button
             className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs"
-            onClick={() => void onReload()}
+            onClick={() => { void onReload(); void refreshOkCount() }}
           >
             Refresh
           </button>
         </div>
-        <p className="mb-3 text-xs text-[var(--muted-text)]">
-          Active: {activeRecords.length} / Total: {orderedRecords.length}
-        </p>
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--muted-text)]">
+          <span>Showing: {activeRecords.length} / Total: {orderedRecords.length}</span>
+          {okSites.size > 0 && (
+            <button
+              onClick={() => setShowSuccessfulOnly((v) => !v)}
+              title={showSuccessfulOnly
+                ? 'Showing: English + third-party policy extracted. Click to show all.'
+                : 'Click to show only: English policy + third-party policy extracted.'}
+              className={[
+                'focusable rounded-full border px-2 py-0.5 transition-colors',
+                showSuccessfulOnly
+                  ? 'border-emerald-500/60 bg-emerald-900/50 text-emerald-300'
+                  : 'border-[var(--border-soft)] bg-black/20 text-[var(--muted-text)]',
+              ].join(' ')}
+            >
+              {okSites.size} successful{showSuccessfulOnly ? ' ✓' : ''}
+            </button>
+          )}
+        </div>
         <div className="max-h-[72vh] space-y-2 overflow-y-auto pr-1">
           {activeRecords.length === 0 && (
             <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 p-3 text-sm text-[var(--muted-text)]">

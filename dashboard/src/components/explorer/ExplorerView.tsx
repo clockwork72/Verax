@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
+import { normalizeCategories } from '../../utils/trackerCategories'
 
 type ViewerEntry = {
   url: string
@@ -445,11 +446,11 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
                   <div>
                     <span className="text-[var(--muted-text)]">Categories</span>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {(currentEntry.meta.categories || ['Uncategorized']).map((cat) => (
+                      {normalizeCategories(currentEntry.meta.categories || []).map((cat) => (
                         <span key={cat} className="theme-chip rounded-full px-3 py-1">
                           {cat}
                         </span>
-                      ))}
+                      )) || <span className="theme-chip rounded-full px-3 py-1">Uncategorized</span>}
                     </div>
                   </div>
                   {showExtractionMethod && (
@@ -543,7 +544,7 @@ function ThirdPartyCard({ service, onOpen, showExtractionMethod }: ThirdPartyCar
           meta: {
             type: 'third-party',
             entity: service.entity,
-            categories: service.categories,
+            categories: normalizeCategories(service.categories),
             prevalence: service.prevalence,
             extractionMethod: (service as any).extractionMethod ?? (service as any).extraction_method ?? null,
           },
@@ -554,15 +555,12 @@ function ThirdPartyCard({ service, onOpen, showExtractionMethod }: ThirdPartyCar
       <p className="text-sm font-semibold">{service.name}</p>
       <p className="text-xs text-[var(--muted-text)]">{service.entity || 'Unknown entity'}</p>
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
-        {service.categories.length > 0 ? (
-          service.categories.map((cat) => (
-            <span key={cat} className="theme-chip rounded-full px-3 py-1">
-              {cat}
-            </span>
-          ))
-        ) : (
-          <span className="theme-chip rounded-full px-3 py-1">Uncategorized</span>
-        )}
+        {(() => {
+          const cats = normalizeCategories(service.categories)
+          return cats.length > 0 ? cats.map((cat) => (
+            <span key={cat} className="theme-chip rounded-full px-3 py-1">{cat}</span>
+          )) : <span className="theme-chip rounded-full px-3 py-1">Uncategorized</span>
+        })()}
       </div>
       <p className="mt-2 text-xs text-[var(--muted-text)]">{policyUrl ? 'Open policy' : 'No policy URL'}</p>
       {showExtractionMethod && (

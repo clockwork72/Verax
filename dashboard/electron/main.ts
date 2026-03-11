@@ -156,6 +156,8 @@ function defaultPaths(outDir?: string) {
     stateJson: path.join(root, 'run_state.json'),
     explorerJsonl: path.join(root, 'explorer.jsonl'),
     artifactsDir: path.join(root, 'artifacts'),
+    artifactsOkDir: path.join(root, 'artifacts_ok'),
+    cruxCacheJson: path.join(root, 'results.crux_cache.json'),
   }
 }
 
@@ -702,6 +704,8 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
     paths.resultsJsonl,
     '--artifacts-dir',
     options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    '--artifacts-ok-dir',
+    paths.artifactsOkDir,
     '--emit-events',
     '--state-file',
     paths.stateJson,
@@ -736,6 +740,9 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
   if (options.runId) {
     args.push('--run-id', options.runId)
   }
+  // Always pass the cache file so it persists across runs regardless of whether
+  // --crux-filter is active this session.
+  args.push('--crux-cache-file', paths.cruxCacheJson)
   if (options.cruxFilter) {
     args.push('--crux-filter')
     if (options.cruxApiKey) {
@@ -779,6 +786,8 @@ ipcMain.handle('scraper:rerun-site', async (_event, options: RerunSiteOptions = 
     paths.resultsJsonl,
     '--artifacts-dir',
     options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    '--artifacts-ok-dir',
+    paths.artifactsOkDir,
     '--emit-events',
     '--state-file',
     paths.stateJson,
@@ -1097,6 +1106,21 @@ ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string)
   }
 })
 
+ipcMain.handle('scraper:count-ok-artifacts', async (_event, outDir?: string) => {
+  try {
+    const paths = defaultPaths(outDir)
+    const okDir = paths.artifactsOkDir
+    if (!fs.existsSync(okDir)) {
+      return { ok: true, count: 0, sites: [], path: okDir }
+    }
+    const entries = await fs.promises.readdir(okDir, { withFileTypes: true })
+    const sites = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name)
+    return { ok: true, count: sites.length, sites, path: okDir }
+  } catch (error) {
+    return { ok: false, error: String(error), count: 0, sites: [] }
+  }
+})
+
 ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
   try {
     const root = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir
@@ -1123,6 +1147,24 @@ ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
     return { ok: true, total, fetched, failed, by_status: byStatus }
   } catch (error) {
     return { ok: false, error: String(error) }
+  }
+})
+
+ipcMain.handle('scraper:crux-cache-stats', async (_event, outDir?: string) => {
+  try {
+    const paths = defaultPaths(outDir)
+    const cachePath = paths.cruxCacheJson
+    if (!fs.existsSync(cachePath)) {
+      return { ok: true, count: 0, present: 0, absent: 0, path: cachePath }
+    }
+    const raw = await fs.promises.readFile(cachePath, 'utf-8')
+    const data = JSON.parse(raw) as Record<string, boolean>
+    const entries = Object.values(data)
+    const present = entries.filter(Boolean).length
+    const absent = entries.length - present
+    return { ok: true, count: entries.length, present, absent, path: cachePath }
+  } catch (error) {
+    return { ok: false, error: String(error), count: 0, present: 0, absent: 0 }
   }
 })
 

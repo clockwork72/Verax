@@ -12,7 +12,7 @@ import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
-import { parseAnnotationDoneUsage, parseAnnotationUsage, pricingForModel } from './utils/annotationCost'
+import { parseAnnotationDoneUsage } from './utils/annotationCost'
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -72,19 +72,11 @@ function App() {
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
-  const [annotateRunUsage, setAnnotateRunUsage] = useState<{ tokensIn: number; tokensOut: number }>({ tokensIn: 0, tokensOut: 0 })
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
   const [latestStreamEvent, setLatestStreamEvent] = useState<import('./vite-env').AnnotatorStreamEvent | null>(null)
-  const [totalCost, setTotalCost] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem('privacy-dashboard.totalCost')
-      return raw ? parseFloat(raw) : 0
-    } catch { return 0 }
-  })
   const annotateLogsRef = useRef<string[]>([])
-  const annotateRunUsageRef = useRef(annotateRunUsage)
   const llmModelRef = useRef(llmModel)
 
   // Poll HPC tunnel status every 15 s
@@ -97,19 +89,6 @@ function App() {
     check()
     const id = setInterval(check, 15_000)
     return () => clearInterval(id)
-  }, [])
-
-  const addToCost = useCallback((amount: number) => {
-    setTotalCost((prev) => {
-      const next = prev + amount
-      try { localStorage.setItem('privacy-dashboard.totalCost', String(next)) } catch {}
-      return next
-    })
-  }, [])
-
-  const resetCost = useCallback(() => {
-    setTotalCost(0)
-    try { localStorage.removeItem('privacy-dashboard.totalCost') } catch {}
   }, [])
 
   type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
@@ -246,13 +225,6 @@ function App() {
         setLatestStreamEvent(null)
         setAnnotateRunning(false)
         setAuditAnnotatingSite(null)
-        // Parse token usage from logs and accumulate cost.
-        const usage = parseAnnotationUsage(annotateLogsRef.current)
-        const tokIn = Math.max(annotateRunUsageRef.current.tokensIn, usage.tokensIn)
-        const tokOut = Math.max(annotateRunUsageRef.current.tokensOut, usage.tokensOut)
-        const rates = pricingForModel(llmModelRef.current)
-        const runCost = (tokIn / 1e6) * rates.input + (tokOut / 1e6) * rates.output
-        if (runCost > 0) addToCost(runCost)
         // refresh stats after annotator finishes
         if (scraper.annotationStats) {
           scraper.annotationStats().then((res: any) => {
@@ -264,7 +236,6 @@ function App() {
   }, [])
 
   // Keep refs in sync so the IPC exit handler always sees current values
-  useEffect(() => { annotateRunUsageRef.current = annotateRunUsage }, [annotateRunUsage])
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
 
   const createRunId = () => {
@@ -646,6 +617,12 @@ function App() {
     if (summary?.ok) setSummaryData(summary.data)
     const state = await window.scraper.readState(`${targetDir}/run_state.json`)
     if (state?.ok) setStateData(state.data)
+    // Sync topN from the loaded dataset so ResultsView and LauncherView show the correct target.
+    const loadedTotal =
+      summary?.data?.total_sites ?? state?.data?.total_sites
+    if (typeof loadedTotal === 'number' && loadedTotal > 0) {
+      setTopN(String(loadedTotal))
+    }
     const explorer = await window.scraper.readExplorer(`${targetDir}/explorer.jsonl`, 500)
     if (explorer?.ok && Array.isArray(explorer.data)) {
       const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
@@ -789,7 +766,6 @@ function App() {
             annotationStats={annotationStats}
             onStartAnnotate={startAnnotate}
             onStopAnnotate={stopAnnotate}
-            annotateRunUsage={annotateRunUsage}
             resumeMode={resumeMode}
             onToggleResumeMode={setResumeMode}
             activeSites={activeSites}
@@ -905,6 +881,7 @@ function App() {
             onThemeChange={setTheme}
             showExtractionMethod={showExtractionMethod}
             onToggleShowExtractionMethod={setShowExtractionMethod}
+            outDir={outDir || undefined}
             useCrux={useCrux}
             onToggleCrux={setUseCrux}
             cruxApiKey={cruxApiKey}
@@ -916,11 +893,6 @@ function App() {
             autoAnnotate={autoAnnotate}
             onToggleAutoAnnotate={setAutoAnnotate}
             tunnelStatus={tunnelStatus}
-            llmModel={llmModel}
-            annotateRunUsage={annotateRunUsage}
-            annotationStats={annotationStats}
-            totalCost={totalCost}
-            onResetCost={resetCost}
           />
         )}
       </PageShell>

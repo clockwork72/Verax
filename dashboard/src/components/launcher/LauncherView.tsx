@@ -101,7 +101,6 @@ type LauncherViewProps = {
   annotationStats?: any
   onStartAnnotate?: (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => void
   onStopAnnotate?: () => void
-  annotateRunUsage?: { tokensIn: number; tokensOut: number }
   // Resume mode — use unified output dir to skip already-scraped sites
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
@@ -139,7 +138,6 @@ export function LauncherView({
   annotationStats,
   onStartAnnotate,
   onStopAnnotate,
-  annotateRunUsage,
   resumeMode = false,
   onToggleResumeMode,
 }: LauncherViewProps) {
@@ -452,8 +450,8 @@ export function LauncherView({
           const { activeSites: annotateSites, completed: annotateCompleted, totalSites } =
             parseAnnotateLogs(annotateLogs)
           const parsedUsage = parseAnnotationUsage(annotateLogs)
-          const tokensIn = annotateRunUsage?.tokensIn ?? parsedUsage.tokensIn
-          const tokensOut = annotateRunUsage?.tokensOut ?? parsedUsage.tokensOut
+          const tokensIn = parsedUsage.tokensIn
+          const tokensOut = parsedUsage.tokensOut
           const knownTotal = totalSites || annotationStats?.total_sites || 0
           const doneCount = annotateCompleted.filter((s) => s.status !== 'skip' || annotateSites.length === 0).length
           const progressPct = knownTotal > 0 ? Math.round((annotateCompleted.length / knownTotal) * 100) : 0

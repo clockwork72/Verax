@@ -62,7 +62,9 @@ declare global {
       stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
       annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
       annotationStats: (artifactsDir?: string) => Promise<{ ok: boolean; error?: string; total_sites?: number; annotated_sites?: number; total_statements?: number; per_site?: { site: string; count: number; has_statements: boolean }[] }>
+      countOkArtifacts: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; sites?: string[]; path?: string }>
       readTpCache: (outDir?: string) => Promise<{ ok: boolean; error?: string; total?: number; fetched?: number; failed?: number; by_status?: Record<string, number> }>
+      cruxCacheStats: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; present?: number; absent?: number; path?: string }>
       onAnnotatorLog: (callback: (event: any) => void) => void
       onAnnotatorExit: (callback: (event: any) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
