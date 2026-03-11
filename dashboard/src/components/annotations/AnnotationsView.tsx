@@ -131,9 +131,8 @@ function buildFreq(allStatements: AnnotatedStatement[], field: keyof Statement):
 }
 
 export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProps) {
-  const [siteStatements, setSiteStatements] = useState<SiteStatements[]>([])
-  const [loading, setLoading] = useState(false)
-  const [loaded, setLoaded] = useState(false)
+  const [siteStatementsBySite, setSiteStatementsBySite] = useState<Record<string, AnnotatedStatement[]>>({})
+  const [loadingSite, setLoadingSite] = useState<string | null>(null)
   const [expandedSite, setExpandedSite] = useState<string | null>(null)
 
   // Reset loaded state when the output directory changes so statements are re-fetched
@@ -141,8 +140,8 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
   useEffect(() => {
     if (prevOutDir.current !== outDir) {
       prevOutDir.current = outDir
-      setSiteStatements([])
-      setLoaded(false)
+      setSiteStatementsBySite({})
+      setLoadingSite(null)
       setExpandedSite(null)
     }
   }, [outDir])
@@ -153,40 +152,35 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
   const annotatedSites: number = annotationStats?.annotated_sites ?? 0
   const totalSites: number = annotationStats?.total_sites ?? 0
 
-  useEffect(() => {
-    if (loaded || !annotationStats?.per_site?.length || !window.scraper) return
-    const sitesWithStatements = annotationStats.per_site.filter((s: any) => s.has_statements)
-    if (sitesWithStatements.length === 0) return
-    setLoading(true)
-
+  const loadSiteStatements = async (site: string) => {
+    if (!window.scraper || siteStatementsBySite[site] || loadingSite === site) return
+    setLoadingSite(site)
     const root = outDir || 'outputs'
-
-    Promise.all(
-      sitesWithStatements.map(async (s: any) => {
-        const res = await window.scraper!.readArtifactText({
-          outDir: root,
-          relativePath: `artifacts/${s.site}/policy_statements_annotated.jsonl`,
-        })
-        if (!res.ok || !res.data) return null
-        const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())
-        const statements: AnnotatedStatement[] = []
-        for (const line of lines) {
-          try {
-            statements.push(JSON.parse(line))
-          } catch {
-            // skip bad lines
-          }
-        }
-        return { site: s.site, statements } as SiteStatements
-      })
-    ).then((results) => {
-      setSiteStatements(results.filter(Boolean) as SiteStatements[])
-      setLoaded(true)
-      setLoading(false)
+    const res = await window.scraper.readArtifactText({
+      outDir: root,
+      relativePath: `artifacts/${site}/policy_statements_annotated.jsonl`,
     })
-  }, [annotationStats, outDir, loaded])
+    const statements: AnnotatedStatement[] = []
+    if (res?.ok && res.data) {
+      const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())
+      for (const line of lines) {
+        try {
+          statements.push(JSON.parse(line))
+        } catch {
+          // skip bad lines
+        }
+      }
+    }
+    setSiteStatementsBySite((prev) => ({ ...prev, [site]: statements }))
+    setLoadingSite((current) => (current === site ? null : current))
+  }
 
+  const siteStatements: SiteStatements[] = Object.entries(siteStatementsBySite).map(([site, statements]) => ({
+    site,
+    statements,
+  }))
   const allStatements = siteStatements.flatMap((s) => s.statements)
+  const loadedSiteCount = siteStatements.length
 
   const actionFreq = buildFreq(allStatements, 'action')
   const dataFreq = buildFreq(allStatements, 'data')
@@ -261,25 +255,25 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
             </p>
             <h3 className="text-lg font-semibold">Top phrases by field</h3>
             <p className="text-xs text-[var(--muted-text)]">
-              Most common values extracted across all annotated policy documents.
+              Computed from statement files loaded in this session, not the full corpus.
             </p>
           </div>
-          {loading && (
-            <span className="text-xs text-[var(--muted-text)]">Loading statements…</span>
+          {loadingSite && (
+            <span className="text-xs text-[var(--muted-text)]">Loading {loadingSite}…</span>
           )}
         </div>
 
-        {!loaded && !loading && (
+        {loadedSiteCount === 0 && !loadingSite && (
           <p className="mt-4 text-sm text-[var(--muted-text)]">
-            Frequency data loads automatically when annotation artifacts are found.
+            Expand a site below to load its statements and populate this view incrementally.
           </p>
         )}
 
-        {loaded && allStatements.length === 0 && (
+        {loadedSiteCount > 0 && allStatements.length === 0 && (
           <p className="mt-4 text-sm text-[var(--muted-text)]">No statement data found.</p>
         )}
 
-        {loaded && allStatements.length > 0 && (
+        {allStatements.length > 0 && (
           <div className="mt-5 grid gap-6 lg:grid-cols-2">
             {[
               { title: 'Actions', freq: actionFreq, color: 'text-blue-400' },
@@ -336,11 +330,11 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
               .filter((s) => s.has_statements)
               .sort((a, b) => b.count - a.count)
               .map((row) => {
-                const siteData = siteStatements.find((s) => s.site === row.site)
-                const siteStmts = siteData?.statements ?? []
-                const prohibs = siteStmts.filter((s) => s.statement.prohibition === true).length
+                const siteStmts = siteStatementsBySite[row.site] ?? null
+                const loadedStatements = siteStmts ?? []
+                const prohibs = loadedStatements.filter((s) => s.statement.prohibition === true).length
                 const actions: Record<string, number> = {}
-                for (const s of siteStmts) {
+                for (const s of loadedStatements) {
                   for (const [, phrase] of s.statement.action ?? []) {
                     actions[phrase] = (actions[phrase] || 0) + 1
                   }
@@ -355,19 +349,26 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
                       className={`grid w-full grid-cols-[1.5fr_1fr_1fr_1fr] items-center gap-2 border-t border-[var(--border-soft)] px-4 py-3 text-left text-xs transition hover:bg-black/20 ${
                         isExpanded ? 'bg-black/30' : ''
                       }`}
-                      onClick={() => setExpandedSite(isExpanded ? null : row.site)}
+                      onClick={() => {
+                        if (isExpanded) {
+                          setExpandedSite(null)
+                          return
+                        }
+                        setExpandedSite(row.site)
+                        void loadSiteStatements(row.site)
+                      }}
                     >
                       <span className="font-semibold">{row.site}</span>
                       <span className="text-[var(--muted-text)]">{row.count}</span>
                       <span className="text-[var(--muted-text)]">
-                        {siteData ? prohibs : '—'}
+                        {siteStmts ? prohibs : '—'}
                       </span>
                       <span className="truncate text-[var(--muted-text)]" title={topAction}>
-                        {siteData ? topAction : '—'}
+                        {siteStmts ? topAction : '—'}
                       </span>
                     </button>
 
-                    {isExpanded && siteStmts.length > 0 && (
+                    {isExpanded && siteStmts && siteStmts.length > 0 && (
                       <div className="border-t border-[var(--border-soft)] bg-black/20 px-4 py-4">
                         <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
                           {siteStmts.map((stmt, i) => (
@@ -377,7 +378,13 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
                       </div>
                     )}
 
-                    {isExpanded && !siteData && (
+                    {isExpanded && siteStmts && siteStmts.length === 0 && (
+                      <div className="border-t border-[var(--border-soft)] bg-black/20 px-4 py-3 text-xs text-[var(--muted-text)]">
+                        No statements found for this site.
+                      </div>
+                    )}
+
+                    {isExpanded && !siteStmts && (
                       <div className="border-t border-[var(--border-soft)] bg-black/20 px-4 py-3 text-xs text-[var(--muted-text)]">
                         Loading statements…
                       </div>

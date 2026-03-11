@@ -208,6 +208,50 @@ function parseJsonl(content: string, limit?: number) {
   return out
 }
 
+type ParsedFileCacheEntry<T> = {
+  mtimeMs: number
+  data: T
+}
+
+const jsonFileCache = new Map<string, ParsedFileCacheEntry<unknown>>()
+const jsonlFileCache = new Map<string, ParsedFileCacheEntry<unknown[]>>()
+const metricCache = new Map<string, { expiresAt: number; value: unknown }>()
+
+async function readJsonFileCached(target: string) {
+  const stat = await fs.promises.stat(target)
+  const cached = jsonFileCache.get(target)
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    return cached.data
+  }
+  const raw = await fs.promises.readFile(target, 'utf-8')
+  const parsed = JSON.parse(raw)
+  jsonFileCache.set(target, { mtimeMs: stat.mtimeMs, data: parsed })
+  return parsed
+}
+
+async function readJsonlFileCached(target: string) {
+  const stat = await fs.promises.stat(target)
+  const cached = jsonlFileCache.get(target)
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    return cached.data
+  }
+  const raw = await fs.promises.readFile(target, 'utf-8')
+  const parsed = parseJsonl(raw)
+  jsonlFileCache.set(target, { mtimeMs: stat.mtimeMs, data: parsed })
+  return parsed
+}
+
+async function readMetricCached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now()
+  const cached = metricCache.get(key)
+  if (cached && cached.expiresAt > now) {
+    return cached.value as T
+  }
+  const value = await loader()
+  metricCache.set(key, { expiresAt: now + ttlMs, value })
+  return value
+}
+
 function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -581,8 +625,8 @@ ipcMain.handle('scraper:read-summary', async (_event, filePath?: string) => {
     if (!fs.existsSync(target)) {
       return { ok: false, error: 'not_found', path: target }
     }
-    const raw = await fs.promises.readFile(target, 'utf-8')
-    return { ok: true, data: JSON.parse(raw), path: target }
+    const data = await readJsonFileCached(target)
+    return { ok: true, data, path: target }
   } catch (error) {
     return { ok: false, error: String(error) }
   }
@@ -594,8 +638,8 @@ ipcMain.handle('scraper:read-state', async (_event, filePath?: string) => {
     if (!fs.existsSync(target)) {
       return { ok: false, error: 'not_found', path: target }
     }
-    const raw = await fs.promises.readFile(target, 'utf-8')
-    return { ok: true, data: JSON.parse(raw), path: target }
+    const data = await readJsonFileCached(target)
+    return { ok: true, data, path: target }
   } catch (error) {
     return { ok: false, error: String(error) }
   }
@@ -607,8 +651,9 @@ ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?
     if (!fs.existsSync(target)) {
       return { ok: false, error: 'not_found', path: target }
     }
-    const raw = await fs.promises.readFile(target, 'utf-8')
-    const data = target.endsWith('.jsonl') ? parseJsonl(raw, limit) : JSON.parse(raw)
+    const data = target.endsWith('.jsonl')
+      ? (await readJsonlFileCached(target)).slice(0, limit || undefined)
+      : await readJsonFileCached(target)
     return { ok: true, data, path: target }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -621,8 +666,8 @@ ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?:
     if (!fs.existsSync(target)) {
       return { ok: false, error: 'not_found', path: target }
     }
-    const raw = await fs.promises.readFile(target, 'utf-8')
-    return { ok: true, data: parseJsonl(raw, limit), path: target }
+    const data = (await readJsonlFileCached(target)).slice(0, limit || undefined)
+    return { ok: true, data, path: target }
   } catch (error) {
     return { ok: false, error: String(error) }
   }
@@ -711,7 +756,7 @@ ipcMain.handle('scraper:folder-size', async (_event, outDir?: string) => {
     if (!fs.existsSync(target)) {
       return { ok: false, error: 'not_found', path: target }
     }
-    const size = await getDirectorySize(target)
+    const size = await readMetricCached(`folder-size:${target}`, 10_000, () => getDirectorySize(target))
     return { ok: true, bytes: size, path: target }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -1170,65 +1215,65 @@ ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string)
       return { ok: true, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] }
     }
 
-    const countLines = async (filePath: string): Promise<number> => {
-      try {
-        const content = await fs.promises.readFile(filePath, 'utf-8')
-        return content.split('\n').filter((line) => line.trim()).length
-      } catch {
-        return 0
-      }
-    }
-
-    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true })
-    const perSite: { site: string; count: number; has_statements: boolean }[] = []
-    const perTp: { site: string; tp: string; count: number; has_statements: boolean }[] = []
-    let totalStatements = 0
-    let tpTotalStatements = 0
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-
-      // First-party
-      const statementsPath = path.join(targetDir, entry.name, 'policy_statements.jsonl')
-      const hasStatements = fs.existsSync(statementsPath)
-      let count = 0
-      if (hasStatements) {
-        count = await countLines(statementsPath)
-        totalStatements += count
-      }
-      perSite.push({ site: entry.name, count, has_statements: hasStatements })
-
-      // Third-party
-      const tpRoot = path.join(targetDir, entry.name, 'third_party')
-      if (fs.existsSync(tpRoot)) {
-        const tpEntries = await fs.promises.readdir(tpRoot, { withFileTypes: true })
-        for (const tpEntry of tpEntries) {
-          if (!tpEntry.isDirectory()) continue
-          const tpStmtsPath = path.join(tpRoot, tpEntry.name, 'policy_statements.jsonl')
-          const tpHas = fs.existsSync(tpStmtsPath)
-          let tpCount = 0
-          if (tpHas) {
-            tpCount = await countLines(tpStmtsPath)
-            tpTotalStatements += tpCount
-          }
-          perTp.push({ site: entry.name, tp: tpEntry.name, count: tpCount, has_statements: tpHas })
+    return await readMetricCached(`annotation-stats:${targetDir}`, 5_000, async () => {
+      const countLines = async (filePath: string): Promise<number> => {
+        try {
+          const content = await fs.promises.readFile(filePath, 'utf-8')
+          return content.split('\n').filter((line) => line.trim()).length
+        } catch {
+          return 0
         }
       }
-    }
 
-    const annotatedSites = perSite.filter((s) => s.has_statements).length
-    const tpAnnotatedCount = perTp.filter((t) => t.has_statements).length
-    return {
-      ok: true,
-      total_sites: perSite.length,
-      annotated_sites: annotatedSites,
-      total_statements: totalStatements,
-      per_site: perSite,
-      tp_total: perTp.length,
-      tp_annotated: tpAnnotatedCount,
-      tp_total_statements: tpTotalStatements,
-      per_tp: perTp,
-    }
+      const entries = await fs.promises.readdir(targetDir, { withFileTypes: true })
+      const perSite: { site: string; count: number; has_statements: boolean }[] = []
+      const perTp: { site: string; tp: string; count: number; has_statements: boolean }[] = []
+      let totalStatements = 0
+      let tpTotalStatements = 0
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+
+        const statementsPath = path.join(targetDir, entry.name, 'policy_statements.jsonl')
+        const hasStatements = fs.existsSync(statementsPath)
+        let count = 0
+        if (hasStatements) {
+          count = await countLines(statementsPath)
+          totalStatements += count
+        }
+        perSite.push({ site: entry.name, count, has_statements: hasStatements })
+
+        const tpRoot = path.join(targetDir, entry.name, 'third_party')
+        if (fs.existsSync(tpRoot)) {
+          const tpEntries = await fs.promises.readdir(tpRoot, { withFileTypes: true })
+          for (const tpEntry of tpEntries) {
+            if (!tpEntry.isDirectory()) continue
+            const tpStmtsPath = path.join(tpRoot, tpEntry.name, 'policy_statements.jsonl')
+            const tpHas = fs.existsSync(tpStmtsPath)
+            let tpCount = 0
+            if (tpHas) {
+              tpCount = await countLines(tpStmtsPath)
+              tpTotalStatements += tpCount
+            }
+            perTp.push({ site: entry.name, tp: tpEntry.name, count: tpCount, has_statements: tpHas })
+          }
+        }
+      }
+
+      const annotatedSites = perSite.filter((s) => s.has_statements).length
+      const tpAnnotatedCount = perTp.filter((t) => t.has_statements).length
+      return {
+        ok: true,
+        total_sites: perSite.length,
+        annotated_sites: annotatedSites,
+        total_statements: totalStatements,
+        per_site: perSite,
+        tp_total: perTp.length,
+        tp_annotated: tpAnnotatedCount,
+        tp_total_statements: tpTotalStatements,
+        per_tp: perTp,
+      }
+    })
   } catch (error) {
     return { ok: false, error: String(error) }
   }

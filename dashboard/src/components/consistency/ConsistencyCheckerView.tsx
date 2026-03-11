@@ -31,9 +31,8 @@ export function ConsistencyCheckerView({
   const [sitePolicyText, setSitePolicyText] = useState('')
   const [thirdPartyPolicyText, setThirdPartyPolicyText] = useState('')
   const [sitePolicyMethod, setSitePolicyMethod] = useState<string | null>(null)
+  const [thirdPartyPolicyMethod, setThirdPartyPolicyMethod] = useState<string | null>(null)
   const [thirdPartyOptions, setThirdPartyOptions] = useState<ExplorerThirdParty[]>([])
-  const [thirdPartyTexts, setThirdPartyTexts] = useState<Record<string, string>>({})
-  const [thirdPartyMethods, setThirdPartyMethods] = useState<Record<string, string | null>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -59,9 +58,6 @@ export function ConsistencyCheckerView({
       const parsed = JSON.parse(raw)
       if (parsed.selectedSiteId) setSelectedSiteId(parsed.selectedSiteId)
       if (parsed.selectedThirdParty) setSelectedThirdParty(parsed.selectedThirdParty)
-      if (parsed.sitePolicyText) setSitePolicyText(parsed.sitePolicyText)
-      if (parsed.thirdPartyPolicyText) setThirdPartyPolicyText(parsed.thirdPartyPolicyText)
-      if (parsed.thirdPartyTexts && typeof parsed.thirdPartyTexts === 'object') setThirdPartyTexts(parsed.thirdPartyTexts)
       if (parsed.searchTerm) setSearchTerm(parsed.searchTerm)
       if (typeof parsed.wrapText === 'boolean') setWrapText(parsed.wrapText)
       if (parsed.fontSize) setFontSize(parsed.fontSize)
@@ -74,9 +70,6 @@ export function ConsistencyCheckerView({
     const payload = {
       selectedSiteId,
       selectedThirdParty,
-      sitePolicyText,
-      thirdPartyPolicyText,
-      thirdPartyTexts,
       searchTerm,
       wrapText,
       fontSize,
@@ -86,8 +79,6 @@ export function ConsistencyCheckerView({
     storageKey,
     selectedSiteId,
     selectedThirdParty,
-    sitePolicyText,
-    thirdPartyPolicyText,
     searchTerm,
     wrapText,
     fontSize,
@@ -98,9 +89,8 @@ export function ConsistencyCheckerView({
       setSitePolicyText('')
       setThirdPartyPolicyText('')
       setSitePolicyMethod(null)
+      setThirdPartyPolicyMethod(null)
       setThirdPartyOptions([])
-      setThirdPartyTexts({})
-      setThirdPartyMethods({})
       setSelectedThirdParty('')
       lastLoadRef.current = ''
       return
@@ -115,6 +105,8 @@ export function ConsistencyCheckerView({
       setLoading(true)
       setError(null)
       setThirdPartyOptions([])
+      setThirdPartyPolicyText('')
+      setThirdPartyPolicyMethod(null)
 
       const siteFolder = safeDirname(site.site)
       const sitePolicyPath = `artifacts/${siteFolder}/policy.txt`
@@ -139,62 +131,51 @@ export function ConsistencyCheckerView({
         }
       }
 
-      const thirdParties: ExplorerThirdParty[] = ((site as any).thirdParties ??
-        (site as any).third_parties ??
-        []) as ExplorerThirdParty[]
-
-      const checks = await Promise.all(
-        thirdParties.map(async (tp) => {
-          const tpFolder = safeDirname(tp.name)
-          const tpPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.txt`
-          const res = await window.scraper?.readArtifactText({ outDir, relativePath: tpPath })
-          const methodPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.extraction.json`
-          const methodRes = await window.scraper?.readArtifactText({ outDir, relativePath: methodPath })
-          let method: string | null = null
-          if (methodRes?.ok && methodRes.data) {
-            try {
-              const parsed = JSON.parse(methodRes.data)
-              method = typeof parsed?.method === 'string' ? parsed.method : null
-            } catch {
-              method = null
-            }
-          }
-          if (res?.ok && res.data) {
-            return { tp, text: res.data, method }
-          }
-          return null
-        }),
-      )
-
-      const available: ExplorerThirdParty[] = []
-      const textMap: Record<string, string> = {}
-      const methodMap: Record<string, string | null> = {}
-      for (const entry of checks) {
-        if (!entry) continue
-        available.push(entry.tp)
-        textMap[entry.tp.name] = entry.text
-        methodMap[entry.tp.name] = entry.method
-      }
-
+      const thirdParties: ExplorerThirdParty[] = site.thirdParties ?? []
+      const available = thirdParties.filter((tp) => Boolean(tp.policyUrl))
       setThirdPartyOptions(available)
-      setThirdPartyTexts(textMap)
-      setThirdPartyMethods(methodMap)
-      if (selectedThirdParty && textMap[selectedThirdParty]) {
-        setThirdPartyPolicyText(textMap[selectedThirdParty])
+      if (!available.some((tp) => tp.name === selectedThirdParty)) {
+        setSelectedThirdParty(available[0]?.name || '')
       }
       setLoading(false)
     }
 
-    loadPolicies()
-  }, [selectedSiteId, outDir, eligibleSites])
+    void loadPolicies()
+  }, [selectedSiteId, outDir, eligibleSites, selectedThirdParty])
 
   useEffect(() => {
     if (!selectedThirdParty) {
       setThirdPartyPolicyText('')
+      setThirdPartyPolicyMethod(null)
       return
     }
-    setThirdPartyPolicyText(thirdPartyTexts[selectedThirdParty] || '')
-  }, [selectedThirdParty, thirdPartyTexts])
+    if (!selectedSite || !window.scraper) return
+
+    const loadThirdPartyPolicy = async () => {
+      setLoading(true)
+      const siteFolder = safeDirname(selectedSite.site)
+      const tpFolder = safeDirname(selectedThirdParty)
+      const tpPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.txt`
+      const res = await window.scraper?.readArtifactText({ outDir, relativePath: tpPath })
+      setThirdPartyPolicyText(res?.ok && res.data ? res.data : '')
+
+      const methodPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.extraction.json`
+      const methodRes = await window.scraper?.readArtifactText({ outDir, relativePath: methodPath })
+      if (methodRes?.ok && methodRes.data) {
+        try {
+          const parsed = JSON.parse(methodRes.data)
+          setThirdPartyPolicyMethod(typeof parsed?.method === 'string' ? parsed.method : null)
+        } catch {
+          setThirdPartyPolicyMethod(null)
+        }
+      } else {
+        setThirdPartyPolicyMethod(null)
+      }
+      setLoading(false)
+    }
+
+    void loadThirdPartyPolicy()
+  }, [selectedThirdParty, selectedSite, outDir])
 
   const fontSizeClass = fontSize === 'lg' ? 'text-[13px]' : fontSize === 'md' ? 'text-[12px]' : 'text-[11px]'
   const wrapClass = wrapText ? 'whitespace-pre-wrap' : 'whitespace-pre'
@@ -226,12 +207,11 @@ export function ConsistencyCheckerView({
 
   const siteWordCount = sitePolicyText ? sitePolicyText.trim().split(/\s+/).length : 0
   const thirdPartyWordCount = thirdPartyPolicyText ? thirdPartyPolicyText.trim().split(/\s+/).length : 0
-  const selectedSiteMethod = sitePolicyMethod ?? (selectedSite as any)?.extractionMethod ?? (selectedSite as any)?.extraction_method ?? null
-  const selectedThirdPartyOption = thirdPartyOptions.find((tp) => tp.name === selectedThirdParty) as any
+  const selectedSiteMethod = sitePolicyMethod ?? selectedSite?.extractionMethod ?? null
+  const selectedThirdPartyOption = thirdPartyOptions.find((tp) => tp.name === selectedThirdParty) || null
   const selectedThirdPartyMethod =
-    thirdPartyMethods[selectedThirdParty] ??
+    thirdPartyPolicyMethod ??
     selectedThirdPartyOption?.extractionMethod ??
-    selectedThirdPartyOption?.extraction_method ??
     null
 
   const canSendToReasoning = Boolean(

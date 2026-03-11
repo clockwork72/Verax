@@ -459,7 +459,6 @@ function ColorizedJson({ text }: { text: string }) {
     .replace(/:\s*"([^"]*)"/g, ': <span class="text-orange-200">"$1"</span>')
     .replace(/\b(true|false|null)\b/g, '<span class="text-purple-300">$1</span>')
     .replace(/\b(\d+)\b/g, '<span class="text-blue-300">$1</span>')
-  // eslint-disable-next-line react/no-danger
   return <span dangerouslySetInnerHTML={{ __html: html }} />
 }
 

@@ -342,7 +342,7 @@ function App() {
         setAuditAnnotatingSite(null)
         // refresh stats after annotator finishes
         if (scraper.annotationStats) {
-          scraper.annotationStats().then((res: any) => {
+          scraper.annotationStats(`${outDir}/artifacts`).then((res: any) => {
             if (res?.ok) setAnnotationStats(res)
           })
         }
@@ -681,10 +681,17 @@ function App() {
             setRunStartedAt(Date.now())
           }
         }
-        const explorer = await window.scraper?.readExplorer(`${outDir}/explorer.jsonl`, 500)
-        if (explorer?.ok && Array.isArray(explorer.data)) {
-          const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
-          setExplorerData(cleaned)
+        const needsExplorerData =
+          activeNav === 'results'
+          || activeNav === 'explorer'
+          || activeNav === 'annotations'
+          || activeNav === 'consistency'
+        if (needsExplorerData) {
+          const explorer = await window.scraper?.readExplorer(`${outDir}/explorer.jsonl`, 500)
+          if (explorer?.ok && Array.isArray(explorer.data)) {
+            const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
+            setExplorerData(cleaned)
+          }
         }
         if (activeNav === 'audit') {
           if (window.scraper?.readResults) {
@@ -702,10 +709,6 @@ function App() {
             }
           }
         }
-        const size = await window.scraper?.getFolderSize(outDir)
-        if (size?.ok && typeof size.bytes === 'number') {
-          setFolderBytes(size.bytes)
-        }
         // Refresh annotation stats during annotate run or when viewing annotations
         if (annotateRunning || activeNav === 'annotations') {
           await refreshAnnotationStats()
@@ -716,6 +719,25 @@ function App() {
     }, 2000)
     return () => clearInterval(interval)
   }, [hasRun, outDir, annotateRunning, activeNav, refreshAnnotationStats])
+
+  useEffect(() => {
+    if (!window.scraper || activeNav !== 'database') return
+
+    let cancelled = false
+    const refreshSize = async () => {
+      const size = await window.scraper?.getFolderSize(outDir)
+      if (!cancelled && size?.ok && typeof size.bytes === 'number') {
+        setFolderBytes(size.bytes)
+      }
+    }
+
+    void refreshSize()
+    const interval = setInterval(refreshSize, 15_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [activeNav, outDir])
 
   // Auto-annotate: when a scrape run completes and autoAnnotate is enabled, start annotation.
   const prevRunningRef = useRef(false)
