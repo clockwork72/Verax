@@ -150,7 +150,6 @@ def _allow_external_candidate(site_etld1: str, cand_url: str, anchor_text: str, 
         return anchor_has_privacy or url_has_privacy
     # For body links, require stronger evidence.
     return anchor_has_privacy and url_has_privacy
-    return False
 
 def extract_link_candidates(html: str, base_url: str, site_etld1: str) -> list[LinkCandidate]:
     soup = BeautifulSoup(html, "lxml")
@@ -163,6 +162,8 @@ def extract_link_candidates(html: str, base_url: str, site_etld1: str) -> list[L
 
     body_links: list[tuple[str, str]] = []
     for a in soup.find_all("a", href=True):
+        if a.find_parent("footer") is not None:
+            continue
         body_links.append((_norm_space(a.get_text(" ")), a["href"]))
 
     def build(links: Iterable[tuple[str, str]], source: str) -> list[LinkCandidate]:

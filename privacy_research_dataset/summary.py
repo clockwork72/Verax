@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -122,7 +122,7 @@ class SummaryBuilder:
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
     entity_prevalence_max: dict[str, float] = field(default_factory=dict)
     entity_categories: dict[str, Counter] = field(default_factory=dict)
-    started_at: str = field(default_factory=lambda: datetime.utcnow().isoformat(timespec="seconds") + "Z")
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"))
     updated_at: str | None = None
 
     def update(self, result: dict[str, Any]) -> None:
@@ -204,7 +204,7 @@ class SummaryBuilder:
         if result.get("policy_is_english"):
             self.english_policy_count += 1
 
-        self.updated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        self.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     def to_summary(self) -> dict[str, Any]:
         success = self.status_counts.get("ok", 0)

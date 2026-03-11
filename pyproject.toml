@@ -23,6 +23,7 @@ dependencies = [
   "litellm>=1.0",
   "trafilatura>=1.12.0",
   "openai>=1.0.0",
+  "tiktoken>=0.7.0",
   "readability-lxml>=0.8.1",
   "pypandoc>=1.13",
   "pandoc>=2.4",

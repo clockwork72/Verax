@@ -21,8 +21,44 @@ from typing import Callable, Generator, Sequence, TypeAlias
 import litellm
 import rapidjson
 import regex
-from lemminflect import getAllInflections, getAllInflectionsOOV, getAllLemmas  # type: ignore
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+except Exception:  # pragma: no cover - optional dependency fallback
+    from difflib import SequenceMatcher
+
+    class _FallbackFuzz:
+        @staticmethod
+        def ratio(a: str, b: str) -> float:
+            return SequenceMatcher(None, a or "", b or "").ratio() * 100.0
+
+    fuzz = _FallbackFuzz()
+
+try:
+    from lemminflect import getAllInflections, getAllInflectionsOOV, getAllLemmas  # type: ignore
+except Exception:  # pragma: no cover - optional dependency fallback
+    def getAllLemmas(word: str) -> dict[str, list[str]]:  # type: ignore[override]
+        base = (word or "").strip()
+        return {"VERB": [base]} if base else {}
+
+    def getAllInflections(word: str, upos: str | None = None) -> dict[str, list[str]]:  # type: ignore[override]
+        base = (word or "").strip()
+        if not base:
+            return {}
+        lowered = base.lower()
+        forms = {
+            base,
+            lowered,
+            f"{lowered}s",
+            f"{lowered}ed",
+            f"{lowered}ing",
+        }
+        if lowered.endswith("e") and len(lowered) > 1:
+            forms.add(f"{lowered[:-1]}ing")
+            forms.add(f"{lowered}d")
+        return {"fallback": sorted(forms)}
+
+    def getAllInflectionsOOV(word: str, upos: str | None = None) -> dict[str, list[str]]:  # type: ignore[override]
+        return getAllInflections(word, upos)
 
 from .annotation_types import (
     DocumentBlockInfo,
@@ -261,15 +297,42 @@ def preprocess_policy(policy_text: str, token_limit: int = 500) -> DocumentJson:
     Uses pandoc to parse the markdown AST, then slices it into token-bounded
     chunks (with heading breadcrumb context) suitable for LLM annotation.
     """
-    import pandoc  # type: ignore
-    import tiktoken
+    try:
+        import pandoc  # type: ignore
+    except Exception:
+        chunks = [
+            block.strip()
+            for block in re.split(r"\n\s*\n+", policy_text or "")
+            if block.strip()
+        ]
+        if not chunks:
+            chunks = [policy_text.strip()] if policy_text.strip() else []
+        blocks: list[DocumentBlockInfo] = [
+            {"element_indices": (idx,), "text": block}
+            for idx, block in enumerate(chunks)
+        ]
+        chunk_info: list[DocumentChunkInfo] = [
+            {
+                "block_map": [{"index": idx, "text_range": (0, len(block))}],
+                "text": block if block.endswith("\n") else f"{block}\n",
+            }
+            for idx, block in enumerate(chunks)
+        ]
+        return {"blocks": blocks, "chunks": chunk_info}
+
+    try:
+        import tiktoken
+
+        encoder = tiktoken.encoding_for_model("gpt-4o-mini")
+        tokenizer = encoder.encode
+    except Exception:
+        tokenizer = lambda text: re.findall(r"\S+", text or "")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _, elements = pandoc.read(policy_text, format="markdown")
 
-    encoder = tiktoken.encoding_for_model("gpt-4o-mini")
-    return _process_document(elements, encoder.encode, token_limit)
+    return _process_document(elements, tokenizer, token_limit)
 
 
 # ---------------------------------------------------------------------------
