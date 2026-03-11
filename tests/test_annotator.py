@@ -1,6 +1,7 @@
 """Unit tests for Stage 2 annotation pipeline."""
 
 import pytest
+from urllib.error import URLError
 
 
 SAMPLE_POLICY = """\
@@ -74,6 +75,25 @@ def test_small_token_limit_creates_more_chunks():
     assert len(doc_small["chunks"]) >= len(doc_large["chunks"])
 
 
+def test_preprocess_rebalances_oversized_single_block():
+    """Large scraped plaintext blobs should be split even if they arrive as one block."""
+    from privacy_research_dataset.annotator import preprocess_policy
+
+    blob = "\n".join(
+        [
+            "Privacy Policy",
+            "We collect your name and email address to provide the service.",
+            "We share your information with analytics providers for fraud prevention.",
+        ]
+        * 40
+    )
+
+    doc = preprocess_policy(blob, token_limit=80)
+
+    assert len(doc["chunks"]) > 1
+    assert all(chunk["text"].strip() for chunk in doc["chunks"])
+
+
 def test_extract_json_list_clean():
     """Standard JSON list parses correctly."""
     from privacy_research_dataset.annotator import extract_json_list
@@ -108,6 +128,39 @@ def test_extract_json_list_empty():
 
     result = extract_json_list("[]")
     assert result == []
+
+
+def test_extract_json_list_with_think_and_template_tokens():
+    """DeepSeek-style reasoning wrappers and template tokens should be stripped."""
+    from privacy_research_dataset.annotator import extract_json_list
+
+    raw = (
+        "<think>I should reason first.</think>\n"
+        '[{"action":["collect"],"data":["email address"]}]<|im_end|>'
+    )
+    result = extract_json_list(raw)
+    assert result == [{"action": ["collect"], "data": ["email address"]}]
+
+
+def test_extract_json_list_from_wrapped_object_and_stringified_items():
+    """Some local-model outputs wrap the list or stringify each object; both should parse."""
+    from privacy_research_dataset.annotator import extract_json_list
+
+    raw = (
+        '{'
+        '"privacy_statements":['
+        '"{\\"action\\":[\\"share\\"],\\"data\\":[\\"email address\\"],\\"recipient\\":[\\"analytics providers\\"]}"'
+        ']'
+        '}'
+    )
+    result = extract_json_list(raw)
+    assert result == [
+        {
+            "action": ["share"],
+            "data": ["email address"],
+            "recipient": ["analytics providers"],
+        }
+    ]
 
 
 def test_validate_and_fix_statement_valid(monkeypatch):
@@ -150,3 +203,33 @@ def test_get_inflections_basic():
     forms = get_inflections("collect")
     assert "collect" in forms
     assert len(forms) > 1  # should have collects, collected, collecting, etc.
+
+
+def test_resolve_deepseek_endpoint_falls_back_to_ipv4(monkeypatch):
+    from privacy_research_dataset import annotator
+
+    annotator._RESOLVED_DEEPSEEK_ENDPOINT = None
+    annotator._RESOLVED_DEEPSEEK_HEALTH_URL = None
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(url, timeout):
+        if "127.0.0.1" in url:
+            return _Resp()
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert annotator.resolve_deepseek_endpoint() == "http://127.0.0.1:8901/v1"
+    assert annotator.resolve_deepseek_health_url() == "http://127.0.0.1:8901/health"
+    assert annotator.check_tunnel_connection() is True
+
+    annotator._RESOLVED_DEEPSEEK_ENDPOINT = None
+    annotator._RESOLVED_DEEPSEEK_HEALTH_URL = None

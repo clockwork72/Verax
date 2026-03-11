@@ -5,7 +5,7 @@ Usage:
         --artifacts-dir outputs/eval_v2/artifacts \\
         --openai-api-key sk-... \\
         --llm-model gpt-4o-mini \\
-        --concurrency 3
+        --concurrency 1
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ from .annotator import (
     DEEPSEEK_ENDPOINT,
     DEEPSEEK_HEALTH_URL,
     DEEPSEEK_MODEL_ID,
+    resolve_deepseek_endpoint,
+    resolve_deepseek_health_url,
 )
 from .utils.logging import log, warn
 
@@ -85,8 +87,8 @@ def _parse_args() -> argparse.Namespace:
         help="Skip YES/NO exhaustion checks to reduce extra LLM calls and TPM pressure.",
     )
     p.add_argument(
-        "--concurrency", type=int, default=3,
-        help="Number of sites to annotate in parallel (default: 3).",
+        "--concurrency", type=int, default=1,
+        help="Number of sites to annotate in parallel (default: 1).",
     )
     p.add_argument(
         "--force", action="store_true",
@@ -369,10 +371,11 @@ async def _run(args: argparse.Namespace) -> None:
     enable_litellm_disk_cache()
 
     # Verify the HPC SSH tunnel is up before starting any LLM work.
-    log(f"Checking HPC tunnel connection ({DEEPSEEK_HEALTH_URL}) …")
+    health_url = resolve_deepseek_health_url() or DEEPSEEK_HEALTH_URL
+    log(f"Checking HPC tunnel connection ({health_url}) …")
     if not check_tunnel_connection():
         warn(
-            "Cannot reach DeepSeek model at http://localhost:8901/health.\n"
+            "Cannot reach DeepSeek model at any loopback health URL for port 8901.\n"
             "Start the SSH tunnel first:\n"
             "  ssh -N -f -L 8901:<gpu-node>:8901 <user>@<hpc-hostname>\n"
             "Then re-run the annotator."
@@ -383,6 +386,7 @@ async def _run(args: argparse.Namespace) -> None:
     # LiteLLM's openai/ provider still reads OPENAI_API_KEY; set a placeholder
     # so it doesn't raise an auth-configuration error for the local server.
     os.environ.setdefault("OPENAI_API_KEY", "not-needed")
+    os.environ.setdefault("OPENAI_BASE_URL", resolve_deepseek_endpoint() or DEEPSEEK_ENDPOINT)
 
     artifacts_dir = Path(args.artifacts_dir)
     if not artifacts_dir.is_dir():

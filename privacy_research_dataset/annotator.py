@@ -17,6 +17,7 @@ import warnings
 from collections import deque
 from functools import reduce
 from typing import Callable, Generator, Sequence, TypeAlias
+from urllib.parse import urljoin
 
 import litellm
 import rapidjson
@@ -75,20 +76,72 @@ from .annotation_types import (
 # DeepSeek / HPC SSH tunnel configuration
 # ---------------------------------------------------------------------------
 
-DEEPSEEK_ENDPOINT = "http://localhost:8901/v1"
-DEEPSEEK_HEALTH_URL = "http://localhost:8901/health"
+DEEPSEEK_ENDPOINT = os.getenv("PRIVACY_LLM_BASE_URL", "http://localhost:8901/v1")
+DEEPSEEK_HEALTH_URL = os.getenv("PRIVACY_LLM_HEALTH_URL", "http://localhost:8901/health")
 DEEPSEEK_MODEL_ID = "openai/local"   # LiteLLM prefix for OpenAI-compatible API
 _TUNNEL_PROBE_TIMEOUT = 3.0
+_RESOLVED_DEEPSEEK_ENDPOINT: str | None = None
+_RESOLVED_DEEPSEEK_HEALTH_URL: str | None = None
+
+
+def _deepseek_candidate_urls() -> list[tuple[str, str]]:
+    candidates = [
+        (DEEPSEEK_ENDPOINT.rstrip("/"), DEEPSEEK_HEALTH_URL),
+        ("http://localhost:8901/v1", "http://localhost:8901/health"),
+        ("http://127.0.0.1:8901/v1", "http://127.0.0.1:8901/health"),
+        ("http://[::1]:8901/v1", "http://[::1]:8901/health"),
+    ]
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for endpoint, health in candidates:
+        pair = (endpoint, health)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        deduped.append(pair)
+    return deduped
+
+
+def _probe_tunnel_url(url: str, timeout: float) -> bool:
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return resp.status < 400
+
+
+def resolve_deepseek_endpoint(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> str | None:
+    global _RESOLVED_DEEPSEEK_ENDPOINT, _RESOLVED_DEEPSEEK_HEALTH_URL
+
+    if _RESOLVED_DEEPSEEK_ENDPOINT:
+        return _RESOLVED_DEEPSEEK_ENDPOINT
+
+    for endpoint, health in _deepseek_candidate_urls():
+        try:
+            if _probe_tunnel_url(health, timeout):
+                _RESOLVED_DEEPSEEK_ENDPOINT = endpoint
+                _RESOLVED_DEEPSEEK_HEALTH_URL = health
+                return endpoint
+        except Exception:
+            continue
+    return None
+
+
+def resolve_deepseek_health_url(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> str | None:
+    global _RESOLVED_DEEPSEEK_HEALTH_URL
+
+    if _RESOLVED_DEEPSEEK_HEALTH_URL:
+        return _RESOLVED_DEEPSEEK_HEALTH_URL
+
+    endpoint = resolve_deepseek_endpoint(timeout)
+    if not endpoint:
+        return None
+    _RESOLVED_DEEPSEEK_HEALTH_URL = urljoin(f"{endpoint.rstrip('/')}/", "../health")
+    return _RESOLVED_DEEPSEEK_HEALTH_URL
 
 
 def check_tunnel_connection(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> bool:
     """Return True if the HPC SSH tunnel (port 8901 → DeepSeek) is reachable."""
-    import urllib.request
-    try:
-        with urllib.request.urlopen(DEEPSEEK_HEALTH_URL, timeout=timeout) as resp:
-            return resp.status < 400
-    except Exception:
-        return False
+    return resolve_deepseek_endpoint(timeout) is not None
 
 
 def enable_litellm_disk_cache() -> None:
@@ -291,6 +344,130 @@ def _process_document(
     return {"blocks": block_info, "chunks": chunk_info}
 
 
+def _make_simple_chunked_document(block_texts: list[str]) -> DocumentJson:
+    blocks: list[DocumentBlockInfo] = [
+        {"element_indices": (idx,), "text": block}
+        for idx, block in enumerate(block_texts)
+    ]
+    chunk_info: list[DocumentChunkInfo] = []
+    for idx, block in enumerate(block_texts):
+        chunk_text = block if block.endswith("\n") else f"{block}\n"
+        chunk_info.append({
+            "block_map": [{"index": idx, "text_range": (0, len(block))}],
+            "text": chunk_text,
+        })
+    return {"blocks": blocks, "chunks": chunk_info}
+
+
+def _split_oversized_block_text(
+    text: str,
+    tokenizer_function: Callable,
+    token_limit: int,
+) -> list[str]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return []
+    if len(tokenizer_function(normalized)) <= token_limit:
+        return [normalized]
+
+    for splitter in (
+        lambda value: re.split(r"\n\s*\n+", value),
+        lambda value: re.split(r"\n+", value),
+        lambda value: re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"“(])", value),
+    ):
+        pieces = [piece.strip() for piece in splitter(normalized) if piece.strip()]
+        if len(pieces) <= 1:
+            continue
+        result: list[str] = []
+        current: list[str] = []
+        for piece in pieces:
+            if len(tokenizer_function(piece)) > token_limit:
+                if current:
+                    result.append("\n\n".join(current))
+                    current = []
+                result.extend(_split_oversized_block_text(piece, tokenizer_function, token_limit))
+                continue
+            candidate = "\n\n".join(current + [piece]) if current else piece
+            if current and len(tokenizer_function(candidate)) > token_limit:
+                result.append("\n\n".join(current))
+                current = [piece]
+            else:
+                current.append(piece)
+        if current:
+            result.append("\n\n".join(current))
+        if result:
+            return result
+
+    words = normalized.split()
+    if not words:
+        return []
+    result: list[str] = []
+    current: list[str] = []
+    for word in words:
+        candidate = " ".join(current + [word]) if current else word
+        if current and len(tokenizer_function(candidate)) > token_limit:
+            result.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        result.append(" ".join(current))
+    return result
+
+
+def _rebalance_document_chunks(
+    doc: DocumentJson,
+    tokenizer_function: Callable,
+    token_limit: int,
+) -> DocumentJson:
+    split_blocks: list[str] = []
+    for block in doc["blocks"]:
+        split_blocks.extend(_split_oversized_block_text(block["text"], tokenizer_function, token_limit))
+    if not split_blocks:
+        return {"blocks": [], "chunks": []}
+
+    chunked_blocks: list[str] = []
+    current: list[str] = []
+    for block in split_blocks:
+        candidate = "\n\n".join(current + [block]) if current else block
+        if current and len(tokenizer_function(candidate)) > token_limit:
+            chunked_blocks.append("\n\n".join(current))
+            current = [block]
+        else:
+            current.append(block)
+    if current:
+        chunked_blocks.append("\n\n".join(current))
+
+    blocks: list[DocumentBlockInfo] = []
+    chunks: list[DocumentChunkInfo] = []
+    block_idx = 0
+    for chunk_text in chunked_blocks:
+        parts = [part.strip() for part in re.split(r"\n\s*\n+", chunk_text) if part.strip()]
+        if not parts:
+            parts = [chunk_text.strip()]
+        rendered_parts: list[str] = []
+        block_map: list[DocumentChunkBlockMapItem] = []
+        cursor = 0
+        for part in parts:
+            blocks.append({"element_indices": (block_idx,), "text": part})
+            rendered_parts.append(part)
+            block_map.append({"index": block_idx, "text_range": (cursor, cursor + len(part))})
+            cursor += len(part) + 2
+            block_idx += 1
+        rendered = "\n\n".join(rendered_parts)
+        chunks.append({"block_map": block_map, "text": rendered if rendered.endswith("\n") else f"{rendered}\n"})
+
+    return {"blocks": blocks, "chunks": chunks}
+
+
+def _should_rebalance_document(
+    doc: DocumentJson,
+    tokenizer_function: Callable,
+    token_limit: int,
+) -> bool:
+    return any(len(tokenizer_function(block["text"])) > token_limit for block in doc["blocks"])
+
+
 def preprocess_policy(policy_text: str, token_limit: int = 500) -> DocumentJson:
     """Convert clean markdown policy text into a chunked DocumentJson.
 
@@ -307,18 +484,8 @@ def preprocess_policy(policy_text: str, token_limit: int = 500) -> DocumentJson:
         ]
         if not chunks:
             chunks = [policy_text.strip()] if policy_text.strip() else []
-        blocks: list[DocumentBlockInfo] = [
-            {"element_indices": (idx,), "text": block}
-            for idx, block in enumerate(chunks)
-        ]
-        chunk_info: list[DocumentChunkInfo] = [
-            {
-                "block_map": [{"index": idx, "text_range": (0, len(block))}],
-                "text": block if block.endswith("\n") else f"{block}\n",
-            }
-            for idx, block in enumerate(chunks)
-        ]
-        return {"blocks": blocks, "chunks": chunk_info}
+        simple_doc = _make_simple_chunked_document(chunks)
+        return _rebalance_document_chunks(simple_doc, lambda text: re.findall(r"\S+", text or ""), token_limit)
 
     try:
         import tiktoken
@@ -332,7 +499,10 @@ def preprocess_policy(policy_text: str, token_limit: int = 500) -> DocumentJson:
         warnings.simplefilter("ignore")
         _, elements = pandoc.read(policy_text, format="markdown")
 
-    return _process_document(elements, tokenizer, token_limit)
+    processed = _process_document(elements, tokenizer, token_limit)
+    if _should_rebalance_document(processed, tokenizer, token_limit):
+        return _rebalance_document_chunks(processed, tokenizer, token_limit)
+    return processed
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +622,28 @@ Output 5:
 []
 '''
 
+_LOCAL_PROMPT = """\
+Extract privacy-policy processing statements from the excerpt.
+Return ONLY a JSON array and nothing else.
+
+Each array item must be an object with optional keys:
+- action: array of exact action phrases from the excerpt
+- data: array of exact personal-data phrases from the excerpt
+- processor: array of exact processor phrases from the excerpt
+- recipient: array of exact recipient phrases from the excerpt
+- purpose: array of exact purpose phrases from the excerpt
+- context: array of exact context phrases from the excerpt
+- prohibition: true only when the excerpt explicitly denies or prohibits the action
+
+Rules:
+- Copy wording exactly from the excerpt.
+- Omit keys that are not present.
+- Use one object per distinct processing statement.
+- Do not include prose, markdown, code fences, or commentary.
+- Start with `[` and end with `]`.
+- If there are no relevant statements, return [].
+"""
+
 _EXHAUSTION_PROMPT = """\
 You are validating extraction completeness for privacy-policy statements.
 Given:
@@ -463,7 +655,40 @@ Answer strictly with one token: YES or NO.
 Do not add any other text.
 """
 
+_LOCAL_EXHAUSTION_PROMPT = """\
+Check whether the excerpt still contains any missing personal-data processing statements.
+Return ONLY one token:
+- YES if at least one statement is still missing
+- NO if nothing is missing
+Do not add any other text.
+"""
+
+_JSON_REPAIR_PROMPT = """\
+Convert the input into a valid JSON array of privacy-policy processing statements.
+Return ONLY JSON.
+
+Allowed keys per object:
+- action
+- data
+- processor
+- recipient
+- purpose
+- context
+- prohibition
+
+Rules:
+- Use arrays of strings for all keys except prohibition.
+- If the input already contains JSON, repair it instead of rewriting it.
+- If the input contains no usable statements, return [].
+- No prose, no markdown, no code fences.
+"""
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+_CHAT_TEMPLATE_TOKEN_RE = re.compile(r"<\|[^>]+?\|>")
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_ANSWER_BLOCK_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_LOCAL_STOP_SEQUENCES = ["<|im_end|>", "<|eot_id|>"]
 
 _DEFAULT_MODEL_TPM: dict[str, int] = {
     "gpt-4o": 30000,
@@ -548,13 +773,118 @@ def get_inflections(word: str) -> set[str]:
     return results
 
 
+def _strip_model_wrappers(text: str) -> str:
+    cleaned = _CHAT_TEMPLATE_TOKEN_RE.sub("", text or "")
+    return cleaned.replace("<|endoftext|>", "").strip()
+
+
+def _iter_json_candidates(text: str) -> Generator[str, None, None]:
+    cleaned = _strip_model_wrappers(text)
+    if not cleaned:
+        return
+
+    yielded: set[str] = set()
+
+    def push(candidate: str) -> Generator[str, None, None]:
+        normalized = candidate.strip()
+        if normalized and normalized not in yielded:
+            yielded.add(normalized)
+            yield normalized
+
+    for match in _ANSWER_BLOCK_RE.finditer(cleaned):
+        yield from push(match.group(1))
+
+    for match in _JSON_FENCE_RE.finditer(cleaned):
+        yield from push(match.group(1))
+
+    without_think = _THINK_BLOCK_RE.sub(" ", cleaned)
+    yield from push(without_think)
+
+    for source in (without_think, cleaned):
+        depth = 0
+        start: int | None = None
+        in_string = False
+        escaped = False
+        for idx, ch in enumerate(source):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+
+            if ch in "[{":
+                if depth == 0:
+                    start = idx
+                depth += 1
+                continue
+
+            if ch in "]}":
+                if depth == 0:
+                    continue
+                depth -= 1
+                if depth == 0 and start is not None:
+                    yield from push(source[start : idx + 1])
+                    start = None
+
+
+def _coerce_statement_list(value: object) -> list[LlmStatement]:
+    if isinstance(value, dict):
+        for key in ("statements", "privacy_statements", "items", "results", "data"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                value = nested
+                break
+        else:
+            for nested in value.values():
+                if isinstance(nested, list):
+                    value = nested
+                    break
+
+    if not isinstance(value, list):
+        raise ValueError("response did not contain a JSON list")
+
+    normalized: list[LlmStatement] = []
+    for item in value:
+        parsed_item = item
+        if isinstance(parsed_item, str):
+            stripped = parsed_item.strip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                parsed_item = rapidjson.loads(
+                    stripped,
+                    parse_mode=rapidjson.PM_COMMENTS | rapidjson.PM_TRAILING_COMMAS,
+                )
+            else:
+                raise ValueError("statement item was not a JSON object")
+        if not isinstance(parsed_item, dict):
+            raise ValueError("statement item was not a JSON object")
+        normalized.append(parsed_item)
+    return normalized
+
+
 def extract_json_list(text: str) -> list[LlmStatement]:
     """Extract and parse a JSON list from an LLM response string."""
-    json_body = text[text.index("[") : text.rindex("]") + 1]
-    return rapidjson.loads(
-        json_body,
-        parse_mode=rapidjson.PM_COMMENTS | rapidjson.PM_TRAILING_COMMAS,
-    )
+    last_error: Exception | None = None
+    for candidate in _iter_json_candidates(text):
+        try:
+            parsed = rapidjson.loads(
+                candidate,
+                parse_mode=rapidjson.PM_COMMENTS | rapidjson.PM_TRAILING_COMMAS,
+            )
+            return _coerce_statement_list(parsed)
+        except Exception as exc:  # pragma: no cover - exercised via fallback cases
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise ValueError(f"no valid JSON statement list found: {last_error}") from last_error
+    raise ValueError("no valid JSON statement list found")
 
 
 def fuzzy_finditer(text: str, value: str) -> list[regex.Match]:
@@ -746,6 +1076,10 @@ class Annotator:
             ("off" if self.disable_exhaustion_check else "on"),
         )
 
+    @property
+    def _is_local_model(self) -> bool:
+        return _model_key(self.model_name) == "local"
+
     def _estimate_prompt_tokens(self, messages: list[dict[str, str]]) -> int:
         if _model_key(self.model_name) == "local":
             # tiktoken has no encoding for "local"; use char-based estimate.
@@ -866,7 +1200,7 @@ class Annotator:
             **extra,
         )
         parts: list[str] = []
-        in_think = False
+        extraction_started = False
         usage_data: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         for chunk in stream_gen:
@@ -886,10 +1220,15 @@ class Annotator:
                     usage_data["total_tokens"] = getattr(chunk.usage, "total_tokens", 0) or 0
                 continue
 
-            if "<think>" in delta:
-                in_think = True
-            phase = "exhaustion" if is_exhaustion else ("reasoning" if in_think else "extraction")
             parts.append(delta)
+            joined = "".join(parts)
+            latest_think_open = joined.rfind("<think>")
+            latest_think_close = joined.rfind("</think>")
+            in_think = latest_think_open > latest_think_close
+            if not extraction_started:
+                stripped = _THINK_BLOCK_RE.sub(" ", _strip_model_wrappers(joined))
+                extraction_started = "[" in stripped or "{" in stripped
+            phase = "exhaustion" if is_exhaustion else ("reasoning" if in_think or not extraction_started else "extraction")
 
             event = json.dumps({
                 "site": self.current_site,
@@ -902,9 +1241,6 @@ class Annotator:
             }, ensure_ascii=False)
             sys.stdout.write(f"[STREAM] {event}\n")
             sys.stdout.flush()
-
-            if "</think>" in delta:
-                in_think = False
 
         text = "".join(parts)
 
@@ -940,10 +1276,10 @@ class Annotator:
             try:
                 # Route to the local HPC endpoint for DeepSeek (openai/local).
                 extra: dict = {}
-                is_local = _model_key(self.model_name) == "local"
-                if is_local:
-                    extra["api_base"] = DEEPSEEK_ENDPOINT
+                if self._is_local_model:
+                    extra["api_base"] = resolve_deepseek_endpoint() or DEEPSEEK_ENDPOINT
                     extra["api_key"] = "not-needed"
+                    extra["stop"] = _LOCAL_STOP_SEQUENCES
                     # Stream local model and emit [STREAM] events for live UI
                     return self._llm_completion_streaming(
                         messages=messages,
@@ -978,6 +1314,24 @@ class Annotator:
                 logging.error("%s failed (attempt %d/%d): %s", tag, i_retry + 1, attempts, clean_err)
                 time.sleep(min(2.0, 0.2 * (i_retry + 1)))
         return None
+
+    def _repair_json_response(self, raw_message: str) -> str | None:
+        if not raw_message.strip():
+            return None
+        response = self._llm_completion(
+            messages=[
+                {"role": "system", "content": _JSON_REPAIR_PROMPT},
+                {"role": "user", "content": raw_message},
+            ],
+            max_tokens=min(max(256, self.llm_max_output_tokens), 1024),
+            caching=False,
+            tag="JSON repair",
+        )
+        if response is None:
+            return None
+        repaired = response.choices[0].message.content
+        self._record_usage(response)
+        return repaired
 
     def run(self, doc: DocumentJson) -> Generator[tuple[int, Statement], None, None]:
         """Yield (chunk_index, statement) for every statement found in the document."""
@@ -1018,7 +1372,7 @@ class Annotator:
 
         for i_retry in range(self.error_retries):
             messages = [
-                {"role": "system", "content": _PROMPT},
+                {"role": "system", "content": _LOCAL_PROMPT if self._is_local_model else _PROMPT},
                 {"role": "user", "content": f"### INPUT\n\n{text}"},
             ]
             if current_statements:
@@ -1049,6 +1403,21 @@ class Annotator:
                 new_statements = extract_json_list(raw_message)
             except (rapidjson.JSONDecodeError, ValueError, AttributeError) as e:
                 logging.error("Failed to decode JSON response: %s", e)
+                if self._is_local_model:
+                    repaired = self._repair_json_response(str(raw_message or ""))
+                    if repaired:
+                        logging.info("Attempting repaired JSON parse: %r", repaired[:200])
+                        try:
+                            new_statements = extract_json_list(repaired)
+                        except (rapidjson.JSONDecodeError, ValueError, AttributeError) as repair_error:
+                            logging.error("Failed to decode repaired JSON response: %s", repair_error)
+                            continue
+
+                        fixed_statements = []
+                        for statement in new_statements:
+                            if st := validate_and_fix_statement(chunk, statement):
+                                fixed_statements.append(st)
+                        return fixed_statements
                 continue
 
             fixed_statements = []
@@ -1064,7 +1433,7 @@ class Annotator:
     ) -> bool:
         text = chunk["text"]
         messages = [
-            {"role": "system", "content": _EXHAUSTION_PROMPT},
+            {"role": "system", "content": _LOCAL_EXHAUSTION_PROMPT if self._is_local_model else _EXHAUSTION_PROMPT},
             {"role": "user", "content": f"### INPUT\n\n{text}"},
             {
                 "role": "assistant",
@@ -1087,7 +1456,14 @@ class Annotator:
             return False
 
         raw_message = response.choices[0].message.content
-        clean_message = _strip_ansi(str(raw_message or "")).strip().upper()
+        clean_message = _strip_ansi(_strip_model_wrappers(str(raw_message or ""))).strip().upper()
         logging.info("Exhaustion check response: %r", clean_message)
         self._record_usage(response)
-        return "YES" not in clean_message
+        yes_present = bool(re.search(r"\bYES\b", clean_message))
+        no_present = bool(re.search(r"\bNO\b", clean_message))
+        if yes_present and not no_present:
+            return False
+        if no_present and not yes_present:
+            return True
+        logging.warning("Ambiguous exhaustion response; continuing extraction rounds.")
+        return False

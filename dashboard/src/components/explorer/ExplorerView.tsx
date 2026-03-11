@@ -22,6 +22,20 @@ type ExplorerViewProps = {
   outDir?: string
 }
 
+function parseStatementLines(raw: string): any[] {
+  return raw
+    .split('\n')
+    .filter((l: string) => l.trim())
+    .map((line: string) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
 function formatExtractionMethod(value?: string | null) {
   if (!value) return 'Unknown'
   return value === 'trafilatura' ? 'Trafilatura' : 'Fallback'
@@ -81,18 +95,19 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
     if (detailTab !== 'statements' || !selectedSite || !window.scraper?.readArtifactText) return
     setStatementsLoading(true)
     setStatements([])
-    window.scraper.readArtifactText({
-      outDir: outDir || 'outputs',
-      relativePath: `artifacts/${selectedSite.site}/policy_statements_annotated.jsonl`,
-    }).then((res: any) => {
-      if (res?.ok && res.data) {
-        const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())
-        const parsed: any[] = []
-        for (const line of lines) {
-          try { parsed.push(JSON.parse(line)) } catch { /* skip */ }
-        }
-        setStatements(parsed)
-      }
+    Promise.all([
+      window.scraper.readArtifactText({
+        outDir: outDir || 'outputs',
+        relativePath: `artifacts/${selectedSite.site}/policy_statements_annotated.jsonl`,
+      }),
+      window.scraper.readArtifactText({
+        outDir: outDir || 'outputs',
+        relativePath: `artifacts/${selectedSite.site}/policy_statements.jsonl`,
+      }),
+    ]).then(([annotatedRes, baseRes]: any[]) => {
+      const annotated = annotatedRes?.ok && annotatedRes.data ? parseStatementLines(annotatedRes.data) : []
+      const fallback = baseRes?.ok && baseRes.data ? parseStatementLines(baseRes.data) : []
+      setStatements(annotated.length > 0 ? annotated : fallback)
       setStatementsLoading(false)
     })
   }, [detailTab, selectedSite, outDir])

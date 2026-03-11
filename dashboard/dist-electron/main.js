@@ -982,13 +982,14 @@ ipcMain.handle("scraper:stop-annotate", async () => {
 });
 ipcMain.handle("scraper:check-tunnel", async () => {
   const http = await import("node:http");
-  return new Promise((resolve) => {
+  const hosts = ["localhost", "127.0.0.1", "::1"];
+  const probeHost = (hostname) => new Promise((resolve) => {
     const req = http.default.get(
-      { hostname: "::1", port: 8901, path: "/health", timeout: 3e3 },
+      { hostname, port: 8901, path: "/health", timeout: 3e3 },
       (res) => {
         res.resume();
         const ok = typeof res.statusCode === "number" && res.statusCode < 400;
-        resolve({ ok, status: res.statusCode });
+        resolve({ ok, status: res.statusCode, error: ok ? void 0 : `status_${res.statusCode}` });
       }
     );
     req.on("timeout", () => {
@@ -997,6 +998,13 @@ ipcMain.handle("scraper:check-tunnel", async () => {
     });
     req.on("error", (err) => resolve({ ok: false, error: err.message }));
   });
+  let lastError = "unreachable";
+  for (const hostname of hosts) {
+    const result = await probeHost(hostname);
+    if (result.ok) return result;
+    if (result.error) lastError = result.error;
+  }
+  return { ok: false, error: lastError };
 });
 ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
   try {

@@ -30,6 +30,25 @@ type SiteStatements = {
 
 type FreqEntry = { label: string; count: number }
 
+function parseStatementLines(raw: string): AnnotatedStatement[] {
+  const statements: AnnotatedStatement[] = []
+  const lines: string[] = raw.split('\n').filter((l: string) => l.trim())
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line)
+      if (!parsed || typeof parsed !== 'object' || !parsed.statement) continue
+      statements.push({
+        chunk_index: Number(parsed.chunk_index) || 0,
+        source_text: String(parsed.source_text || ''),
+        statement: parsed.statement as Statement,
+      })
+    } catch {
+      // skip bad lines
+    }
+  }
+  return statements
+}
+
 const FIELD_COLORS: Record<string, string> = {
   action: 'bg-blue-900/50 text-blue-300 border-blue-700',
   data: 'bg-purple-900/50 text-purple-300 border-purple-700',
@@ -156,21 +175,22 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
     if (!window.scraper || siteStatementsBySite[site] || loadingSite === site) return
     setLoadingSite(site)
     const root = outDir || 'outputs'
-    const res = await window.scraper.readArtifactText({
-      outDir: root,
-      relativePath: `artifacts/${site}/policy_statements_annotated.jsonl`,
-    })
-    const statements: AnnotatedStatement[] = []
-    if (res?.ok && res.data) {
-      const lines: string[] = res.data.split('\n').filter((l: string) => l.trim())
-      for (const line of lines) {
-        try {
-          statements.push(JSON.parse(line))
-        } catch {
-          // skip bad lines
-        }
-      }
-    }
+    const [annotatedRes, baseRes] = await Promise.all([
+      window.scraper.readArtifactText({
+        outDir: root,
+        relativePath: `artifacts/${site}/policy_statements_annotated.jsonl`,
+      }),
+      window.scraper.readArtifactText({
+        outDir: root,
+        relativePath: `artifacts/${site}/policy_statements.jsonl`,
+      }),
+    ])
+    const annotatedStatements =
+      annotatedRes?.ok && annotatedRes.data ? parseStatementLines(annotatedRes.data) : []
+    const statements =
+      annotatedStatements.length > 0
+        ? annotatedStatements
+        : (baseRes?.ok && baseRes.data ? parseStatementLines(baseRes.data) : [])
     setSiteStatementsBySite((prev) => ({ ...prev, [site]: statements }))
     setLoadingSite((current) => (current === site ? null : current))
   }

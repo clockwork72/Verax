@@ -1126,12 +1126,12 @@ async def _run(args: argparse.Namespace) -> None:
     # --- OpenAI-compatible client for LLM semantic cleaning (local DeepSeek) ---
     openai_client = None
     if not getattr(args, "no_llm_clean", False):
-        from .annotator import check_tunnel_connection, DEEPSEEK_ENDPOINT
+        from .annotator import check_tunnel_connection, DEEPSEEK_ENDPOINT, resolve_deepseek_endpoint
         if check_tunnel_connection():
             try:
                 import openai as _openai
                 openai_client = _openai.AsyncOpenAI(
-                    base_url=DEEPSEEK_ENDPOINT,
+                    base_url=resolve_deepseek_endpoint() or DEEPSEEK_ENDPOINT,
                     api_key="not-needed",
                 )
                 log(f"LLM semantic cleaning enabled via DeepSeek HPC (model: {args.llm_model}).")
