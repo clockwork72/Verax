@@ -38,7 +38,7 @@ tracker_radar_index.json    # prebuilt DuckDuckGo Tracker Radar index
 trackerdb_index.json        # prebuilt Ghostery TrackerDB index
 tracker-radar/              # optional source checkout for rebuilding indexes
 trackerdb/                  # optional source checkout for rebuilding indexes
-dashboard/                  # Electron + Vite UI
+dashboard/                  # Electron + Vite UI, always run locally
 outputs/                    # per-run output folders
 hpc/                        # HPC job scripts (optional)
 hpc/scraper/                # Toubkal Slurm orchestrator + deployment helpers
@@ -129,20 +129,25 @@ npm run dev
 ## HPC cluster mode
 
 For the `hpc-v` branch, the scraper stack can be migrated to Toubkal and exposed locally over SSH tunnel port `8910`.
+The dashboard stays on your workstation. Only the scraper control plane and its Python runtime are deployed to the cluster.
 
 ```bash
 hpc/scraper/launch_remote.sh
 ```
 
-That helper syncs the repository to:
+That helper syncs only the HPC payload to:
 
 `/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
 
-It then installs the remote Python runtime, submits the Slurm orchestrator job, and opens the local bridge that the Electron dashboard probes at `http://127.0.0.1:8910`.
+Remote deployment includes `privacy_research_dataset/`, `scripts/`, `hpc/`, `pyproject.toml`, the tracker indexes, and the top-level `README.md`.
+It also prunes redundant remote copies of `dashboard/`, `tests/`, and the local tracker source checkouts.
 
-The dashboard launches the scraper and annotator as subprocesses. The most reliable setup is to point it at the repository virtualenv explicitly:
+After the sync, the helper installs the remote Python runtime, submits the Slurm orchestrator job, and opens the local bridge that the Electron dashboard probes at `http://127.0.0.1:8910`.
+
+Run the dashboard locally from the repository virtualenv:
 
 ```bash
+cd dashboard
 export PRIVACY_DATASET_PYTHON="$PWD/../.venv/bin/python"
 npm run dev
 ```

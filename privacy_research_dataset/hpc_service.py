@@ -516,6 +516,11 @@ class HpcService:
         self.runtime_root = Path(args.runtime_root).resolve()
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.outputs_root.mkdir(parents=True, exist_ok=True)
+        self.playwright_browsers_path = Path(
+            os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or (self.runtime_root / "playwright-browsers")
+        ).resolve()
+        self.playwright_browsers_path.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(self.playwright_browsers_path))
         self.bus = EventBuffer()
         self.scraper = ProcessHandle(label="scraper", repo_root=self.repo_root, python_cmd=args.python_cmd, bus=self.bus)
         self.annotator = ProcessHandle(label="annotator", repo_root=self.repo_root, python_cmd=args.python_cmd, bus=self.bus)
@@ -524,6 +529,13 @@ class HpcService:
         self.started_at = utc_now()
         self.current_out_dir = "outputs/unified"
         self.last_paths = self.default_paths(None)
+
+    def runtime_env(self) -> dict[str, str]:
+        return {
+            "DATABASE_URL": self.postgres.dsn,
+            "PRIVACY_DATASET_HPC_REMOTE": "1",
+            "PLAYWRIGHT_BROWSERS_PATH": str(self.playwright_browsers_path),
+        }
 
     def default_paths(self, out_dir: str | None) -> Paths:
         relative = out_dir or "outputs/unified"
@@ -986,13 +998,9 @@ class HpcService:
     async def handle_start_run(self, request: web.Request) -> web.Response:
         payload = await request.json()
         argv, manifest, paths = self.build_scraper_args(payload)
-        env = {
-            "DATABASE_URL": self.postgres.dsn,
-            "PRIVACY_DATASET_HPC_REMOTE": "1",
-        }
         ok, error = await self.scraper.start(
             argv=argv,
-            env=env,
+            env=self.runtime_env(),
             cwd=self.repo_root,
             run_manifest_path=self.manifest_path(payload.get("outDir")),
             run_manifest=manifest,
@@ -1061,7 +1069,7 @@ class HpcService:
             argv.extend(["--llm-model", str(payload["llmModel"]).strip()])
         ok, error = await self.scraper.start(
             argv=argv,
-            env={"DATABASE_URL": self.postgres.dsn, "PRIVACY_DATASET_HPC_REMOTE": "1"},
+            env=self.runtime_env(),
             cwd=self.repo_root,
         )
         if not ok:
@@ -1081,7 +1089,7 @@ class HpcService:
         argv, artifacts_dir = self.build_annotator_args(payload)
         ok, error = await self.annotator.start(
             argv=argv,
-            env={"DATABASE_URL": self.postgres.dsn, "PRIVACY_DATASET_HPC_REMOTE": "1"},
+            env=self.runtime_env(),
             cwd=self.repo_root,
         )
         if not ok:
@@ -1117,7 +1125,7 @@ class HpcService:
             argv.append("--force")
         ok, error = await self.annotator.start(
             argv=argv,
-            env={"DATABASE_URL": self.postgres.dsn, "PRIVACY_DATASET_HPC_REMOTE": "1"},
+            env=self.runtime_env(),
             cwd=self.repo_root,
         )
         if not ok:
