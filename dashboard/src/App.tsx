@@ -29,6 +29,25 @@ function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
 
+function parseTargetSites(value: string): string[] {
+  const seen = new Set<string>()
+  const sites: string[] = []
+  for (const raw of value.split(/[\r\n,]+/)) {
+    const trimmed = raw.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const key = normalizeSiteKey(trimmed)
+    if (seen.has(key)) continue
+    seen.add(key)
+    sites.push(trimmed)
+  }
+  return sites
+}
+
+function resultSiteKey(record: any): string {
+  const candidate = record?.site_etld1 || record?.input || record?.site || ''
+  return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
   const [showExtractionMethod, setShowExtractionMethod] = useState<boolean>(() => {
@@ -58,11 +77,13 @@ function App() {
   const [cruxApiKey, setCruxApiKey] = useState('')
   const [excludeSameEntity, setExcludeSameEntity] = useState(true)
   const [mappingMode, setMappingMode] = useState<'radar' | 'trackerdb' | 'mixed'>('mixed')
-  const [outDir, setOutDir] = useState('outputs')
+  const [outDir, setOutDir] = useState('outputs/unified')
   const [runsRoot] = useState('outputs')
-  const [resumeMode, setResumeMode] = useState(false)
+  const [resumeMode, setResumeMode] = useState(true)
   const [runRecords, setRunRecords] = useState<any[]>([])
+  const [runManifest, setRunManifest] = useState<any | null>(null)
   const [folderBytes, setFolderBytes] = useState<number | null>(null)
+  const [appendTargetsText, setAppendTargetsText] = useState('')
   const [auditVerifiedSites, setAuditVerifiedSites] = useState<string[]>([])
   const [auditUrlOverrides, setAuditUrlOverrides] = useState<Record<string, string>>({})
   const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
@@ -72,6 +93,7 @@ function App() {
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
+  const [, setAnnotateRunUsage] = useState({ tokensIn: 0, tokensOut: 0 })
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
@@ -116,6 +138,93 @@ function App() {
   }, [showExtractionMethod])
 
   const resultsMetrics = useMemo(() => computeResults(hasRun, progress), [hasRun, progress])
+  const datasetState = useMemo(() => {
+    const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? runManifest?.expectedTotalSites ?? 0)
+    const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+    const siteKeys = new Set<string>()
+    let lastSuccessfulRank: number | null = null
+    let lastSuccessfulSite: string | null = null
+
+    for (const record of resultsData || []) {
+      const siteKey = resultSiteKey(record)
+      if (siteKey) siteKeys.add(siteKey)
+      const rank = Number(record?.rank)
+      if (record?.status === 'ok' && Number.isFinite(rank)) {
+        if (lastSuccessfulRank === null || rank > lastSuccessfulRank) {
+          lastSuccessfulRank = rank
+          const siteName = record?.site_etld1 || record?.input || record?.site
+          lastSuccessfulSite = typeof siteName === 'string' ? siteName : null
+        }
+      }
+    }
+
+    const pendingManifestSites = Array.isArray(runManifest?.requestedSites)
+      ? runManifest.requestedSites
+          .map((site: unknown) => String(site || '').trim())
+          .filter(Boolean)
+          .filter((site: string, index: number, list: string[]) => list.findIndex((value) => normalizeSiteKey(value) === normalizeSiteKey(site)) === index)
+          .filter((site: string) => !siteKeys.has(normalizeSiteKey(site)))
+      : []
+    const hasDataset = Boolean(summaryData || stateData || siteKeys.size > 0)
+    const isComplete = totalSites > 0 && processedSites >= totalSites
+    const isIncomplete = totalSites > 0 && processedSites < totalSites
+    const progressPct = totalSites > 0
+      ? Math.min(100, (processedSites / Math.max(1, totalSites)) * 100)
+      : hasDataset ? 100 : 0
+
+    return {
+      hasDataset,
+      totalSites,
+      processedSites,
+      siteKeys,
+      uniqueSiteCount: siteKeys.size,
+      isComplete,
+      isIncomplete,
+      progressPct,
+      lastSuccessfulRank,
+      lastSuccessfulSite,
+      pendingManifestSites,
+      manifestMode: runManifest?.mode as 'tranco' | 'append_sites' | undefined,
+      manifestTopN: Number(runManifest?.topN || 0) || null,
+      manifestTrancoDate: typeof runManifest?.trancoDate === 'string' ? runManifest.trancoDate : undefined,
+      manifestCruxFilter: typeof runManifest?.cruxFilter === 'boolean' ? runManifest.cruxFilter : undefined,
+    }
+  }, [summaryData, stateData, resultsData, runManifest])
+  const appendTargets = useMemo(() => parseTargetSites(appendTargetsText), [appendTargetsText])
+  const appendTargetsSummary = useMemo(() => {
+    const newSites = appendTargets.filter((site) => !datasetState.siteKeys.has(normalizeSiteKey(site)))
+    return {
+      entered: appendTargets.length,
+      newSites,
+      duplicateCount: appendTargets.length - newSites.length,
+    }
+  }, [appendTargets, datasetState])
+  const launcherMode = useMemo<'start' | 'continue' | 'append'>(() => {
+    if (datasetState.isIncomplete) {
+      if (datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0) {
+        return 'continue'
+      }
+      if (datasetState.manifestMode === 'tranco' || datasetState.lastSuccessfulRank !== null) {
+        return 'continue'
+      }
+    }
+    if (datasetState.isComplete && appendTargetsSummary.newSites.length > 0) {
+      return 'append'
+    }
+    return 'start'
+  }, [datasetState, appendTargetsSummary])
+  const launcherActionLabel = launcherMode === 'continue'
+    ? 'Continue'
+    : launcherMode === 'append'
+      ? 'Append websites'
+      : 'Start run'
+  const launcherActionHint = launcherMode === 'continue'
+    ? datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0
+      ? `Resume ${datasetState.pendingManifestSites.length} pending append target(s) in ${outDir}.`
+      : `Resume ${outDir} after ${datasetState.lastSuccessfulSite || `rank #${datasetState.lastSuccessfulRank ?? 0}`} to reach ${datasetState.totalSites} sites.`
+    : launcherMode === 'append'
+      ? `Append ${appendTargetsSummary.newSites.length} new website(s) to ${outDir}.`
+      : 'Choose how many sites to crawl. Press Enter to start.'
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -123,7 +232,7 @@ function App() {
       if (event?.type === 'run_started') {
         setHasRun(true)
         setRunning(true)
-        setProgress(0)
+        setProgress((current) => (launcherMode === 'continue' ? current : 0))
         setErrorMessage(null)
         setRunStartedAt(Date.now())
         setEtaText('')
@@ -172,6 +281,9 @@ function App() {
         setEtaText('0s')
         setActiveSites({})
         setAuditBusySite(null)
+        if (window.scraper?.readRunManifest) {
+          window.scraper.readRunManifest(outDir).then((res: any) => setRunManifest(res?.ok ? res.data : null))
+        }
         refreshRuns()
       }
     })
@@ -194,6 +306,9 @@ function App() {
       }
       setRunning(false)
       setAuditBusySite(null)
+      if (window.scraper?.readRunManifest) {
+        window.scraper.readRunManifest(outDir).then((res: any) => setRunManifest(res?.ok ? res.data : null))
+      }
     })
 
     if (scraper.onAnnotatorLog) {
@@ -233,7 +348,7 @@ function App() {
         }
       })
     }
-  }, [])
+  }, [launcherMode, outDir])
 
   // Keep refs in sync so the IPC exit handler always sees current values
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
@@ -409,48 +524,108 @@ function App() {
   }
 
   const startRun = async () => {
-    if (!topN || Number(topN) <= 0) return
+    if (running) return
+    if (launcherMode === 'start' && (!topN || Number(topN) <= 0)) return
     const runId = createRunId()
-    // In resume mode, use a fixed unified dir so _load_done_records() can skip cached sites
-    const runOutDir = resumeMode ? `${runsRoot}/unified` : `${runsRoot}/output_${runId}`
     const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
     const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
-    setErrorMessage(null)
-    setLogs([])
-    if (!resumeMode) {
-      setSummaryData(null)
-      setExplorerData(null)
-      setResultsData(null)
-      setAuditVerifiedSites([])
-      setAuditUrlOverrides({})
+    const freshOutDir = resumeMode ? `${runsRoot}/unified` : `${runsRoot}/output_${runId}`
+    let runOutDir = freshOutDir
+    let startOptions: any = {
+      trackerRadarIndex,
+      trackerDbIndex,
+      excludeSameEntity,
     }
-    setOutDir(runOutDir)
-    if (window.scraper) {
-      const res = await window.scraper.startRun({
+
+    if (launcherMode === 'continue' && datasetState.isIncomplete) {
+      runOutDir = outDir
+      if (datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0) {
+        startOptions = {
+          ...startOptions,
+          sites: datasetState.pendingManifestSites,
+          outDir: runOutDir,
+          artifactsDir: `${runOutDir}/artifacts`,
+          runId,
+          expectedTotalSites: datasetState.totalSites || datasetState.uniqueSiteCount + datasetState.pendingManifestSites.length,
+          upsertBySite: true,
+        }
+      } else {
+        startOptions = {
+          ...startOptions,
+          topN: datasetState.manifestTopN || datasetState.totalSites,
+          trancoDate: datasetState.manifestTrancoDate,
+          outDir: runOutDir,
+          artifactsDir: `${runOutDir}/artifacts`,
+          runId,
+          resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
+          expectedTotalSites: datasetState.totalSites,
+          upsertBySite: true,
+          cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
+          cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
+        }
+      }
+    } else if (launcherMode === 'append') {
+      if (appendTargetsSummary.newSites.length === 0) {
+        setErrorMessage('No new target websites to append.')
+        return
+      }
+      runOutDir = outDir
+      startOptions = {
+        ...startOptions,
+        sites: appendTargetsSummary.newSites,
+        outDir: runOutDir,
+        artifactsDir: `${runOutDir}/artifacts`,
+        runId,
+        expectedTotalSites: datasetState.uniqueSiteCount + appendTargetsSummary.newSites.length,
+        upsertBySite: true,
+      }
+    } else {
+      runOutDir = freshOutDir
+      startOptions = {
+        ...startOptions,
         topN: Number(topN),
-        trackerRadarIndex,
-        trackerDbIndex,
         outDir: runOutDir,
         artifactsDir: `${runOutDir}/artifacts`,
         runId: resumeMode ? undefined : runId,
         cruxFilter: useCrux,
         cruxApiKey: useCrux ? cruxApiKey : undefined,
-        excludeSameEntity: excludeSameEntity,
-      })
+      }
+    }
+
+    setErrorMessage(null)
+    setLogs([])
+    if (launcherMode === 'start' && !resumeMode) {
+      setSummaryData(null)
+      setExplorerData(null)
+      setResultsData(null)
+      setAuditVerifiedSites([])
+      setAuditUrlOverrides({})
+      setRunManifest(null)
+    }
+    setOutDir(runOutDir)
+    if (window.scraper) {
+      const res = await window.scraper.startRun(startOptions)
       if (!res.ok) {
         setErrorMessage(res.error || 'Failed to start scraper')
       } else {
         setHasRun(true)
         setRunning(true)
-        setProgress(0)
+        setProgress(launcherMode === 'continue' ? datasetState.progressPct : 0)
         setRunStartedAt(Date.now())
         setEtaText('')
+        if (launcherMode === 'append') {
+          setAppendTargetsText('')
+        }
+        if (window.scraper.readRunManifest) {
+          const manifestRes = await window.scraper.readRunManifest(runOutDir)
+          setRunManifest(manifestRes?.ok ? manifestRes.data : null)
+        }
       }
       return
     }
     setHasRun(true)
     setRunning(true)
-    setProgress(0)
+    setProgress(launcherMode === 'continue' ? datasetState.progressPct : 0)
     setRunStartedAt(Date.now())
     setEtaText('')
   }
@@ -581,6 +756,8 @@ function App() {
       setHasRun(false)
       setProgress(0)
       setLogs([])
+      setRunManifest(null)
+      setAppendTargetsText('')
       setAuditVerifiedSites([])
       setAuditUrlOverrides({})
       setAuditBusySite(null)
@@ -599,6 +776,8 @@ function App() {
       setHasRun(false)
       setProgress(0)
       setLogs([])
+      setRunManifest(null)
+      setAppendTargetsText('')
       setAuditVerifiedSites([])
       setAuditUrlOverrides({})
       setAuditBusySite(null)
@@ -610,18 +789,21 @@ function App() {
   const loadOutDir = async (dirOverride?: string) => {
     if (!window.scraper) return
     const targetDir = dirOverride || outDir
+    let results: any = null
     if (dirOverride) {
       setOutDir(dirOverride)
     }
     const summary = await window.scraper.readSummary(`${targetDir}/results.summary.json`)
     if (summary?.ok) setSummaryData(summary.data)
+    else setSummaryData(null)
     const state = await window.scraper.readState(`${targetDir}/run_state.json`)
     if (state?.ok) setStateData(state.data)
+    else setStateData(null)
     // Sync topN from the loaded dataset so ResultsView and LauncherView show the correct target.
-    const loadedTotal =
+    const loadedTargetTotal =
       summary?.data?.total_sites ?? state?.data?.total_sites
-    if (typeof loadedTotal === 'number' && loadedTotal > 0) {
-      setTopN(String(loadedTotal))
+    if (typeof loadedTargetTotal === 'number' && loadedTargetTotal > 0) {
+      setTopN(String(loadedTargetTotal))
     }
     const explorer = await window.scraper.readExplorer(`${targetDir}/explorer.jsonl`, 500)
     if (explorer?.ok && Array.isArray(explorer.data)) {
@@ -631,7 +813,7 @@ function App() {
       setExplorerData([])
     }
     if (window.scraper.readResults) {
-      const results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
+      results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
       if (results?.ok && Array.isArray(results.data)) {
         const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
         setResultsData(cleanedResults)
@@ -649,16 +831,35 @@ function App() {
         setAuditUrlOverrides({})
       }
     }
+    if (window.scraper.readRunManifest) {
+      const manifest = await window.scraper.readRunManifest(targetDir)
+      setRunManifest(manifest?.ok ? manifest.data : null)
+    }
     const size = await window.scraper.getFolderSize(targetDir)
     if (size?.ok && typeof size.bytes === 'number') {
       setFolderBytes(size.bytes)
     }
-    const hasAnyResults = Boolean(summary?.ok || (explorer?.ok && Array.isArray(explorer.data) && explorer.data.length))
+    const hasAnyResults = Boolean(
+      summary?.ok
+      || state?.ok
+      || (explorer?.ok && Array.isArray(explorer.data) && explorer.data.length)
+      || (results?.ok && Array.isArray(results.data) && results.data.length)
+    )
+    const loadedProcessed = Number(summary?.data?.processed_sites ?? state?.data?.processed_sites ?? 0)
+    const loadedTotal = Number(summary?.data?.total_sites ?? state?.data?.total_sites ?? 0)
+    const loadedProgress = loadedTotal > 0
+      ? Math.min(100, (loadedProcessed / Math.max(1, loadedTotal)) * 100)
+      : hasAnyResults ? 100 : 0
     if (hasAnyResults) {
       setHasRun(true)
       setRunning(false)
-      setProgress(100)
+      setProgress(loadedProgress)
+    } else {
+      setHasRun(false)
+      setRunning(false)
+      setProgress(0)
     }
+    setAppendTargetsText('')
     // Load annotation stats for the new outDir
     if (window.scraper?.annotationStats) {
       const annRes = await window.scraper.annotationStats(`${targetDir}/artifacts`)
@@ -681,6 +882,8 @@ function App() {
       setProgress(0)
       setLogs([])
       setFolderBytes(null)
+      setRunManifest(null)
+      setAppendTargetsText('')
       setAuditVerifiedSites([])
       setAuditUrlOverrides({})
       setAuditBusySite(null)
@@ -770,6 +973,17 @@ function App() {
             onToggleResumeMode={setResumeMode}
             activeSites={activeSites}
             recentCompleted={recentCompleted}
+            primaryActionLabel={launcherActionLabel}
+            primaryActionHint={launcherActionHint}
+            topNLocked={launcherMode !== 'start'}
+            appendTargetsEnabled={datasetState.isComplete}
+            appendTargetsText={appendTargetsText}
+            onAppendTargetsChange={setAppendTargetsText}
+            appendTargetsSummary={{
+              entered: appendTargetsSummary.entered,
+              newSites: appendTargetsSummary.newSites.length,
+              duplicates: appendTargetsSummary.duplicateCount,
+            }}
           />
         )}
         {activeNav === 'audit' && (

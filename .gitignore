@@ -46,6 +46,7 @@ Thumbs.db
 # Output artifacts / datasets
 outputs/
 outputsresults.jsonl
+results.crux_cache.json
 .tranco_cache/
 tracker_radar_index.json
 

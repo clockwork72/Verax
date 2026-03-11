@@ -6,10 +6,13 @@ import json
 import os
 import re
 import sys
+import time
+import tracemalloc
 import uuid
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable, TypeVar
 from urllib.parse import urlparse, urlunparse
 
 import aiohttp
@@ -22,6 +25,18 @@ from .tranco_list import get_tranco_sites
 from .utils.io import append_jsonl, write_json
 from .utils.logging import log, warn
 from .summary import SummaryBuilder, site_to_explorer_record
+
+try:
+    import psutil
+except Exception:  # pragma: no cover - optional dependency
+    psutil = None
+
+try:
+    import resource
+except Exception:  # pragma: no cover - Windows fallback
+    resource = None
+
+T = TypeVar("T")
 
 
 # ---------------------------
@@ -84,6 +99,288 @@ _LINK_MARKER = re.compile(r"(?is)<\s*a\b")
 _CRUX_ENDPOINT = "https://chromeuxreport.googleapis.com/v1/records:queryRecord"
 
 
+def _rss_bytes(process: Any | None = None) -> int | None:
+    """Return resident memory usage in bytes if available."""
+    if process is not None:
+        with suppress(Exception):
+            return int(process.memory_info().rss)
+    if resource is not None:
+        with suppress(Exception):
+            # Linux reports KB, macOS reports bytes.
+            rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            if sys.platform != "darwin":
+                rss *= 1024
+            return rss
+    return None
+
+
+def _fmt_mb(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value / (1024 * 1024):.1f} MB"
+
+
+async def _run_bounded(
+    records: list[T],
+    *,
+    concurrency: int,
+    worker: Callable[[T], Awaitable[None]],
+) -> None:
+    """Run worker(record) with a bounded in-flight task window."""
+    if not records:
+        return
+    limit = max(1, int(concurrency))
+    iterator = iter(records)
+    in_flight: set[asyncio.Task[None]] = set()
+
+    def schedule_one() -> bool:
+        try:
+            record = next(iterator)
+        except StopIteration:
+            return False
+        in_flight.add(asyncio.create_task(worker(record)))
+        return True
+
+    for _ in range(min(limit, len(records))):
+        if not schedule_one():
+            break
+
+    try:
+        while in_flight:
+            done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            in_flight = set(pending)
+            for task in done:
+                await task
+                schedule_one()
+    except Exception:
+        for task in in_flight:
+            task.cancel()
+        await asyncio.gather(*in_flight, return_exceptions=True)
+        raise
+
+
+async def _filter_records_bounded(
+    records: list[T],
+    *,
+    concurrency: int,
+    checker: Callable[[T], Awaitable[bool]],
+) -> list[T]:
+    """Filter records via async checker with bounded in-flight tasks."""
+    if not records:
+        return []
+    limit = max(1, int(concurrency))
+    iterator = iter(enumerate(records))
+    in_flight: set[asyncio.Task[tuple[int, T, bool]]] = set()
+    kept: list[tuple[int, T]] = []
+
+    async def run_one(idx: int, record: T) -> tuple[int, T, bool]:
+        try:
+            ok = await checker(record)
+        except Exception as exc:
+            warn(f"Async filter check failed for record #{idx}: {exc}")
+            ok = False
+        return idx, record, ok
+
+    def schedule_one() -> bool:
+        try:
+            idx, record = next(iterator)
+        except StopIteration:
+            return False
+        in_flight.add(asyncio.create_task(run_one(idx, record)))
+        return True
+
+    for _ in range(min(limit, len(records))):
+        if not schedule_one():
+            break
+
+    try:
+        while in_flight:
+            done, pending = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            in_flight = set(pending)
+            for task in done:
+                idx, record, ok = await task
+                if ok:
+                    kept.append((idx, record))
+                schedule_one()
+    except Exception:
+        for task in in_flight:
+            task.cancel()
+        await asyncio.gather(*in_flight, return_exceptions=True)
+        raise
+
+    kept.sort(key=lambda pair: pair[0])
+    return [record for _, record in kept]
+
+
+@asynccontextmanager
+async def _resource_monitor(
+    *,
+    enabled: bool,
+    run_id: str,
+    sample_sec: float,
+    emit_event: Callable[[dict[str, Any]], None],
+    get_stats: Callable[[], dict[str, Any]],
+    out_path: str | None = None,
+    with_tracemalloc: bool = False,
+):
+    """Background resource sampler for long scrape runs."""
+    if not enabled:
+        yield
+        return
+
+    interval = max(0.5, float(sample_sec))
+    stop_event = asyncio.Event()
+    process = psutil.Process(os.getpid()) if psutil else None
+    if process is not None:
+        with suppress(Exception):
+            process.cpu_percent(interval=None)
+
+    traces_started_here = False
+    if with_tracemalloc and not tracemalloc.is_tracing():
+        tracemalloc.start(25)
+        traces_started_here = True
+
+    monitor_path = Path(out_path) if out_path else None
+    if monitor_path:
+        monitor_path.parent.mkdir(parents=True, exist_ok=True)
+
+    started_wall = time.monotonic()
+    rss_start = _rss_bytes(process)
+    summary: dict[str, Any] = {
+        "samples": 0,
+        "rss_start_bytes": rss_start,
+        "rss_peak_bytes": rss_start,
+        "cpu_avg_pct": None,
+        "cpu_peak_pct": None,
+        "python_heap_peak_bytes": None,
+        "max_processed_sites": 0,
+        "max_policy_cache_entries": 0,
+        "max_tp_cache_entries": 0,
+    }
+    cpu_samples: list[float] = []
+
+    async def loop() -> None:
+        nonlocal summary
+        while True:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+            rss = _rss_bytes(process)
+            cpu_pct: float | None = None
+            if process is not None:
+                with suppress(Exception):
+                    cpu_pct = float(process.cpu_percent(interval=None))
+            py_cur = py_peak = None
+            if tracemalloc.is_tracing():
+                py_cur, py_peak = tracemalloc.get_traced_memory()
+            stats = get_stats()
+
+            if rss is not None:
+                current_peak = summary.get("rss_peak_bytes")
+                summary["rss_peak_bytes"] = rss if current_peak is None else max(int(current_peak), rss)
+            if cpu_pct is not None:
+                cpu_samples.append(cpu_pct)
+                summary["cpu_peak_pct"] = cpu_pct if summary["cpu_peak_pct"] is None else max(float(summary["cpu_peak_pct"]), cpu_pct)
+            if py_peak is not None:
+                current_py_peak = summary.get("python_heap_peak_bytes")
+                summary["python_heap_peak_bytes"] = py_peak if current_py_peak is None else max(int(current_py_peak), int(py_peak))
+
+            processed_sites = int(stats.get("processed_sites") or 0)
+            policy_cache_entries = int(stats.get("policy_cache_entries") or 0)
+            tp_cache_entries = int(stats.get("tp_cache_entries") or 0)
+            summary["max_processed_sites"] = max(int(summary["max_processed_sites"]), processed_sites)
+            summary["max_policy_cache_entries"] = max(int(summary["max_policy_cache_entries"]), policy_cache_entries)
+            summary["max_tp_cache_entries"] = max(int(summary["max_tp_cache_entries"]), tp_cache_entries)
+            summary["samples"] = int(summary["samples"]) + 1
+
+            sample_payload: dict[str, Any] = {
+                "type": "resource_sample",
+                "run_id": run_id,
+                "timestamp": now,
+                "rss_bytes": rss,
+                "cpu_pct": cpu_pct,
+                "python_heap_current_bytes": py_cur,
+                "python_heap_peak_bytes": py_peak,
+                **stats,
+            }
+            emit_event(sample_payload)
+            if monitor_path:
+                append_jsonl(monitor_path, sample_payload)
+            cpu_msg = f"cpu={cpu_pct:.1f}% " if cpu_pct is not None else "cpu=n/a "
+            log(
+                "Resource sample: "
+                + cpu_msg
+                + f"rss={_fmt_mb(rss)} "
+                + (f"py_heap={_fmt_mb(py_cur)} " if py_cur is not None else "")
+                + f"processed={processed_sites} "
+                + f"policy_cache={policy_cache_entries} tp_cache={tp_cache_entries}"
+            )
+
+    monitor_task = asyncio.create_task(loop())
+    try:
+        yield
+    finally:
+        stop_event.set()
+        with suppress(Exception):
+            await monitor_task
+
+        elapsed_sec = max(0.0, time.monotonic() - started_wall)
+        rss_end = _rss_bytes(process)
+        summary["elapsed_sec"] = elapsed_sec
+        summary["rss_end_bytes"] = rss_end
+        if summary.get("rss_start_bytes") is not None and rss_end is not None:
+            summary["rss_delta_bytes"] = int(rss_end) - int(summary["rss_start_bytes"])
+        if cpu_samples:
+            summary["cpu_avg_pct"] = sum(cpu_samples) / len(cpu_samples)
+
+        emit_event({
+            "type": "resource_summary",
+            "run_id": run_id,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+            **summary,
+        })
+        if monitor_path:
+            append_jsonl(monitor_path, {
+                "type": "resource_summary",
+                "run_id": run_id,
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                **summary,
+            })
+        log(
+            "Resource summary: "
+            f"samples={summary.get('samples')} "
+            f"elapsed={elapsed_sec:.1f}s "
+            f"rss_start={_fmt_mb(summary.get('rss_start_bytes'))} "
+            f"rss_peak={_fmt_mb(summary.get('rss_peak_bytes'))} "
+            f"rss_end={_fmt_mb(rss_end)} "
+            + (
+                f"cpu_avg={float(summary['cpu_avg_pct']):.1f}% "
+                if summary.get("cpu_avg_pct") is not None
+                else "cpu_avg=n/a "
+            )
+            + (
+                f"cpu_peak={float(summary['cpu_peak_pct']):.1f}%"
+                if summary.get("cpu_peak_pct") is not None
+                else "cpu_peak=n/a"
+            )
+        )
+
+        rss_delta = summary.get("rss_delta_bytes")
+        if isinstance(rss_delta, int) and rss_delta > (512 * 1024 * 1024):
+            warn(
+                "High RSS growth detected (>512 MB). "
+                "Consider lowering --concurrency and --policy-cache-max-entries, "
+                "or increasing --tp-cache-flush-entries to reduce cache churn."
+            )
+
+        if traces_started_here and tracemalloc.is_tracing():
+            tracemalloc.stop()
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="privacy-dataset",
@@ -95,6 +392,12 @@ def _parse_args() -> argparse.Namespace:
     src.add_argument("--tranco-top", type=int, default=100, help="How many Tranco sites to include (if --input not set).")
     src.add_argument("--tranco-date", type=str, default=None, help="Tranco snapshot date YYYY-MM-DD (recommended for reproducibility).")
     src.add_argument("--tranco-cache-dir", type=str, default=".tranco_cache", help="Tranco cache directory.")
+    src.add_argument(
+        "--resume-after-rank",
+        type=int,
+        default=None,
+        help="When using Tranco input, skip ranks up to and including this value.",
+    )
 
     out = p.add_argument_group("Output")
     out.add_argument("--out", type=str, required=True, help="Output JSONL path (one record per site).")
@@ -168,6 +471,12 @@ def _parse_args() -> argparse.Namespace:
     sync.add_argument("--summary-out", type=str, default=None, help="Write aggregated summary JSON after each site.")
     sync.add_argument("--explorer-out", type=str, default=None, help="Write explorer JSONL (or JSON) for dashboard browsing.")
     sync.add_argument("--upsert-by-site", action="store_true", help="Replace existing site records in --out/--explorer-out instead of appending duplicates.")
+    sync.add_argument(
+        "--expected-total-sites",
+        type=int,
+        default=None,
+        help="Override the dataset-wide total site target written to summary/state outputs.",
+    )
 
     cache = p.add_argument_group("Cache / deduplication")
     cache.add_argument(
@@ -181,6 +490,48 @@ def _parse_args() -> argparse.Namespace:
             "Deduplicates across runs and across sites sharing the same TP policy URL. "
             "Defaults to <out>.tp_cache.json alongside --out."
         ),
+    )
+    cache.add_argument(
+        "--tp-cache-flush-entries",
+        type=int,
+        default=25,
+        help=(
+            "Flush TP policy disk cache after this many new/updated cache entries "
+            "(instead of rewriting on every fetch). Default: 25"
+        ),
+    )
+    cache.add_argument(
+        "--policy-cache-max-entries",
+        type=int,
+        default=2000,
+        help=(
+            "Cap in-memory policy cache key count (LRU-style). "
+            "Use 0 to disable eviction. Default: 2000"
+        ),
+    )
+
+    prof = p.add_argument_group("Runtime resource monitoring")
+    prof.add_argument(
+        "--resource-monitor",
+        action="store_true",
+        help="Sample CPU/RAM during execution and emit resource trajectory events.",
+    )
+    prof.add_argument(
+        "--resource-sample-sec",
+        type=float,
+        default=5.0,
+        help="Resource sampling interval in seconds. Default: 5.0",
+    )
+    prof.add_argument(
+        "--resource-monitor-out",
+        type=str,
+        default=None,
+        help="Optional JSONL file to write resource samples and summary.",
+    )
+    prof.add_argument(
+        "--resource-tracemalloc",
+        action="store_true",
+        help="Enable Python heap tracking with tracemalloc while monitoring resources.",
     )
 
     # ---------------------------
@@ -248,6 +599,9 @@ def _load_input_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
     else:
         tranco = get_tranco_sites(args.tranco_top, args.tranco_date, args.tranco_cache_dir)
         sites = [{"rank": s.rank, "site": s.domain} for s in tranco]
+        resume_after_rank = getattr(args, "resume_after_rank", None)
+        if isinstance(resume_after_rank, int) and resume_after_rank > 0:
+            sites = [rec for rec in sites if int(rec.get("rank") or 0) > resume_after_rank]
 
     if args.max_sites:
         sites = sites[: args.max_sites]
@@ -358,24 +712,23 @@ async def _prefilter_sites(args: argparse.Namespace, sites: list[dict[str, Any]]
     ua = args.user_agent or "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
     headers = {"User-Agent": ua}
 
-    sem = asyncio.Semaphore(max(1, int(args.prefilter_concurrency)))
-
     async with aiohttp.ClientSession(headers=headers) as session:
-        async def check_one(rec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-            async with sem:
-                dom = str(rec["site"]).strip()
-                ok = await _looks_like_website(
-                    session,
-                    dom,
-                    timeout_ms=int(args.prefilter_timeout_ms),
-                    max_bytes=int(args.prefilter_max_bytes),
-                    allow_http=bool(args.prefilter_allow_http),
-                    require_links=bool(args.prefilter_require_links),
-                )
-                return rec, ok
+        async def check_one(rec: dict[str, Any]) -> bool:
+            dom = str(rec["site"]).strip()
+            return await _looks_like_website(
+                session,
+                dom,
+                timeout_ms=int(args.prefilter_timeout_ms),
+                max_bytes=int(args.prefilter_max_bytes),
+                allow_http=bool(args.prefilter_allow_http),
+                require_links=bool(args.prefilter_require_links),
+            )
 
-        results = await asyncio.gather(*(check_one(r) for r in pre))
-        kept = [rec for (rec, ok) in results if ok]
+        kept = await _filter_records_bounded(
+            pre,
+            concurrency=max(1, int(args.prefilter_concurrency)),
+            checker=check_one,
+        )
 
     log(f"Prefilter: kept {len(kept)}/{len(sites)} sites that look like browsable websites.")
     return kept
@@ -457,7 +810,6 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
     if disk_cache:
         log(f"CrUX cache: loaded {len(disk_cache)} origin(s) from {crux_cache_path}")
 
-    sem = asyncio.Semaphore(max(1, int(args.crux_concurrency)))
     cache_lock = asyncio.Lock()
     headers = {"Content-Type": "application/json"}
     # Start with disk cache as the in-memory cache; new hits are added here too.
@@ -467,54 +819,56 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
     new_entries = 0
 
     async with aiohttp.ClientSession(headers=headers) as session:
-        async def check_one(rec: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        async def check_one(rec: dict[str, Any]) -> bool:
             nonlocal new_entries
-            async with sem:
-                dom = str(rec["site"]).strip()
-                origin = _origin_for_site(dom)
-                if not origin:
-                    return rec, False
+            dom = str(rec["site"]).strip()
+            origin = _origin_for_site(dom)
+            if not origin:
+                return False
 
-                async with cache_lock:
-                    if origin in cache:
-                        return rec, cache[origin]
+            async with cache_lock:
+                if origin in cache:
+                    return cache[origin]
 
+            ok, status, err = await _crux_has_record(
+                session,
+                api_key=api_key,
+                origin=origin,
+                timeout_ms=int(args.crux_timeout_ms),
+            )
+            if status is not None:
+                status_counts[str(status)] = status_counts.get(str(status), 0) + 1
+                if status in (401, 403, 429):
+                    restricted_hits[origin] = restricted_hits.get(origin, 0) + 1
+            elif err:
+                status_counts[err] = status_counts.get(err, 0) + 1
+
+            if (not ok) and args.crux_allow_http and origin.startswith("https://"):
+                origin_http = "http://" + origin[len("https://"):]
                 ok, status, err = await _crux_has_record(
                     session,
                     api_key=api_key,
-                    origin=origin,
+                    origin=origin_http,
                     timeout_ms=int(args.crux_timeout_ms),
                 )
                 if status is not None:
                     status_counts[str(status)] = status_counts.get(str(status), 0) + 1
                     if status in (401, 403, 429):
-                        restricted_hits[origin] = restricted_hits.get(origin, 0) + 1
+                        restricted_hits[origin_http] = restricted_hits.get(origin_http, 0) + 1
                 elif err:
                     status_counts[err] = status_counts.get(err, 0) + 1
 
-                if (not ok) and args.crux_allow_http and origin.startswith("https://"):
-                    origin_http = "http://" + origin[len("https://"):]
-                    ok, status, err = await _crux_has_record(
-                        session,
-                        api_key=api_key,
-                        origin=origin_http,
-                        timeout_ms=int(args.crux_timeout_ms),
-                    )
-                    if status is not None:
-                        status_counts[str(status)] = status_counts.get(str(status), 0) + 1
-                        if status in (401, 403, 429):
-                            restricted_hits[origin_http] = restricted_hits.get(origin_http, 0) + 1
-                    elif err:
-                        status_counts[err] = status_counts.get(err, 0) + 1
+            async with cache_lock:
+                if origin not in cache:
+                    cache[origin] = ok
+                    new_entries += 1
+            return ok
 
-                async with cache_lock:
-                    if origin not in cache:
-                        cache[origin] = ok
-                        new_entries += 1
-                return rec, ok
-
-        results = await asyncio.gather(*(check_one(r) for r in sites))
-        kept = [rec for (rec, ok) in results if ok]
+        kept = await _filter_records_bounded(
+            sites,
+            concurrency=max(1, int(args.crux_concurrency)),
+            checker=check_one,
+        )
 
     if new_entries:
         _save_crux_cache(crux_cache_path, cache)
@@ -534,38 +888,38 @@ def _load_done_records(out_path: Path) -> dict[str, dict]:
     if not out_path.exists():
         return {}
     done: dict[str, dict] = {}
-    for line in out_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-            if rec.get("status") == "ok":
-                # Key by both "input" and "site_etld1" so either form matches.
-                for key_field in ("input", "site_etld1"):
-                    key = rec.get(key_field)
-                    if key:
-                        done[key] = rec
-        except Exception:
-            pass
+    with out_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                if rec.get("status") == "ok":
+                    # Key by both "input" and "site_etld1" so either form matches.
+                    for key_field in ("input", "site_etld1"):
+                        key = rec.get(key_field)
+                        if key:
+                            done[key] = rec
+            except Exception:
+                pass
     return done
 
 
 def _iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     if not path.exists():
-        return []
-    out: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                out.append(obj)
-        except Exception:
-            continue
-    return out
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    yield obj
+            except Exception:
+                continue
 
 
 def _write_jsonl_records(path: Path, records: list[dict[str, Any]]) -> None:
@@ -629,14 +983,23 @@ def _count_english_from_artifacts(artifacts_dir: Path) -> int:
     return count
 
 
-def _build_summary_from_results(out_path: Path, *, run_id: str, mapping_mode: str) -> dict[str, Any]:
+def _build_summary_from_results(
+    out_path: Path,
+    *,
+    run_id: str,
+    mapping_mode: str,
+    total_sites_override: int | None = None,
+) -> dict[str, Any]:
     records = list(_iter_jsonl(out_path))
     sites_seen: set[str] = set()
     for rec in records:
         key = rec.get("site_etld1") or rec.get("input")
         if isinstance(key, str) and key:
             sites_seen.add(key)
-    sb = SummaryBuilder(run_id=run_id, total_sites=len(sites_seen), mapping_mode=mapping_mode)
+    effective_total_sites = len(sites_seen)
+    if isinstance(total_sites_override, int) and total_sites_override > 0:
+        effective_total_sites = max(effective_total_sites, total_sites_override)
+    sb = SummaryBuilder(run_id=run_id, total_sites=effective_total_sites, mapping_mode=mapping_mode)
     for rec in records:
         sb.update(rec)
     result = sb.to_summary()
@@ -776,6 +1139,9 @@ async def _run(args: argparse.Namespace) -> None:
         else "none"
     )
     sites = _load_input_sites(args)
+    target_total_sites = len(sites)
+    if isinstance(getattr(args, "expected_total_sites", None), int) and int(args.expected_total_sites) > 0:
+        target_total_sites = max(target_total_sites, int(args.expected_total_sites))
 
     def emit_event(evt: dict[str, Any]) -> None:
         if not args.emit_events:
@@ -783,271 +1149,375 @@ async def _run(args: argparse.Namespace) -> None:
         sys.stdout.write(json.dumps(evt, ensure_ascii=False) + "\n")
         sys.stdout.flush()
 
+    current_stage = "input_loaded"
+    done_records: dict[str, dict] = {}
+    annotated_sites: set[str] = set()
+    scraped_sites: set[str] = set()
+    tp_policy_disk_cache: dict[str, dict] = {}
+    summary: SummaryBuilder | None = None
+    policy_cache_ref: dict[str, Crawl4AIResult] | None = None
+    policy_inflight_ref: dict[str, asyncio.Future[Crawl4AIResult]] | None = None
+
+    def monitor_stats() -> dict[str, Any]:
+        processed_sites = 0
+        status_ok = 0
+        status_error = 0
+        if summary is not None:
+            processed_sites = int(summary.processed_sites)
+            status_ok = int(summary.status_counts.get("ok") or 0)
+            status_error = int(
+                (summary.status_counts.get("exception") or 0)
+                + (summary.status_counts.get("home_fetch_failed") or 0)
+            )
+        return {
+            "stage": current_stage,
+            "total_sites": target_total_sites,
+            "processed_sites": processed_sites,
+            "status_ok": status_ok,
+            "status_error_like": status_error,
+            "done_records": len(done_records),
+            "annotated_cache_sites": len(annotated_sites),
+            "scraped_cache_sites": len(scraped_sites),
+            "tp_cache_entries": len(tp_policy_disk_cache),
+            "policy_cache_entries": len(policy_cache_ref) if policy_cache_ref is not None else 0,
+            "policy_inflight_entries": len(policy_inflight_ref) if policy_inflight_ref is not None else 0,
+            "asyncio_tasks": len(asyncio.all_tasks()),
+        }
+
     log(f"Loaded {len(sites)} sites.")
     emit_event({
         "type": "run_stage",
         "run_id": run_id,
         "stage": "input_loaded",
-        "total_sites": len(sites),
+        "total_sites": target_total_sites,
         "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
     })
 
-    if args.crux_filter:
-        try:
-            sites = await _crux_filter_sites(args, sites)
-            emit_event({
-                "type": "run_stage",
-                "run_id": run_id,
-                "stage": "crux_filtered",
-                "kept_sites": len(sites),
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-            })
-        except Exception as e:
-            warn(f"CrUX filter failed unexpectedly; continuing without it. Error: {e}")
+    async with _resource_monitor(
+        enabled=bool(getattr(args, "resource_monitor", False)),
+        run_id=run_id,
+        sample_sec=float(getattr(args, "resource_sample_sec", 5.0)),
+        emit_event=emit_event,
+        get_stats=monitor_stats,
+        out_path=getattr(args, "resource_monitor_out", None),
+        with_tracemalloc=bool(getattr(args, "resource_tracemalloc", False)),
+    ):
+        if args.crux_filter:
+            current_stage = "crux_filter"
+            try:
+                sites = await _crux_filter_sites(args, sites)
+                emit_event({
+                    "type": "run_stage",
+                    "run_id": run_id,
+                    "stage": "crux_filtered",
+                    "kept_sites": len(sites),
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                })
+            except Exception as e:
+                warn(f"CrUX filter failed unexpectedly; continuing without it. Error: {e}")
 
-    # ---------------------------
-    # NEW: Prefilter stage
-    # ---------------------------
-    if args.prefilter_websites:
-        try:
-            sites = await _prefilter_sites(args, sites)
-            emit_event({
-                "type": "run_stage",
-                "run_id": run_id,
-                "stage": "prefilter_done",
-                "kept_sites": len(sites),
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-            })
-        except Exception as e:
-            warn(f"Prefilter failed unexpectedly; continuing without prefilter. Error: {e}")
+        if args.prefilter_websites:
+            current_stage = "prefilter"
+            try:
+                sites = await _prefilter_sites(args, sites)
+                emit_event({
+                    "type": "run_stage",
+                    "run_id": run_id,
+                    "stage": "prefilter_done",
+                    "kept_sites": len(sites),
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                })
+            except Exception as e:
+                warn(f"Prefilter failed unexpectedly; continuing without prefilter. Error: {e}")
 
-    if args.third_party_engine == "openwpm" and args.concurrency > 1:
-        warn("OpenWPM engine is blocking/heavy; forcing --concurrency 1.")
-        args.concurrency = 1
-    if not tracker_radar and not trackerdb:
-        warn("No mapping index provided. Third-party domains will be collected but not mapped to entities/policies.")
-    if args.exclude_same_entity and not (tracker_radar or trackerdb):
-        warn("--exclude-same-entity set but no mapping index provided. Option will have no effect.")
+        if args.third_party_engine == "openwpm" and args.concurrency > 1:
+            warn("OpenWPM engine is blocking/heavy; forcing --concurrency 1.")
+            args.concurrency = 1
+        if not tracker_radar and not trackerdb:
+            warn("No mapping index provided. Third-party domains will be collected but not mapped to entities/policies.")
+        if args.exclude_same_entity and not (tracker_radar or trackerdb):
+            warn("--exclude-same-entity set but no mapping index provided. Option will have no effect.")
 
-    sem = asyncio.Semaphore(max(1, int(args.concurrency)))
-    write_lock = asyncio.Lock()
+        write_lock = asyncio.Lock()
 
-    # --- Site-level cache: skip re-scraping sites already in the output JSONL ---
-    done_records: dict[str, dict] = {}
-    if not args.force:
-        done_records = _load_done_records(Path(args.out))
-        if done_records:
-            log(
-                f"Cache: {len(done_records)} successfully-scraped site(s) already in {args.out} "
-                f"will be skipped. Pass --force to re-scrape."
-            )
+        # --- Site-level cache: skip re-scraping sites already in the output JSONL ---
+        if not args.force:
+            done_records = _load_done_records(Path(args.out))
+            if done_records:
+                log(
+                    f"Cache: {len(done_records)} successfully-scraped site(s) already in {args.out} "
+                    f"will be skipped. Pass --force to re-scrape."
+                )
 
-    # --- Annotation cache: skip re-scraping sites that already have full annotations ---
-    annotated_sites: set[str] = set()
-    if not args.force and args.artifacts_dir:
-        annotated_sites = _load_annotated_sites(Path(args.artifacts_dir))
-        # Remove any already covered by done_records to avoid double-counting in the log.
-        new_annotated = annotated_sites - set(done_records.keys())
-        if new_annotated:
-            log(
-                f"Annotation cache: {len(new_annotated)} site(s) already fully annotated in "
-                f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
-            )
+        # --- Annotation cache: skip re-scraping sites that already have full annotations ---
+        if not args.force and args.artifacts_dir:
+            annotated_sites = _load_annotated_sites(Path(args.artifacts_dir))
+            new_annotated = annotated_sites - set(done_records.keys())
+            if new_annotated:
+                log(
+                    f"Annotation cache: {len(new_annotated)} site(s) already fully annotated in "
+                    f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
+                )
 
-    # --- Scrape marker cache: skip sites with scrape_complete.json (durable per-site marker) ---
-    scraped_sites: set[str] = set()
-    if not args.force and args.artifacts_dir:
-        scraped_sites = _load_scraped_sites(Path(args.artifacts_dir))
-        new_scraped = scraped_sites - set(done_records.keys())
-        if new_scraped:
-            log(
-                f"Scrape marker cache: {len(new_scraped)} site(s) with scrape_complete.json in "
-                f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
-            )
+        # --- Scrape marker cache: skip sites with scrape_complete.json (durable per-site marker) ---
+        if not args.force and args.artifacts_dir:
+            scraped_sites = _load_scraped_sites(Path(args.artifacts_dir))
+            new_scraped = scraped_sites - set(done_records.keys())
+            if new_scraped:
+                log(
+                    f"Scrape marker cache: {len(new_scraped)} site(s) with scrape_complete.json in "
+                    f"{args.artifacts_dir} will be skipped. Pass --force to re-scrape."
+                )
 
-    # --- Policy disk cache: persist across runs, keyed by policy URL ---
-    out_path = Path(args.out)
-    tp_cache_path = (
-        Path(args.tp_cache_file)
-        if args.tp_cache_file
-        else out_path.with_name(out_path.stem + ".tp_cache.json")
-    )
-    tp_policy_disk_cache: dict[str, dict] = _load_tp_disk_cache(tp_cache_path)
-    if tp_policy_disk_cache:
-        log(f"Loaded {len(tp_policy_disk_cache)} cached policy URL(s) from {tp_cache_path}")
-    tp_cache_write_lock = asyncio.Lock()
+        out_path = Path(args.out)
+        tp_cache_path = (
+            Path(args.tp_cache_file)
+            if args.tp_cache_file
+            else out_path.with_name(out_path.stem + ".tp_cache.json")
+        )
+        tp_policy_disk_cache = _load_tp_disk_cache(tp_cache_path)
+        if tp_policy_disk_cache:
+            log(f"Loaded {len(tp_policy_disk_cache)} cached policy URL(s) from {tp_cache_path}")
+        tp_cache_write_lock = asyncio.Lock()
+        tp_cache_flush_entries = max(1, int(getattr(args, "tp_cache_flush_entries", 25) or 25))
+        tp_cache_dirty_entries = 0
 
-    summary = SummaryBuilder(run_id=run_id, total_sites=len(sites), mapping_mode=mapping_mode)
-    explorer_records: list[dict[str, Any]] = []
-    explorer_is_jsonl = bool(args.explorer_out and str(args.explorer_out).endswith(".jsonl"))
+        summary = SummaryBuilder(run_id=run_id, total_sites=target_total_sites, mapping_mode=mapping_mode)
+        explorer_records: list[dict[str, Any]] = []
+        explorer_is_jsonl = bool(args.explorer_out and str(args.explorer_out).endswith(".jsonl"))
 
-    emit_event({
-        "type": "run_started",
-        "run_id": run_id,
-        "total_sites": len(sites),
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-    })
+        emit_event({
+            "type": "run_started",
+            "run_id": run_id,
+            "total_sites": target_total_sites,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        })
 
-    emit_event({
-        "type": "run_stage",
-        "run_id": run_id,
-        "stage": "crawl_started",
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-    })
+        emit_event({
+            "type": "run_stage",
+            "run_id": run_id,
+            "stage": "crawl_started",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        })
+        current_stage = "crawl"
 
-    async with Crawl4AIClient(
-        browser_type=args.browser,
-        headless=(not args.headed),
-        verbose=args.verbose,
-        user_agent=args.user_agent,
-        proxy=args.proxy,
-        locale=args.locale,
-        timezone_id=args.timezone_id,
-        page_timeout_ms=args.page_timeout_ms,
-    ) as client:
-        policy_cache: dict[str, Crawl4AIResult] = {}
-        policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
-        policy_url_aliases: dict[str, str] = {}
-        policy_cache_lock = asyncio.Lock()
+        async with Crawl4AIClient(
+            browser_type=args.browser,
+            headless=(not args.headed),
+            verbose=args.verbose,
+            user_agent=args.user_agent,
+            proxy=args.proxy,
+            locale=args.locale,
+            timezone_id=args.timezone_id,
+            page_timeout_ms=args.page_timeout_ms,
+        ) as client:
+            from collections import OrderedDict
 
-        # Shared registry: normalized policy URL → artifact dir (first writer wins).
-        # Prevents re-scraping, LLM cleaning, and re-writing when two sites or
-        # third-parties share the same privacy policy URL (e.g. google.com + youtube.com).
-        policy_artifact_registry: dict[str, Path] = {}
-        policy_artifact_lock = asyncio.Lock()
+            policy_cache: "OrderedDict[str, Crawl4AIResult]" = OrderedDict()
+            policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
+            policy_url_aliases: dict[str, str] = {}
+            policy_cache_lock = asyncio.Lock()
+            policy_cache_max_entries = max(0, int(getattr(args, "policy_cache_max_entries", 2000) or 0))
+            policy_cache_ref = policy_cache
+            policy_inflight_ref = policy_inflight
 
-        async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
-            req_key = _normalize_policy_url(policy_url) or policy_url
-            owner = False
-            async with policy_cache_lock:
-                lookup_key = policy_url_aliases.get(req_key, req_key)
-                # 1. In-memory cache hit (fastest path).
-                cached = policy_cache.get(lookup_key) or policy_cache.get(req_key)
+            # Shared registry: normalized policy URL → artifact dir (first writer wins).
+            # Prevents re-scraping, LLM cleaning, and re-writing when two sites or
+            # third-parties share the same privacy policy URL (e.g. google.com + youtube.com).
+            policy_artifact_registry: dict[str, Path] = {}
+            policy_artifact_lock = asyncio.Lock()
+
+            def _policy_cache_get(key: str) -> Crawl4AIResult | None:
+                if not key:
+                    return None
+                cached = policy_cache.get(key)
                 if cached is not None:
-                    return cached
+                    policy_cache.move_to_end(key)
+                return cached
 
-                # 2. Disk cache hit — reconstruct result and warm in-memory cache.
-                disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
-                if disk is not None:
-                    status_code = disk.get("status_code")
-                    text = disk.get("text")
-                    result = Crawl4AIResult(
-                        url=disk.get("final_url") or policy_url,
-                        success=bool((isinstance(status_code, int) and status_code < 400) or text),
-                        status_code=status_code,
-                        raw_html=None,
-                        cleaned_html=None,
-                        text=text,
-                        network_requests=None,
-                        error_message=disk.get("error_message"),
-                        text_extraction_method=disk.get("extraction_method"),
-                    )
-                    policy_cache[lookup_key] = result
-                    policy_cache[req_key] = result
-                    final_url = disk.get("final_url")
-                    if isinstance(final_url, str) and final_url:
-                        final_key = _normalize_policy_url(final_url)
-                        if final_key:
-                            policy_cache[final_key] = result
-                            policy_url_aliases[req_key] = final_key
+            def _policy_cache_put(key: str, value: Crawl4AIResult) -> None:
+                if not key:
+                    return
+                policy_cache[key] = value
+                policy_cache.move_to_end(key)
+                if policy_cache_max_entries > 0:
+                    while len(policy_cache) > policy_cache_max_entries:
+                        old_key, _ = policy_cache.popitem(last=False)
+                        for alias, target in list(policy_url_aliases.items()):
+                            if alias == old_key or target == old_key:
+                                policy_url_aliases.pop(alias, None)
+
+            async def _flush_tp_cache_locked(*, force: bool = False) -> None:
+                nonlocal tp_cache_dirty_entries
+                if tp_cache_dirty_entries <= 0:
+                    return
+                if not force and tp_cache_dirty_entries < tp_cache_flush_entries:
+                    return
+                pending = tp_cache_dirty_entries
+                try:
+                    payload = json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1)
+                    await asyncio.to_thread(tp_cache_path.write_text, payload, "utf-8")
+                    tp_cache_dirty_entries = 0
+                    log(f"TP cache: flushed {pending} updated entries to {tp_cache_path}")
+                except Exception as e:
+                    warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
+
+            async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
+                req_key = _normalize_policy_url(policy_url) or policy_url
+                owner = False
+                lookup_key = req_key
+                async with policy_cache_lock:
+                    lookup_key = policy_url_aliases.get(req_key, req_key)
+                    cached = _policy_cache_get(lookup_key) or _policy_cache_get(req_key)
+                    if cached is not None:
+                        return cached
+
+                    disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
+                    if disk is not None:
+                        status_code = disk.get("status_code")
+                        text = disk.get("text")
+                        result = Crawl4AIResult(
+                            url=disk.get("final_url") or policy_url,
+                            success=bool((isinstance(status_code, int) and status_code < 400) or text),
+                            status_code=status_code,
+                            raw_html=None,
+                            cleaned_html=None,
+                            text=text,
+                            network_requests=None,
+                            error_message=disk.get("error_message"),
+                            text_extraction_method=disk.get("extraction_method"),
+                        )
+                        _policy_cache_put(lookup_key, result)
+                        _policy_cache_put(req_key, result)
+                        final_url = disk.get("final_url")
+                        if isinstance(final_url, str) and final_url:
+                            final_key = _normalize_policy_url(final_url)
+                            if final_key:
+                                _policy_cache_put(final_key, result)
+                                policy_url_aliases[req_key] = final_key
+                        return result
+
+                    fut = policy_inflight.get(lookup_key)
+                    if fut is None:
+                        fut = asyncio.get_running_loop().create_future()
+                        policy_inflight[lookup_key] = fut
+                        owner = True
+
+                if owner:
+                    try:
+                        result = await client.fetch(
+                            policy_url,
+                            capture_network=False,
+                            remove_overlays=True,
+                            magic=False,
+                        )
+                    except Exception as e:
+                        result = Crawl4AIResult(
+                            url=policy_url,
+                            success=False,
+                            status_code=None,
+                            raw_html=None,
+                            cleaned_html=None,
+                            text=None,
+                            network_requests=None,
+                            error_message=str(e),
+                            text_extraction_method=None,
+                        )
+
+                    final_url = result.url or policy_url
+                    final_key = _normalize_policy_url(final_url) or req_key
+                    cache_keys = {req_key, final_key}
+
+                    if result.text:
+                        async with tp_cache_write_lock:
+                            cache_entry = {
+                                "text": result.text,
+                                "status_code": result.status_code,
+                                "extraction_method": result.text_extraction_method,
+                                "error_message": result.error_message,
+                                "final_url": final_url,
+                                "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                            }
+                            changed = 0
+                            for key in cache_keys:
+                                if tp_policy_disk_cache.get(key) != cache_entry:
+                                    tp_policy_disk_cache[key] = cache_entry
+                                    changed += 1
+                            if changed:
+                                tp_cache_dirty_entries += changed
+                                await _flush_tp_cache_locked(force=False)
+
+                    async with policy_cache_lock:
+                        _cached = Crawl4AIResult(
+                            url=result.url,
+                            success=result.success,
+                            status_code=result.status_code,
+                            raw_html=None,
+                            cleaned_html=result.cleaned_html,
+                            text=result.text,
+                            network_requests=None,
+                            error_message=result.error_message,
+                            text_extraction_method=result.text_extraction_method,
+                        )
+                        for key in cache_keys:
+                            _policy_cache_put(key, _cached)
+                        policy_url_aliases[req_key] = final_key
+                        inflight = policy_inflight.pop(req_key, None)
+                        if inflight is None:
+                            inflight = policy_inflight.pop(final_key, None)
+                        if inflight is None:
+                            inflight = policy_inflight.pop(lookup_key, None)
+                        if inflight is not None and not inflight.done():
+                            inflight.set_result(result)
                     return result
 
-                # 3. Not cached anywhere — register as inflight so concurrent callers wait.
-                fut = policy_inflight.get(lookup_key)
-                if fut is None:
-                    fut = asyncio.get_running_loop().create_future()
-                    policy_inflight[lookup_key] = fut
-                    owner = True
-
-            if owner:
-                try:
-                    result = await client.fetch(
-                        policy_url,
-                        capture_network=False,
-                        remove_overlays=True,
-                        magic=False,
-                    )
-                except Exception as e:
-                    result = Crawl4AIResult(
-                        url=policy_url,
-                        success=False,
-                        status_code=None,
-                        raw_html=None,
-                        cleaned_html=None,
-                        text=None,
-                        network_requests=None,
-                        error_message=str(e),
-                        text_extraction_method=None,
-                    )
-
-                final_url = result.url or policy_url
-                final_key = _normalize_policy_url(final_url) or req_key
-                cache_keys = {req_key, final_key}
-
-                # Persist to disk cache only when we got policy text (skip failed fetches).
-                if result.text:
-                    async with tp_cache_write_lock:
-                        cache_entry = {
-                            "text": result.text,
-                            "status_code": result.status_code,
-                            "extraction_method": result.text_extraction_method,
-                            "error_message": result.error_message,
-                            "final_url": final_url,
-                            "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                        }
-                        for key in cache_keys:
-                            tp_policy_disk_cache[key] = cache_entry
-                        try:
-                            tp_cache_path.write_text(
-                                json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1),
-                                encoding="utf-8",
-                            )
-                        except Exception as e:
-                            warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
-
                 async with policy_cache_lock:
-                    for key in cache_keys:
-                        policy_cache[key] = result
-                    policy_url_aliases[req_key] = final_key
-                    inflight = policy_inflight.pop(req_key, None)
-                    if inflight is None:
-                        inflight = policy_inflight.pop(final_key, None)
-                    if inflight is None:
-                        inflight = policy_inflight.pop(lookup_key, None)
-                    if inflight is not None and not inflight.done():
-                        inflight.set_result(result)
-                return result
+                    wait_key = policy_url_aliases.get(req_key, req_key)
+                    wait_fut = policy_inflight.get(wait_key)
+                    cached = _policy_cache_get(wait_key) or _policy_cache_get(req_key)
+                if cached is not None:
+                    return cached
+                if wait_fut is not None:
+                    try:
+                        return await asyncio.wait_for(asyncio.shield(wait_fut), timeout=120.0)
+                    except asyncio.TimeoutError:
+                        warn(f"Timed out waiting for concurrent policy fetch of {policy_url!r}; fetching directly.")
 
-            async with policy_cache_lock:
-                wait_key = policy_url_aliases.get(req_key, req_key)
-                wait_fut = policy_inflight.get(wait_key)
-                cached = policy_cache.get(wait_key) or policy_cache.get(req_key)
-            if cached is not None:
-                return cached
-            if wait_fut is not None:
-                return await wait_fut
+                return await client.fetch(
+                    policy_url,
+                    capture_network=False,
+                    remove_overlays=True,
+                    magic=False,
+                )
 
-            # Fallback safety path (should rarely happen under race conditions).
-            return await client.fetch(
-                policy_url,
-                capture_network=False,
-                remove_overlays=True,
-                magic=False,
-            )
-
-        async def worker(rec: dict[str, Any]) -> None:
-            async with sem:
+            async def worker(rec: dict[str, Any]) -> None:
                 rank = rec["rank"]
                 site = rec["site"]
 
-                # Check site-level cache before doing any network work.
                 cached_result = done_records.get(site)
                 if cached_result is not None:
                     log(f"[cache] {site} — already scraped, reusing cached result.")
                     async with write_lock:
                         summary.update(cached_result)
+                        summary_payload = summary.to_summary()
+                        if args.upsert_by_site:
+                            summary_payload = _build_summary_from_results(
+                                Path(args.out),
+                                run_id=run_id,
+                                mapping_mode=mapping_mode,
+                                total_sites_override=target_total_sites,
+                            )
                         if args.summary_out:
-                            write_json(args.summary_out, summary.to_summary())
+                            write_json(args.summary_out, summary_payload)
+                        if args.state_file:
+                            write_json(
+                                args.state_file,
+                                _state_from_summary(
+                                    summary_payload,
+                                    run_id=run_id,
+                                    total_sites=int(summary_payload.get("total_sites") or target_total_sites),
+                                ),
+                            )
                     emit_event({
                         "type": "site_finished",
                         "run_id": run_id,
@@ -1059,13 +1529,29 @@ async def _run(args: argparse.Namespace) -> None:
                     })
                     return
 
-                # Check scrape_complete.json marker (durable per-site marker not in done_records).
                 if site in scraped_sites:
                     log(f"[scraped] {site} — scrape_complete.json exists, skipping re-scrape.")
                     async with write_lock:
                         summary.update({"status": "ok", "input": site, "rank": rank, "site_etld1": site})
+                        summary_payload = summary.to_summary()
+                        if args.upsert_by_site:
+                            summary_payload = _build_summary_from_results(
+                                Path(args.out),
+                                run_id=run_id,
+                                mapping_mode=mapping_mode,
+                                total_sites_override=target_total_sites,
+                            )
                         if args.summary_out:
-                            write_json(args.summary_out, summary.to_summary())
+                            write_json(args.summary_out, summary_payload)
+                        if args.state_file:
+                            write_json(
+                                args.state_file,
+                                _state_from_summary(
+                                    summary_payload,
+                                    run_id=run_id,
+                                    total_sites=int(summary_payload.get("total_sites") or target_total_sites),
+                                ),
+                            )
                     emit_event({
                         "type": "site_finished",
                         "run_id": run_id,
@@ -1077,7 +1563,6 @@ async def _run(args: argparse.Namespace) -> None:
                     })
                     return
 
-                # Check annotation cache: skip sites whose policy has already been fully annotated.
                 if site in annotated_sites:
                     log(f"[annotated] {site} — policy already annotated, skipping re-scrape.")
                     emit_event({
@@ -1139,7 +1624,6 @@ async def _run(args: argparse.Namespace) -> None:
                         "run_id": run_id,
                     }
 
-                # Tag result with English flag for summary tracking.
                 if result.get("status") == "ok" and args.artifacts_dir:
                     _site_key_pre = result.get("site_etld1") or site
                     _policy_txt_pre = Path(args.artifacts_dir) / _site_key_pre / "policy.txt"
@@ -1186,6 +1670,7 @@ async def _run(args: argparse.Namespace) -> None:
                             Path(args.out),
                             run_id=run_id,
                             mapping_mode=mapping_mode,
+                            total_sites_override=target_total_sites,
                         )
 
                     if args.summary_out:
@@ -1197,11 +1682,10 @@ async def _run(args: argparse.Namespace) -> None:
                             _state_from_summary(
                                 summary_payload,
                                 run_id=run_id,
-                                total_sites=int(summary_payload.get("total_sites") or len(sites)),
+                                total_sites=int(summary_payload.get("total_sites") or target_total_sites),
                             ),
                         )
 
-                # Write scrape_complete.json — durable per-site marker for future runs.
                 if result.get("status") == "ok" and args.artifacts_dir:
                     site_key = result.get("site_etld1") or site
                     site_art_dir = Path(args.artifacts_dir) / site_key
@@ -1222,8 +1706,6 @@ async def _run(args: argparse.Namespace) -> None:
                         except Exception as e:
                             warn(f"Failed to write scrape_complete.json for {site_key}: {e}")
 
-                        # Mirror into artifacts_ok_dir if the policy is English
-                        # AND at least one third-party policy was extracted.
                         artifacts_ok_dir_str = getattr(args, "artifacts_ok_dir", None) or (
                             str(Path(args.artifacts_dir).parent / (Path(args.artifacts_dir).name + "_ok"))
                         )
@@ -1250,8 +1732,8 @@ async def _run(args: argparse.Namespace) -> None:
                 emit_event({
                     "type": "run_progress",
                     "run_id": run_id,
-                    "processed": summary.processed_sites,
-                    "total": len(sites),
+                    "processed": int(summary_payload.get("processed_sites") or summary.processed_sites),
+                    "total": int(summary_payload.get("total_sites") or target_total_sites),
                     "status_counts": dict(summary.status_counts),
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
@@ -1259,18 +1741,35 @@ async def _run(args: argparse.Namespace) -> None:
                 if result.get("status") != "ok":
                     warn(f"FAILED {site}: {result.get('status')}")
 
-        await asyncio.gather(*[worker(r) for r in sites])
+            await _run_bounded(
+                sites,
+                concurrency=max(1, int(args.concurrency)),
+                worker=worker,
+            )
+            async with tp_cache_write_lock:
+                await _flush_tp_cache_locked(force=True)
 
-    if args.explorer_out and not explorer_is_jsonl:
-        write_json(args.explorer_out, explorer_records)
+        current_stage = "finalize"
+        if args.explorer_out and not explorer_is_jsonl:
+            write_json(args.explorer_out, explorer_records)
 
-    emit_event({
-        "type": "run_completed",
-        "run_id": run_id,
-        "processed": summary.processed_sites,
-        "total": len(sites),
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-    })
+        final_processed = int(summary.processed_sites)
+        if args.upsert_by_site:
+            final_summary = _build_summary_from_results(
+                Path(args.out),
+                run_id=run_id,
+                mapping_mode=mapping_mode,
+                total_sites_override=target_total_sites,
+            )
+            final_processed = int(final_summary.get("processed_sites") or final_processed)
+
+        emit_event({
+            "type": "run_completed",
+            "run_id": run_id,
+            "processed": final_processed,
+            "total": target_total_sites,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        })
 
 
 def main() -> None:

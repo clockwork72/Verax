@@ -2,15 +2,35 @@
 
 type ScraperStartOptions = {
   topN?: number
+  sites?: string[]
   trancoDate?: string
   trackerRadarIndex?: string
   trackerDbIndex?: string
   outDir?: string
   artifactsDir?: string
   runId?: string
+  resumeAfterRank?: number
+  expectedTotalSites?: number
+  upsertBySite?: boolean
   cruxFilter?: boolean
   cruxApiKey?: string
   excludeSameEntity?: boolean
+}
+
+type RunManifest = {
+  version: 1
+  status: 'running' | 'completed' | 'interrupted'
+  mode: 'tranco' | 'append_sites'
+  runId?: string
+  topN?: number
+  trancoDate?: string
+  resumeAfterRank?: number
+  expectedTotalSites?: number
+  requestedSites?: string[]
+  cruxFilter?: boolean
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
 }
 
 type ScraperRerunSiteOptions = {
@@ -44,6 +64,7 @@ declare global {
       readExplorer: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
       readResults: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
       readAuditState: (outDir?: string) => Promise<{ ok: boolean; data?: { verifiedSites: string[]; urlOverrides: Record<string, string> }; error?: string; path?: string }>
+      readRunManifest: (outDir?: string) => Promise<{ ok: boolean; data?: RunManifest; error?: string; path?: string }>
       writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => Promise<{ ok: boolean; data?: { verifiedSites: string[]; urlOverrides: Record<string, string> }; error?: string; path?: string }>
       readArtifactText: (options?: { outDir?: string; relativePath?: string }) => Promise<{ ok: boolean; data?: string; error?: string; path?: string }>
       clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) => Promise<{ ok: boolean; error?: string; removed?: string[]; errors?: string[] }>

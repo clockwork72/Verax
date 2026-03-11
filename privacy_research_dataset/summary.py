@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 # ---------------------------------------------------------------------------
 # Category normalisation table
@@ -64,6 +65,40 @@ def normalize_tracker_category(raw: str) -> str:
     return _CATEGORY_MAP.get(raw.strip().lower(), raw)
 
 
+def _normalize_policy_url(url: str) -> str:
+    """Normalize a policy URL for stable deduplication across runs/sites."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "https").lower()
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return raw
+        port = parsed.port
+        default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        netloc = host if (port is None or default_port) else f"{host}:{port}"
+        path = parsed.path or "/"
+        return urlunparse((scheme, netloc, path, "", parsed.query, ""))
+    except Exception:
+        return raw
+
+
+def _third_party_service_key(tp: dict[str, Any]) -> str:
+    """Return a key representing one unique third-party service."""
+    domain = tp.get("third_party_etld1")
+    if isinstance(domain, str) and domain.strip():
+        return domain.strip().lower()
+    entity = tp.get("entity")
+    if isinstance(entity, str) and entity.strip():
+        return f"entity:{entity.strip().lower()}"
+    policy_url = tp.get("policy_url")
+    if isinstance(policy_url, str) and policy_url.strip():
+        return _normalize_policy_url(policy_url)
+    return ""
+
+
 @dataclass
 class SummaryBuilder:
     run_id: str
@@ -82,6 +117,7 @@ class SummaryBuilder:
     third_party_trackerdb_mapped: int = 0
     english_policy_count: int = 0
     category_counts: Counter = field(default_factory=Counter)
+    category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
     entity_counts: Counter = field(default_factory=Counter)
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
     entity_prevalence_max: dict[str, float] = field(default_factory=dict)
@@ -127,9 +163,26 @@ class SummaryBuilder:
             elif tp.get("trackerdb_source_pattern_file") or tp.get("trackerdb_source_org_file"):
                 self.third_party_trackerdb_mapped += 1
 
-            for cat in tp.get("categories") or []:
-                if isinstance(cat, str) and cat.strip():
-                    self.category_counts[normalize_tracker_category(cat)] += 1
+            service_key = _third_party_service_key(tp)
+            normalized_cats = {
+                normalize_tracker_category(cat)
+                for cat in (tp.get("categories") or [])
+                if isinstance(cat, str) and cat.strip()
+            }
+            if not service_key:
+                for cat in normalized_cats:
+                    self.category_counts[cat] += 1
+                # No stable identity key; avoid cross-record deduplication.
+                # Still deduplicated within this single record via the set above.
+                continue
+            for cat in normalized_cats:
+                # Count category coverage once per unique third-party service,
+                # not once per site-level occurrence.
+                pair_key = (service_key, cat)
+                if pair_key in self.category_service_pairs_seen:
+                    continue
+                self.category_service_pairs_seen.add(pair_key)
+                self.category_counts[cat] += 1
 
             entity = tp.get("entity")
             if isinstance(entity, str) and entity.strip():

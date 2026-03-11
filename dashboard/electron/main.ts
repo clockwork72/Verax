@@ -31,14 +31,24 @@ let annotatorProcess: ChildProcessWithoutNullStreams | null = null
 const policyWindows = new Set<BrowserWindow>()
 const logWindows = new Set<BrowserWindow>()
 
+// Keep dashboard-triggered scraping conservative to avoid host freezes.
+const DASHBOARD_SAFE_CONCURRENCY = 2
+const DASHBOARD_SAFE_CRUX_CONCURRENCY = 8
+const DASHBOARD_SAFE_POLICY_CACHE_MAX = 1200
+const DASHBOARD_SAFE_TP_CACHE_FLUSH = 20
+
 type ScraperStartOptions = {
   topN?: number
+  sites?: string[]
   trancoDate?: string
   trackerRadarIndex?: string
   trackerDbIndex?: string
   outDir?: string
   artifactsDir?: string
   runId?: string
+  resumeAfterRank?: number
+  expectedTotalSites?: number
+  upsertBySite?: boolean
   cruxFilter?: boolean
   cruxApiKey?: string
   skipHomeFailed?: boolean
@@ -78,6 +88,26 @@ type AuditStateFile = {
   urlOverrides: Record<string, string>
   updatedAt?: string
 }
+
+type RunManifest = {
+  version: 1
+  status: 'running' | 'completed' | 'interrupted'
+  mode: 'tranco' | 'append_sites'
+  runId?: string
+  topN?: number
+  trancoDate?: string
+  resumeAfterRank?: number
+  expectedTotalSites?: number
+  requestedSites?: string[]
+  cruxFilter?: boolean
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+}
+
+let activeRunManifestPath: string | null = null
+let activeRunManifest: RunManifest | null = null
+let activeRunCompleted = false
 
 /**
  * Return the Python interpreter to use for subprocesses.
@@ -157,7 +187,8 @@ function defaultPaths(outDir?: string) {
     explorerJsonl: path.join(root, 'explorer.jsonl'),
     artifactsDir: path.join(root, 'artifacts'),
     artifactsOkDir: path.join(root, 'artifacts_ok'),
-    cruxCacheJson: path.join(root, 'results.crux_cache.json'),
+    // Shared across all runs so CrUX lookups are reused between separate outputs.
+    cruxCacheJson: path.join(REPO_ROOT, 'results.crux_cache.json'),
   }
 }
 
@@ -263,6 +294,15 @@ function getAuditStatePath(outDir?: string): string {
   return path.join(defaultPaths(outDir).outDir, 'audit_state.json')
 }
 
+function getRunManifestPath(outDir?: string): string {
+  return path.join(defaultPaths(outDir).outDir, 'dashboard_run_manifest.json')
+}
+
+async function writeRunManifest(pathname: string, manifest: RunManifest): Promise<void> {
+  await fs.promises.mkdir(path.dirname(pathname), { recursive: true })
+  await fs.promises.writeFile(pathname, JSON.stringify(manifest, null, 2), 'utf-8')
+}
+
 async function readAuditStateFile(filePath: string): Promise<AuditStateFile> {
   if (!fs.existsSync(filePath)) {
     return { verifiedSites: [], urlOverrides: {} }
@@ -291,7 +331,8 @@ async function readAuditStateFile(filePath: string): Promise<AuditStateFile> {
 
 async function launchScraperProcess(
   args: string[],
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  runManifest?: { path: string; data: RunManifest }
 ): Promise<{ ok: boolean; error?: string }> {
   const pythonCmd = getPythonCmd()
   try {
@@ -304,6 +345,17 @@ async function launchScraperProcess(
     return { ok: false, error: String(error) }
   }
 
+  activeRunCompleted = false
+  activeRunManifestPath = runManifest?.path || null
+  activeRunManifest = runManifest?.data || null
+  if (activeRunManifestPath && activeRunManifest) {
+    try {
+      await writeRunManifest(activeRunManifestPath, activeRunManifest)
+    } catch (error) {
+      sendToRenderer('scraper:error', { message: 'run_manifest_write_failed', error: String(error) })
+    }
+  }
+
   let stdoutBuffer = ''
   scraperProcess.stdout.on('data', (chunk) => {
     stdoutBuffer += chunk.toString()
@@ -314,6 +366,9 @@ async function launchScraperProcess(
       if (!trimmed) continue
       try {
         const evt = JSON.parse(trimmed)
+        if (evt?.type === 'run_completed') {
+          activeRunCompleted = true
+        }
         sendToRenderer('scraper:event', evt)
       } catch {
         sendToRenderer('scraper:log', { message: trimmed })
@@ -331,6 +386,22 @@ async function launchScraperProcess(
 
   scraperProcess.on('close', (code, signal) => {
     sendToRenderer('scraper:exit', { code, signal })
+    if (activeRunManifestPath && activeRunManifest) {
+      const nextManifest: RunManifest = {
+        ...activeRunManifest,
+        status: activeRunCompleted ? 'completed' : 'interrupted',
+        updatedAt: new Date().toISOString(),
+      }
+      if (activeRunCompleted) {
+        nextManifest.completedAt = nextManifest.updatedAt
+      }
+      void writeRunManifest(activeRunManifestPath, nextManifest).catch((error) => {
+        sendToRenderer('scraper:error', { message: 'run_manifest_update_failed', error: String(error) })
+      })
+    }
+    activeRunManifestPath = null
+    activeRunManifest = null
+    activeRunCompleted = false
     scraperProcess = null
   })
 
@@ -567,6 +638,19 @@ ipcMain.handle('scraper:read-audit-state', async (_event, outDir?: string) => {
   }
 })
 
+ipcMain.handle('scraper:read-run-manifest', async (_event, outDir?: string) => {
+  try {
+    const manifestPath = getRunManifestPath(outDir)
+    if (!fs.existsSync(manifestPath)) {
+      return { ok: false, error: 'not_found', path: manifestPath }
+    }
+    const raw = await fs.promises.readFile(manifestPath, 'utf-8')
+    return { ok: true, data: JSON.parse(raw), path: manifestPath }
+  } catch (error) {
+    return { ok: false, error: String(error) }
+  }
+})
+
 ipcMain.handle(
   'scraper:write-audit-state',
   async (_event, payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => {
@@ -713,13 +797,34 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
     paths.summaryJson,
     '--explorer-out',
     paths.explorerJsonl,
+    '--concurrency',
+    String(DASHBOARD_SAFE_CONCURRENCY),
+    '--crux-concurrency',
+    String(DASHBOARD_SAFE_CRUX_CONCURRENCY),
+    '--policy-cache-max-entries',
+    String(DASHBOARD_SAFE_POLICY_CACHE_MAX),
+    '--tp-cache-flush-entries',
+    String(DASHBOARD_SAFE_TP_CACHE_FLUSH),
   ]
 
-  if (options.topN) {
+  if (Array.isArray(options.sites) && options.sites.length > 0) {
+    for (const site of options.sites) {
+      const trimmed = String(site || '').trim()
+      if (trimmed) {
+        args.push('--site', trimmed)
+      }
+    }
+  } else if (options.topN) {
     args.push('--tranco-top', String(options.topN))
   }
   if (options.trancoDate) {
     args.push('--tranco-date', options.trancoDate)
+  }
+  if (options.resumeAfterRank && Number.isFinite(options.resumeAfterRank)) {
+    args.push('--resume-after-rank', String(options.resumeAfterRank))
+  }
+  if (options.expectedTotalSites && Number.isFinite(options.expectedTotalSites)) {
+    args.push('--expected-total-sites', String(options.expectedTotalSites))
   }
   if (options.trackerRadarIndex) {
     const trackerPath = path.resolve(REPO_ROOT, options.trackerRadarIndex)
@@ -740,6 +845,9 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
   if (options.runId) {
     args.push('--run-id', options.runId)
   }
+  if (options.upsertBySite) {
+    args.push('--upsert-by-site')
+  }
   // Always pass the cache file so it persists across runs regardless of whether
   // --crux-filter is active this session.
   args.push('--crux-cache-file', paths.cruxCacheJson)
@@ -756,7 +864,26 @@ ipcMain.handle('scraper:start', async (_event, options: ScraperStartOptions = {}
     args.push('--exclude-same-entity')
   }
 
-  const launched = await launchScraperProcess(args)
+  const now = new Date().toISOString()
+  const manifest: RunManifest = {
+    version: 1,
+    status: 'running',
+    mode: Array.isArray(options.sites) && options.sites.length > 0 ? 'append_sites' : 'tranco',
+    runId: options.runId,
+    topN: options.topN,
+    trancoDate: options.trancoDate,
+    resumeAfterRank: options.resumeAfterRank,
+    expectedTotalSites: options.expectedTotalSites,
+    requestedSites: Array.isArray(options.sites) ? options.sites.map((site) => String(site).trim()).filter(Boolean) : [],
+    cruxFilter: !!options.cruxFilter,
+    startedAt: now,
+    updatedAt: now,
+  }
+
+  const launched = await launchScraperProcess(args, {}, {
+    path: getRunManifestPath(options.outDir),
+    data: manifest,
+  })
   if (!launched.ok) {
     return { ok: false, error: launched.error || 'failed_to_start' }
   }
@@ -882,6 +1009,7 @@ ipcMain.handle('scraper:clear-results', async (_event, options?: { includeArtifa
     paths.stateJson,
     paths.explorerJsonl,
     path.join(paths.outDir, 'audit_state.json'),
+    getRunManifestPath(options?.outDir),
   ]
   const removed: string[] = []
   const missing: string[] = []

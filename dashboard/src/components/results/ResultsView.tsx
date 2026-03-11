@@ -369,6 +369,9 @@ export function ResultsView({
           </div>
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Categories</p>
+            <p className="mt-1 text-[10px] text-[var(--muted-text)]">
+              Counts represent unique third-party services (deduplicated), not total occurrences.
+            </p>
             <div className="mt-3 space-y-3 text-xs">
               {summaryCategories.map((cat: any) => {
                 const count = cat.count ?? 0

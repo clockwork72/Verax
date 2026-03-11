@@ -72,6 +72,8 @@ type LauncherViewProps = {
   topN: string
   onTopNChange: (value: string) => void
   onStart: () => void
+  primaryActionLabel?: string
+  primaryActionHint?: string
   onStop?: () => void
   hasRun: boolean
   running: boolean
@@ -104,12 +106,19 @@ type LauncherViewProps = {
   // Resume mode — use unified output dir to skip already-scraped sites
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
+  topNLocked?: boolean
+  appendTargetsEnabled?: boolean
+  appendTargetsText?: string
+  onAppendTargetsChange?: (value: string) => void
+  appendTargetsSummary?: { entered: number; newSites: number; duplicates: number }
 }
 
 export function LauncherView({
   topN,
   onTopNChange,
   onStart,
+  primaryActionLabel = 'Start run',
+  primaryActionHint = 'Choose how many sites to crawl. Press Enter to start.',
   onStop,
   hasRun,
   running,
@@ -140,6 +149,11 @@ export function LauncherView({
   onStopAnnotate,
   resumeMode = false,
   onToggleResumeMode,
+  topNLocked = false,
+  appendTargetsEnabled = false,
+  appendTargetsText = '',
+  onAppendTargetsChange,
+  appendTargetsSummary,
 }: LauncherViewProps) {
   const logRef = useRef<HTMLDivElement | null>(null)
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
@@ -168,9 +182,9 @@ export function LauncherView({
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Launch</p>
-              <h2 className="text-lg font-semibold">Tranco Top-N</h2>
+              <h2 className="text-lg font-semibold">Dataset launcher</h2>
               <p className="text-xs text-[var(--muted-text)]">
-                Choose how many sites to crawl. Press <span className="kbd">Enter</span> to start.
+                {primaryActionHint}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -183,8 +197,9 @@ export function LauncherView({
               <button
                 className="focusable rounded-full bg-[var(--color-primary)] px-4 py-2 text-xs font-semibold text-white"
                 onClick={onStart}
+                disabled={running}
               >
-                Start run
+                {primaryActionLabel}
               </button>
             </div>
           </div>
@@ -212,8 +227,11 @@ export function LauncherView({
               }}
               className="focusable w-40 rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-white"
               placeholder="1000"
+              disabled={topNLocked}
             />
-            <span className="text-xs text-[var(--muted-text)]">sites from Tranco list</span>
+            <span className="text-xs text-[var(--muted-text)]">
+              {topNLocked ? 'Target locked to loaded dataset' : 'sites from Tranco list'}
+            </span>
 
             {/* Read-only pipeline settings chips — configure in Settings */}
             <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs ${
@@ -242,6 +260,31 @@ export function LauncherView({
               Resume mode {resumeMode ? 'on' : 'off'}
             </button>
           </div>
+
+          {appendTargetsEnabled && (
+            <div className="rounded-2xl border border-[var(--border-soft)] bg-black/10 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">Append targets</p>
+                  <p className="text-xs text-[var(--muted-text)]">
+                    Add one website per line to extend the loaded dataset without reprocessing existing sites.
+                  </p>
+                </div>
+                {appendTargetsSummary && (
+                  <div className="text-right text-xs text-[var(--muted-text)]">
+                    <div>{appendTargetsSummary.newSites} new</div>
+                    <div>{appendTargetsSummary.duplicates} duplicate</div>
+                  </div>
+                )}
+              </div>
+              <textarea
+                value={appendTargetsText}
+                onChange={(event) => onAppendTargetsChange?.(event.target.value)}
+                className="focusable mt-3 min-h-[120px] w-full rounded-2xl border border-[var(--border-soft)] bg-black/20 px-4 py-3 text-sm text-white"
+                placeholder={'example.com\nsubdomain.example.org'}
+              />
+            </div>
+          )}
         </div>
       </section>
 

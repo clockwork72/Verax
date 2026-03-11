@@ -30,6 +30,7 @@ dependencies = [
   "lemminflect>=0.2.3",
   "python-rapidjson>=1.10",
   "regex>=2024.0",
+  "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]

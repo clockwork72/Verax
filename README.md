@@ -165,6 +165,19 @@ privacy-dataset \
   --artifacts-dir outputs/artifacts
 ```
 
+For large runs (high concurrency / many sites), enable resource telemetry and bounded cache behavior:
+
+```bash
+privacy-dataset \
+  ... \
+  --resource-monitor \
+  --resource-sample-sec 3 \
+  --resource-tracemalloc \
+  --resource-monitor-out outputs/resource_metrics.jsonl \
+  --policy-cache-max-entries 2000 \
+  --tp-cache-flush-entries 25
+```
+
 **Stage 2 — annotate**
 
 ```bash
