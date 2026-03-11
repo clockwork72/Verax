@@ -15,7 +15,7 @@ A research pipeline that crawls websites, discovers and extracts their privacy p
 
 **Stage 2 — LLM Annotation**
 - Preprocesses policy text into chunks (pandoc AST → overlapping token windows)
-- Runs iterative extraction with DeepSeek-R1-70B on a local HPC GPU node via SSH tunnel (port 8901)
+- Runs iterative extraction with a local LLM served via an OpenAI-compatible API (default: port 8901)
 - Produces structured statements: `action`, `data`, `processor`, `purpose`, `context`, `prohibition`
 - Streams chain-of-thought reasoning live to the dashboard UI
 
@@ -38,34 +38,58 @@ tracker-radar/              # DuckDuckGo Tracker Radar (clone here)
 trackerdb/                  # Ghostery TrackerDB (clone here, optional)
 dashboard/                  # Electron + Vite UI
 outputs/                    # per-run output folders
-hpc/                        # HPC job scripts (DeepSeek tunnel)
+hpc/                        # HPC job scripts (optional)
 ```
 
 ---
 
-## Installation
+## Installation (Ubuntu)
 
-### Requirements
-
-- Python 3.10+
-- conda (recommended) or venv
-- Node.js 18+
-- pandoc (for policy text preprocessing)
-- An active conda environment with the package installed
-
-### Python setup
+### System requirements
 
 ```bash
-# create and activate environment
-conda create -n privacy python=3.11
+# Node.js 18+ (via NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# pandoc (for policy text preprocessing)
+sudo apt-get install -y pandoc
+
+# Git (to clone tracker datasets)
+sudo apt-get install -y git
+```
+
+### Python environment
+
+Python 3.10+ is required. [Miniforge](https://github.com/conda-forge/miniforge) (conda-forge) is recommended:
+
+```bash
+# Download and install Miniforge (skip if conda/mamba already available)
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh -b -p ~/miniforge3
+~/miniforge3/bin/conda init bash
+source ~/.bashrc
+
+# Create and activate the project environment
+conda create -n privacy python=3.12 -y
 conda activate privacy
 
-# install the package + dependencies
+# Install the package and all dependencies
 pip install -e .
 
-# Crawl4AI uses Playwright for browser automation
+# Install Playwright browser (used by Crawl4AI for JavaScript-heavy pages)
 python -m playwright install chromium
+python -m playwright install-deps chromium
 ```
+
+> **Alternative (venv without conda)**
+> ```bash
+> python3 -m venv .venv
+> source .venv/bin/activate
+> pip install -e .
+> python -m playwright install chromium
+> python -m playwright install-deps chromium
+> ```
 
 ### Build tracker indexes
 
@@ -75,7 +99,7 @@ git clone https://github.com/duckduckgo/tracker-radar.git tracker-radar
 python scripts/build_tracker_radar_index.py \
   --tracker-radar-dir tracker-radar --out tracker_radar_index.json
 
-# Ghostery TrackerDB (optional, used as fallback)
+# Ghostery TrackerDB (optional, used as fallback in mixed mode)
 git clone https://github.com/ghostery/trackerdb trackerdb
 python scripts/build_trackerdb_index.py \
   --trackerdb-dir trackerdb --out trackerdb_index.json
@@ -91,23 +115,39 @@ npm install
 npm run dev
 ```
 
-The dashboard launches the scraper and annotator as subprocesses. If `python` on PATH is not the right environment, point to it explicitly:
+The dashboard launches the scraper and annotator as subprocesses. It auto-detects the active conda environment via `$CONDA_PREFIX`. If that is not set or points to the wrong environment, export the interpreter path explicitly:
 
 ```bash
 export PRIVACY_DATASET_PYTHON=/path/to/conda/envs/privacy/bin/python
+# example with miniforge default location:
+export PRIVACY_DATASET_PYTHON=~/miniforge3/envs/privacy/bin/python
+```
+
+You can add this export to your `~/.bashrc` or pass it when starting the dashboard:
+
+```bash
+PRIVACY_DATASET_PYTHON=~/miniforge3/envs/privacy/bin/python npm run dev
 ```
 
 ---
 
-## HPC tunnel (Stage 2 annotation)
+## LLM annotation (Stage 2)
 
-Stage 2 uses DeepSeek-R1-Distill-Llama-70B served by llama.cpp on a GPU node. Open the SSH tunnel before running annotation:
+Stage 2 annotation requires an OpenAI-compatible LLM API server listening on `http://localhost:8901`. The dashboard polls `/health` every 15 s and shows **Tunnel active / offline** status.
+
+**Option A — local llama.cpp or Ollama**
+
+Start any OpenAI-compatible server on port 8901 before running annotation.
+
+**Option B — remote GPU via SSH tunnel**
+
+If the model runs on a remote GPU node, forward the port locally:
 
 ```bash
-ssh -N -f -L 8901:<gpu-node>:8901 <user>@toubkal.hpc.um6p.ma
+ssh -N -f -L 8901:<gpu-node>:8901 <user>@<hpc-hostname>
 ```
 
-The dashboard polls `http://localhost:8901/health` every 15 s and shows **Tunnel active / offline** in the annotation controls. Annotation is blocked until the tunnel is reachable.
+Replace `<gpu-node>`, `<user>`, and `<hpc-hostname>` with your server details.
 
 ---
 
@@ -146,6 +186,7 @@ Each run stores its files under `outputs/output_<runid>/`:
 | `run_state.json` | Live run counters |
 | `explorer.jsonl` | Site + policy + third-party data for the Explorer tab |
 | `artifacts/<site>/policy.txt` | Extracted policy text |
+| `artifacts_ok/<site>/` | Symlinks to artifacts meeting quality criteria (English policy + ≥1 third-party policy) |
 | `artifacts/<site>/policy_statements.jsonl` | Annotated statements |
 
 ---
@@ -153,13 +194,19 @@ Each run stores its files under `outputs/output_<runid>/`:
 ## Troubleshooting
 
 **Dashboard cannot start the scraper**
-Set `PRIVACY_DATASET_PYTHON` to the full path of the Python interpreter in the correct conda environment.
+Set `PRIVACY_DATASET_PYTHON` to the full path of the Python interpreter in the correct environment (see [Running the dashboard](#running-the-dashboard) above).
+
+**`ModuleNotFoundError` for any package**
+Make sure you ran `pip install -e .` inside the activated conda/venv environment, and that the dashboard is using the same interpreter via `PRIVACY_DATASET_PYTHON`.
 
 **Annotation shows "Tunnel offline"**
-Start the SSH tunnel as shown above. The health check hits `http://localhost:8901/health`.
+Start a local or remote LLM server on port 8901. The health check hits `http://localhost:8901/health`.
 
 **No results in the Explorer tab**
 Make sure the run was started from the dashboard or used `--explorer-out` and `--emit-events` flags.
 
 **CrUX filter returns 403**
 Enable the Chrome UX Report API for your key in Google Cloud Console.
+
+**`playwright install` fails**
+Run `python -m playwright install-deps chromium` (requires sudo on some systems) to install OS-level browser dependencies.

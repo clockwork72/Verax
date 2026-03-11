@@ -240,7 +240,7 @@ export function SettingsView({
             <p className="mb-2 text-xs text-[var(--color-text)]">HPC Tunnel — DeepSeek-R1-70B</p>
             <p className="mb-3 text-[10px] text-[var(--muted-text)]">
               Stage 2 LLM annotation runs via SSH tunnel on port 8901. Start with:<br />
-              <code className="font-mono">ssh -N -f -L 8901:&lt;gpu-node&gt;:8901 soufiane.essahli@toubkal.hpc.um6p.ma</code>
+              <code className="font-mono">ssh -N -f -L 8901:&lt;gpu-node&gt;:8901 &lt;user&gt;@&lt;hpc-hostname&gt;</code>
             </p>
             <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
               tunnelStatus === 'online'

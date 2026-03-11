@@ -1,26 +1,64 @@
-import { ipcMain, app, BrowserWindow } from "electron";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
-import fs from "node:fs";
-import { spawn } from "node:child_process";
-const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
-process.env.APP_ROOT = path.join(__dirname$1, "..");
-const VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
-const MAIN_DIST = path.join(process.env.APP_ROOT, "dist-electron");
-const RENDERER_DIST = path.join(process.env.APP_ROOT, "dist");
-process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
-const REPO_ROOT = path.resolve(process.env.APP_ROOT, "..");
-let win;
-let scraperProcess = null;
-let annotatorProcess = null;
-const policyWindows = /* @__PURE__ */ new Set();
-const logWindows = /* @__PURE__ */ new Set();
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// electron/main.ts
+var main_exports = {};
+__export(main_exports, {
+  MAIN_DIST: () => MAIN_DIST,
+  RENDERER_DIST: () => RENDERER_DIST,
+  VITE_DEV_SERVER_URL: () => VITE_DEV_SERVER_URL
+});
+module.exports = __toCommonJS(main_exports);
+var import_electron = require("electron");
+var import_node_url = require("node:url");
+var import_node_path = __toESM(require("node:path"), 1);
+var import_node_fs = __toESM(require("node:fs"), 1);
+var import_node_child_process = require("node:child_process");
+var import_meta = {};
+var __dirname = import_node_path.default.dirname((0, import_node_url.fileURLToPath)(import_meta.url));
+process.env.APP_ROOT = import_node_path.default.join(__dirname, "..");
+var VITE_DEV_SERVER_URL = process.env["VITE_DEV_SERVER_URL"];
+var MAIN_DIST = import_node_path.default.join(process.env.APP_ROOT, "dist-electron");
+var RENDERER_DIST = import_node_path.default.join(process.env.APP_ROOT, "dist");
+process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? import_node_path.default.join(process.env.APP_ROOT, "public") : RENDERER_DIST;
+var REPO_ROOT = import_node_path.default.resolve(process.env.APP_ROOT, "..");
+var win;
+var scraperProcess = null;
+var annotatorProcess = null;
+var policyWindows = /* @__PURE__ */ new Set();
+var logWindows = /* @__PURE__ */ new Set();
 function getPythonCmd() {
   if (process.env.PRIVACY_DATASET_PYTHON) return process.env.PRIVACY_DATASET_PYTHON;
   const condaPrefix = process.env.CONDA_PREFIX;
   if (condaPrefix) {
-    const explicit = path.join(condaPrefix, "bin", "python");
-    if (fs.existsSync(explicit)) return explicit;
+    const explicit = import_node_path.default.join(condaPrefix, "bin", "python");
+    if (import_node_fs.default.existsSync(explicit)) return explicit;
   }
   return "python";
 }
@@ -31,11 +69,11 @@ function buildSubprocessEnv(extra = {}) {
   if (condaPrefix) {
     const envsIdx = condaPrefix.lastIndexOf("/envs/");
     if (envsIdx !== -1) {
-      baseBins.push(path.join(condaPrefix.slice(0, envsIdx), "bin"));
+      baseBins.push(import_node_path.default.join(condaPrefix.slice(0, envsIdx), "bin"));
     }
   }
   const mambaRoot = process.env.MAMBA_ROOT_PREFIX || process.env.CONDA_ROOT;
-  if (mambaRoot) baseBins.push(path.join(mambaRoot, "bin"));
+  if (mambaRoot) baseBins.push(import_node_path.default.join(mambaRoot, "bin"));
   if (baseBins.length > 0) {
     const currentPath = env.PATH || "";
     const existing = new Set(currentPath.split(":"));
@@ -52,16 +90,16 @@ function sendToRenderer(channel, payload) {
   }
 }
 function defaultPaths(outDir) {
-  const root = outDir ? path.resolve(REPO_ROOT, outDir) : path.join(REPO_ROOT, "outputs");
+  const root = outDir ? import_node_path.default.resolve(REPO_ROOT, outDir) : import_node_path.default.join(REPO_ROOT, "outputs");
   return {
     outDir: root,
-    resultsJsonl: path.join(root, "results.jsonl"),
-    summaryJson: path.join(root, "results.summary.json"),
-    stateJson: path.join(root, "run_state.json"),
-    explorerJsonl: path.join(root, "explorer.jsonl"),
-    artifactsDir: path.join(root, "artifacts"),
-    artifactsOkDir: path.join(root, "artifacts_ok"),
-    cruxCacheJson: path.join(root, "results.crux_cache.json")
+    resultsJsonl: import_node_path.default.join(root, "results.jsonl"),
+    summaryJson: import_node_path.default.join(root, "results.summary.json"),
+    stateJson: import_node_path.default.join(root, "run_state.json"),
+    explorerJsonl: import_node_path.default.join(root, "explorer.jsonl"),
+    artifactsDir: import_node_path.default.join(root, "artifacts"),
+    artifactsOkDir: import_node_path.default.join(root, "artifacts_ok"),
+    cruxCacheJson: import_node_path.default.join(root, "results.crux_cache.json")
   };
 }
 function parseJsonl(content, limit) {
@@ -175,25 +213,25 @@ function annotatorRateLimitArgs(modelName) {
   return [];
 }
 function getAuditStatePath(outDir) {
-  return path.join(defaultPaths(outDir).outDir, "audit_state.json");
+  return import_node_path.default.join(defaultPaths(outDir).outDir, "audit_state.json");
 }
 async function readAuditStateFile(filePath) {
-  if (!fs.existsSync(filePath)) {
+  if (!import_node_fs.default.existsSync(filePath)) {
     return { verifiedSites: [], urlOverrides: {} };
   }
   try {
-    const raw = await fs.promises.readFile(filePath, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(filePath, "utf-8");
     const parsed = JSON.parse(raw);
-    const verifiedRaw = Array.isArray(parsed == null ? void 0 : parsed.verifiedSites) ? parsed.verifiedSites : [];
+    const verifiedRaw = Array.isArray(parsed?.verifiedSites) ? parsed.verifiedSites : [];
     const verifiedSites = verifiedRaw.filter((value) => typeof value === "string" && value.trim().length > 0).map((value) => normalizeSiteKey(value));
-    const urlOverridesRaw = (parsed == null ? void 0 : parsed.urlOverrides) && typeof parsed.urlOverrides === "object" ? parsed.urlOverrides : {};
+    const urlOverridesRaw = parsed?.urlOverrides && typeof parsed.urlOverrides === "object" ? parsed.urlOverrides : {};
     const urlOverrides = {};
     for (const [key, value] of Object.entries(urlOverridesRaw)) {
       if (typeof value === "string" && value.trim().length > 0) {
         urlOverrides[normalizeSiteKey(key)] = value.trim();
       }
     }
-    return { verifiedSites, urlOverrides, updatedAt: parsed == null ? void 0 : parsed.updatedAt };
+    return { verifiedSites, urlOverrides, updatedAt: parsed?.updatedAt };
   } catch {
     return { verifiedSites: [], urlOverrides: {} };
   }
@@ -201,7 +239,7 @@ async function readAuditStateFile(filePath) {
 async function launchScraperProcess(args, extraEnv = {}) {
   const pythonCmd = getPythonCmd();
   try {
-    scraperProcess = spawn(pythonCmd, args, {
+    scraperProcess = (0, import_node_child_process.spawn)(pythonCmd, args, {
       cwd: REPO_ROOT,
       env: buildSubprocessEnv(extraEnv)
     });
@@ -240,7 +278,7 @@ async function launchScraperProcess(args, extraEnv = {}) {
 async function launchAnnotatorProcess(args, extraEnv = {}) {
   const pythonCmd = getPythonCmd();
   try {
-    annotatorProcess = spawn(pythonCmd, args, {
+    annotatorProcess = (0, import_node_child_process.spawn)(pythonCmd, args, {
       cwd: REPO_ROOT,
       env: buildSubprocessEnv(extraEnv)
     });
@@ -281,14 +319,14 @@ async function launchAnnotatorProcess(args, extraEnv = {}) {
 }
 async function getDirectorySize(dirPath) {
   let total = 0;
-  const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+  const entries = await import_node_fs.default.promises.readdir(dirPath, { withFileTypes: true });
   for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name);
+    const fullPath = import_node_path.default.join(dirPath, entry.name);
     if (entry.isDirectory()) {
       total += await getDirectorySize(fullPath);
     } else if (entry.isFile()) {
       try {
-        const stat = await fs.promises.stat(fullPath);
+        const stat = await import_node_fs.default.promises.stat(fullPath);
         total += stat.size;
       } catch {
         continue;
@@ -298,23 +336,23 @@ async function getDirectorySize(dirPath) {
   return total;
 }
 function createWindow() {
-  win = new BrowserWindow({
-    icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
+  win = new import_electron.BrowserWindow({
+    icon: import_node_path.default.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
-      preload: path.join(__dirname$1, "preload.mjs")
+      preload: import_node_path.default.join(__dirname, "preload.mjs")
     }
   });
   win.webContents.on("did-finish-load", () => {
-    win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
+    win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
   });
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(RENDERER_DIST, "index.html"));
+    win.loadFile(import_node_path.default.join(RENDERER_DIST, "index.html"));
   }
 }
 function createPolicyWindow(url) {
-  const policyWin = new BrowserWindow({
+  const policyWin = new import_electron.BrowserWindow({
     width: 1200,
     height: 800,
     title: "Policy Viewer",
@@ -337,7 +375,7 @@ function escapeHtml(value) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 function createLogWindow(content, title) {
-  const logWin = new BrowserWindow({
+  const logWin = new import_electron.BrowserWindow({
     width: 1100,
     height: 800,
     title: title || "Run logs",
@@ -380,59 +418,59 @@ function createLogWindow(content, title) {
   });
   return logWin;
 }
-ipcMain.handle("scraper:get-paths", (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:get-paths", (_event, outDir) => {
   return defaultPaths(outDir);
 });
-ipcMain.handle("scraper:read-summary", async (_event, filePath) => {
+import_electron.ipcMain.handle("scraper:read-summary", async (_event, filePath) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().summaryJson;
-    if (!fs.existsSync(target)) {
+    const target = filePath ? import_node_path.default.resolve(REPO_ROOT, filePath) : defaultPaths().summaryJson;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
-    const raw = await fs.promises.readFile(target, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(target, "utf-8");
     return { ok: true, data: JSON.parse(raw), path: target };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:read-state", async (_event, filePath) => {
+import_electron.ipcMain.handle("scraper:read-state", async (_event, filePath) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().stateJson;
-    if (!fs.existsSync(target)) {
+    const target = filePath ? import_node_path.default.resolve(REPO_ROOT, filePath) : defaultPaths().stateJson;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
-    const raw = await fs.promises.readFile(target, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(target, "utf-8");
     return { ok: true, data: JSON.parse(raw), path: target };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:read-explorer", async (_event, filePath, limit) => {
+import_electron.ipcMain.handle("scraper:read-explorer", async (_event, filePath, limit) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().explorerJsonl;
-    if (!fs.existsSync(target)) {
+    const target = filePath ? import_node_path.default.resolve(REPO_ROOT, filePath) : defaultPaths().explorerJsonl;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
-    const raw = await fs.promises.readFile(target, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(target, "utf-8");
     const data = target.endsWith(".jsonl") ? parseJsonl(raw, limit) : JSON.parse(raw);
     return { ok: true, data, path: target };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:read-results", async (_event, filePath, limit) => {
+import_electron.ipcMain.handle("scraper:read-results", async (_event, filePath, limit) => {
   try {
-    const target = filePath ? path.resolve(REPO_ROOT, filePath) : defaultPaths().resultsJsonl;
-    if (!fs.existsSync(target)) {
+    const target = filePath ? import_node_path.default.resolve(REPO_ROOT, filePath) : defaultPaths().resultsJsonl;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
-    const raw = await fs.promises.readFile(target, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(target, "utf-8");
     return { ok: true, data: parseJsonl(raw, limit), path: target };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:read-audit-state", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:read-audit-state", async (_event, outDir) => {
   try {
     const statePath = getAuditStatePath(outDir);
     const data = await readAuditStateFile(statePath);
@@ -441,15 +479,15 @@ ipcMain.handle("scraper:read-audit-state", async (_event, outDir) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle(
+import_electron.ipcMain.handle(
   "scraper:write-audit-state",
   async (_event, payload) => {
     try {
-      const statePath = getAuditStatePath(payload == null ? void 0 : payload.outDir);
-      const dirPath = path.dirname(statePath);
-      await fs.promises.mkdir(dirPath, { recursive: true });
-      const verifiedSites = Array.isArray(payload == null ? void 0 : payload.verifiedSites) ? payload.verifiedSites.filter((value) => typeof value === "string" && value.trim().length > 0).map((value) => normalizeSiteKey(value)) : [];
-      const urlOverridesRaw = (payload == null ? void 0 : payload.urlOverrides) || {};
+      const statePath = getAuditStatePath(payload?.outDir);
+      const dirPath = import_node_path.default.dirname(statePath);
+      await import_node_fs.default.promises.mkdir(dirPath, { recursive: true });
+      const verifiedSites = Array.isArray(payload?.verifiedSites) ? payload.verifiedSites.filter((value) => typeof value === "string" && value.trim().length > 0).map((value) => normalizeSiteKey(value)) : [];
+      const urlOverridesRaw = payload?.urlOverrides || {};
       const urlOverrides = {};
       for (const [site, url] of Object.entries(urlOverridesRaw)) {
         if (typeof url === "string" && url.trim().length > 0) {
@@ -461,38 +499,38 @@ ipcMain.handle(
         urlOverrides,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      await fs.promises.writeFile(statePath, JSON.stringify(nextState, null, 2), "utf-8");
+      await import_node_fs.default.promises.writeFile(statePath, JSON.stringify(nextState, null, 2), "utf-8");
       return { ok: true, data: nextState, path: statePath };
     } catch (error) {
       return { ok: false, error: String(error) };
     }
   }
 );
-ipcMain.handle("scraper:read-artifact-text", async (_event, options) => {
+import_electron.ipcMain.handle("scraper:read-artifact-text", async (_event, options) => {
   try {
-    const relativePath = options == null ? void 0 : options.relativePath;
+    const relativePath = options?.relativePath;
     if (!relativePath) {
       return { ok: false, error: "missing_relative_path" };
     }
-    const root = (options == null ? void 0 : options.outDir) ? path.resolve(REPO_ROOT, options.outDir) : defaultPaths().outDir;
-    const fullPath = path.resolve(root, relativePath);
-    const normalizedRoot = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    const root = options?.outDir ? import_node_path.default.resolve(REPO_ROOT, options.outDir) : defaultPaths().outDir;
+    const fullPath = import_node_path.default.resolve(root, relativePath);
+    const normalizedRoot = root.endsWith(import_node_path.default.sep) ? root : `${root}${import_node_path.default.sep}`;
     if (fullPath !== root && !fullPath.startsWith(normalizedRoot)) {
       return { ok: false, error: "path_outside_root" };
     }
-    if (!fs.existsSync(fullPath)) {
+    if (!import_node_fs.default.existsSync(fullPath)) {
       return { ok: false, error: "not_found", path: fullPath };
     }
-    const raw = await fs.promises.readFile(fullPath, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(fullPath, "utf-8");
     return { ok: true, data: raw, path: fullPath };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:folder-size", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:folder-size", async (_event, outDir) => {
   try {
-    const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    if (!fs.existsSync(target)) {
+    const target = outDir ? import_node_path.default.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
     const size = await getDirectorySize(target);
@@ -501,31 +539,31 @@ ipcMain.handle("scraper:folder-size", async (_event, outDir) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:list-runs", async (_event, baseOutDir) => {
+import_electron.ipcMain.handle("scraper:list-runs", async (_event, baseOutDir) => {
   try {
-    const root = baseOutDir ? path.resolve(REPO_ROOT, baseOutDir) : defaultPaths().outDir;
-    if (!fs.existsSync(root)) {
+    const root = baseOutDir ? import_node_path.default.resolve(REPO_ROOT, baseOutDir) : defaultPaths().outDir;
+    if (!import_node_fs.default.existsSync(root)) {
       return { ok: false, error: "not_found", path: root };
     }
-    const entries = await fs.promises.readdir(root, { withFileTypes: true });
+    const entries = await import_node_fs.default.promises.readdir(root, { withFileTypes: true });
     const runs = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const dir = path.join(root, entry.name);
-      const summaryPath = path.join(dir, "results.summary.json");
-      const statePath = path.join(dir, "run_state.json");
+      const dir = import_node_path.default.join(root, entry.name);
+      const summaryPath = import_node_path.default.join(dir, "results.summary.json");
+      const statePath = import_node_path.default.join(dir, "run_state.json");
       let summary = null;
       let state = null;
-      if (fs.existsSync(summaryPath)) {
+      if (import_node_fs.default.existsSync(summaryPath)) {
         try {
-          summary = JSON.parse(await fs.promises.readFile(summaryPath, "utf-8"));
+          summary = JSON.parse(await import_node_fs.default.promises.readFile(summaryPath, "utf-8"));
         } catch {
           summary = null;
         }
       }
-      if (fs.existsSync(statePath)) {
+      if (import_node_fs.default.existsSync(statePath)) {
         try {
-          state = JSON.parse(await fs.promises.readFile(statePath, "utf-8"));
+          state = JSON.parse(await import_node_fs.default.promises.readFile(statePath, "utf-8"));
         } catch {
           state = null;
         }
@@ -535,20 +573,20 @@ ipcMain.handle("scraper:list-runs", async (_event, baseOutDir) => {
       }
       let mtime = "";
       try {
-        const stat = await fs.promises.stat(dir);
+        const stat = await import_node_fs.default.promises.stat(dir);
         mtime = stat.mtime.toISOString();
       } catch {
         mtime = "";
       }
-      const runId = (summary == null ? void 0 : summary.run_id) || (state == null ? void 0 : state.run_id) || entry.name.replace(/^output_/, "");
+      const runId = summary?.run_id || state?.run_id || entry.name.replace(/^output_/, "");
       runs.push({
         runId,
         folder: entry.name,
-        outDir: path.relative(REPO_ROOT, dir),
+        outDir: import_node_path.default.relative(REPO_ROOT, dir),
         summary,
         state,
-        updated_at: (summary == null ? void 0 : summary.updated_at) || (state == null ? void 0 : state.updated_at) || mtime,
-        started_at: (summary == null ? void 0 : summary.started_at) || (state == null ? void 0 : state.started_at) || null
+        updated_at: summary?.updated_at || state?.updated_at || mtime,
+        started_at: summary?.started_at || state?.started_at || null
       });
     }
     runs.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
@@ -557,7 +595,7 @@ ipcMain.handle("scraper:list-runs", async (_event, baseOutDir) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:start", async (_event, options = {}) => {
+import_electron.ipcMain.handle("scraper:start", async (_event, options = {}) => {
   if (scraperProcess) {
     return { ok: false, error: "scraper_already_running" };
   }
@@ -568,7 +606,7 @@ ipcMain.handle("scraper:start", async (_event, options = {}) => {
     "--out",
     paths.resultsJsonl,
     "--artifacts-dir",
-    options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    options.artifactsDir ? import_node_path.default.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
     "--artifacts-ok-dir",
     paths.artifactsOkDir,
     "--emit-events",
@@ -586,16 +624,16 @@ ipcMain.handle("scraper:start", async (_event, options = {}) => {
     args.push("--tranco-date", options.trancoDate);
   }
   if (options.trackerRadarIndex) {
-    const trackerPath = path.resolve(REPO_ROOT, options.trackerRadarIndex);
-    if (fs.existsSync(trackerPath)) {
+    const trackerPath = import_node_path.default.resolve(REPO_ROOT, options.trackerRadarIndex);
+    if (import_node_fs.default.existsSync(trackerPath)) {
       args.push("--tracker-radar-index", trackerPath);
     } else {
       sendToRenderer("scraper:error", { message: "tracker_radar_index_not_found", path: trackerPath });
     }
   }
   if (options.trackerDbIndex) {
-    const trackerDbPath = path.resolve(REPO_ROOT, options.trackerDbIndex);
-    if (fs.existsSync(trackerDbPath)) {
+    const trackerDbPath = import_node_path.default.resolve(REPO_ROOT, options.trackerDbIndex);
+    if (import_node_fs.default.existsSync(trackerDbPath)) {
       args.push("--trackerdb-index", trackerDbPath);
     } else {
       sendToRenderer("scraper:error", { message: "trackerdb_index_not_found", path: trackerDbPath });
@@ -623,7 +661,7 @@ ipcMain.handle("scraper:start", async (_event, options = {}) => {
   }
   return { ok: true, paths };
 });
-ipcMain.handle("scraper:rerun-site", async (_event, options = {}) => {
+import_electron.ipcMain.handle("scraper:rerun-site", async (_event, options = {}) => {
   if (scraperProcess) {
     return { ok: false, error: "scraper_already_running" };
   }
@@ -643,7 +681,7 @@ ipcMain.handle("scraper:rerun-site", async (_event, options = {}) => {
     "--out",
     paths.resultsJsonl,
     "--artifacts-dir",
-    options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
+    options.artifactsDir ? import_node_path.default.resolve(REPO_ROOT, options.artifactsDir) : paths.artifactsDir,
     "--artifacts-ok-dir",
     paths.artifactsOkDir,
     "--emit-events",
@@ -659,16 +697,16 @@ ipcMain.handle("scraper:rerun-site", async (_event, options = {}) => {
     "1"
   ];
   if (options.trackerRadarIndex) {
-    const trackerPath = path.resolve(REPO_ROOT, options.trackerRadarIndex);
-    if (fs.existsSync(trackerPath)) {
+    const trackerPath = import_node_path.default.resolve(REPO_ROOT, options.trackerRadarIndex);
+    if (import_node_fs.default.existsSync(trackerPath)) {
       args.push("--tracker-radar-index", trackerPath);
     } else {
       sendToRenderer("scraper:error", { message: "tracker_radar_index_not_found", path: trackerPath });
     }
   }
   if (options.trackerDbIndex) {
-    const trackerDbPath = path.resolve(REPO_ROOT, options.trackerDbIndex);
-    if (fs.existsSync(trackerDbPath)) {
+    const trackerDbPath = import_node_path.default.resolve(REPO_ROOT, options.trackerDbIndex);
+    if (import_node_fs.default.existsSync(trackerDbPath)) {
       args.push("--trackerdb-index", trackerDbPath);
     } else {
       sendToRenderer("scraper:error", { message: "trackerdb_index_not_found", path: trackerDbPath });
@@ -692,22 +730,22 @@ ipcMain.handle("scraper:rerun-site", async (_event, options = {}) => {
   }
   return { ok: true, paths, site };
 });
-ipcMain.handle("scraper:stop", async () => {
+import_electron.ipcMain.handle("scraper:stop", async () => {
   if (!scraperProcess) return { ok: false, error: "not_running" };
   scraperProcess.kill();
   return { ok: true };
 });
-ipcMain.handle("scraper:open-log-window", async (_event, payload) => {
+import_electron.ipcMain.handle("scraper:open-log-window", async (_event, payload) => {
   try {
-    const content = (payload == null ? void 0 : payload.content) ?? "";
-    const title = payload == null ? void 0 : payload.title;
+    const content = payload?.content ?? "";
+    const title = payload?.title;
     createLogWindow(content, title);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:open-policy-window", async (_event, url) => {
+import_electron.ipcMain.handle("scraper:open-policy-window", async (_event, url) => {
   if (!url || typeof url !== "string") {
     return { ok: false, error: "invalid_url" };
   }
@@ -722,25 +760,25 @@ ipcMain.handle("scraper:open-policy-window", async (_event, url) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:clear-results", async (_event, options) => {
+import_electron.ipcMain.handle("scraper:clear-results", async (_event, options) => {
   if (scraperProcess) {
     return { ok: false, error: "scraper_running" };
   }
-  const paths = defaultPaths(options == null ? void 0 : options.outDir);
+  const paths = defaultPaths(options?.outDir);
   const targets = [
     paths.resultsJsonl,
     paths.summaryJson,
     paths.stateJson,
     paths.explorerJsonl,
-    path.join(paths.outDir, "audit_state.json")
+    import_node_path.default.join(paths.outDir, "audit_state.json")
   ];
   const removed = [];
   const missing = [];
   const errors = [];
   for (const target of targets) {
     try {
-      if (fs.existsSync(target)) {
-        await fs.promises.rm(target, { force: true });
+      if (import_node_fs.default.existsSync(target)) {
+        await import_node_fs.default.promises.rm(target, { force: true });
         removed.push(target);
       } else {
         missing.push(target);
@@ -749,10 +787,10 @@ ipcMain.handle("scraper:clear-results", async (_event, options) => {
       errors.push(`${target}: ${String(error)}`);
     }
   }
-  if (options == null ? void 0 : options.includeArtifacts) {
+  if (options?.includeArtifacts) {
     try {
-      if (fs.existsSync(paths.artifactsDir)) {
-        await fs.promises.rm(paths.artifactsDir, { recursive: true, force: true });
+      if (import_node_fs.default.existsSync(paths.artifactsDir)) {
+        await import_node_fs.default.promises.rm(paths.artifactsDir, { recursive: true, force: true });
         removed.push(paths.artifactsDir);
       }
     } catch (error) {
@@ -761,23 +799,23 @@ ipcMain.handle("scraper:clear-results", async (_event, options) => {
   }
   return { ok: errors.length === 0, removed, missing, errors, paths };
 });
-ipcMain.handle("scraper:delete-output", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:delete-output", async (_event, outDir) => {
   try {
-    const target = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    if (!fs.existsSync(target)) {
+    const target = outDir ? import_node_path.default.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
+    if (!import_node_fs.default.existsSync(target)) {
       return { ok: false, error: "not_found", path: target };
     }
-    await fs.promises.rm(target, { recursive: true, force: true });
+    await import_node_fs.default.promises.rm(target, { recursive: true, force: true });
     return { ok: true, path: target };
   } catch (error) {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:start-annotate", async (_event, options = {}) => {
+import_electron.ipcMain.handle("scraper:start-annotate", async (_event, options = {}) => {
   if (annotatorProcess) {
     return { ok: false, error: "annotator_already_running" };
   }
-  const artifactsDir = options.artifactsDir ? path.resolve(REPO_ROOT, options.artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
+  const artifactsDir = options.artifactsDir ? import_node_path.default.resolve(REPO_ROOT, options.artifactsDir) : import_node_path.default.join(defaultPaths().outDir, "artifacts");
   const args = [
     "-m",
     "privacy_research_dataset.annotate_cli",
@@ -804,7 +842,7 @@ ipcMain.handle("scraper:start-annotate", async (_event, options = {}) => {
   }
   return { ok: true, artifactsDir };
 });
-ipcMain.handle("scraper:annotate-site", async (_event, options = {}) => {
+import_electron.ipcMain.handle("scraper:annotate-site", async (_event, options = {}) => {
   if (annotatorProcess) {
     return { ok: false, error: "annotator_already_running" };
   }
@@ -842,12 +880,12 @@ ipcMain.handle("scraper:annotate-site", async (_event, options = {}) => {
   }
   return { ok: true, artifactsDir: paths.artifactsDir, site };
 });
-ipcMain.handle("scraper:stop-annotate", async () => {
+import_electron.ipcMain.handle("scraper:stop-annotate", async () => {
   if (!annotatorProcess) return { ok: false, error: "not_running" };
   annotatorProcess.kill();
   return { ok: true };
 });
-ipcMain.handle("scraper:check-tunnel", async () => {
+import_electron.ipcMain.handle("scraper:check-tunnel", async () => {
   const http = await import("node:http");
   return new Promise((resolve) => {
     const req = http.default.get(
@@ -865,42 +903,42 @@ ipcMain.handle("scraper:check-tunnel", async () => {
     req.on("error", (err) => resolve({ ok: false, error: err.message }));
   });
 });
-ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
+import_electron.ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
   try {
-    const targetDir = artifactsDir ? path.resolve(REPO_ROOT, artifactsDir) : path.join(defaultPaths().outDir, "artifacts");
-    if (!fs.existsSync(targetDir)) {
+    const targetDir = artifactsDir ? import_node_path.default.resolve(REPO_ROOT, artifactsDir) : import_node_path.default.join(defaultPaths().outDir, "artifacts");
+    if (!import_node_fs.default.existsSync(targetDir)) {
       return { ok: true, total_sites: 0, annotated_sites: 0, total_statements: 0, per_site: [] };
     }
     const countLines = async (filePath) => {
       try {
-        const content = await fs.promises.readFile(filePath, "utf-8");
+        const content = await import_node_fs.default.promises.readFile(filePath, "utf-8");
         return content.split("\n").filter((line) => line.trim()).length;
       } catch {
         return 0;
       }
     };
-    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true });
+    const entries = await import_node_fs.default.promises.readdir(targetDir, { withFileTypes: true });
     const perSite = [];
     const perTp = [];
     let totalStatements = 0;
     let tpTotalStatements = 0;
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const statementsPath = path.join(targetDir, entry.name, "policy_statements.jsonl");
-      const hasStatements = fs.existsSync(statementsPath);
+      const statementsPath = import_node_path.default.join(targetDir, entry.name, "policy_statements.jsonl");
+      const hasStatements = import_node_fs.default.existsSync(statementsPath);
       let count = 0;
       if (hasStatements) {
         count = await countLines(statementsPath);
         totalStatements += count;
       }
       perSite.push({ site: entry.name, count, has_statements: hasStatements });
-      const tpRoot = path.join(targetDir, entry.name, "third_party");
-      if (fs.existsSync(tpRoot)) {
-        const tpEntries = await fs.promises.readdir(tpRoot, { withFileTypes: true });
+      const tpRoot = import_node_path.default.join(targetDir, entry.name, "third_party");
+      if (import_node_fs.default.existsSync(tpRoot)) {
+        const tpEntries = await import_node_fs.default.promises.readdir(tpRoot, { withFileTypes: true });
         for (const tpEntry of tpEntries) {
           if (!tpEntry.isDirectory()) continue;
-          const tpStmtsPath = path.join(tpRoot, tpEntry.name, "policy_statements.jsonl");
-          const tpHas = fs.existsSync(tpStmtsPath);
+          const tpStmtsPath = import_node_path.default.join(tpRoot, tpEntry.name, "policy_statements.jsonl");
+          const tpHas = import_node_fs.default.existsSync(tpStmtsPath);
           let tpCount = 0;
           if (tpHas) {
             tpCount = await countLines(tpStmtsPath);
@@ -927,28 +965,28 @@ ipcMain.handle("scraper:annotation-stats", async (_event, artifactsDir) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:count-ok-artifacts", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:count-ok-artifacts", async (_event, outDir) => {
   try {
     const paths = defaultPaths(outDir);
     const okDir = paths.artifactsOkDir;
-    if (!fs.existsSync(okDir)) {
+    if (!import_node_fs.default.existsSync(okDir)) {
       return { ok: true, count: 0, sites: [], path: okDir };
     }
-    const entries = await fs.promises.readdir(okDir, { withFileTypes: true });
+    const entries = await import_node_fs.default.promises.readdir(okDir, { withFileTypes: true });
     const sites = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name);
     return { ok: true, count: sites.length, sites, path: okDir };
   } catch (error) {
     return { ok: false, error: String(error), count: 0, sites: [] };
   }
 });
-ipcMain.handle("scraper:read-tp-cache", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:read-tp-cache", async (_event, outDir) => {
   try {
-    const root = outDir ? path.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
-    const cachePath = path.join(root, "results.tp_cache.json");
-    if (!fs.existsSync(cachePath)) {
+    const root = outDir ? import_node_path.default.resolve(REPO_ROOT, outDir) : defaultPaths().outDir;
+    const cachePath = import_node_path.default.join(root, "results.tp_cache.json");
+    if (!import_node_fs.default.existsSync(cachePath)) {
       return { ok: false, error: "not_found", path: cachePath };
     }
-    const raw = await fs.promises.readFile(cachePath, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(cachePath, "utf-8");
     const data = JSON.parse(raw);
     let total = 0;
     let fetched = 0;
@@ -969,14 +1007,14 @@ ipcMain.handle("scraper:read-tp-cache", async (_event, outDir) => {
     return { ok: false, error: String(error) };
   }
 });
-ipcMain.handle("scraper:crux-cache-stats", async (_event, outDir) => {
+import_electron.ipcMain.handle("scraper:crux-cache-stats", async (_event, outDir) => {
   try {
     const paths = defaultPaths(outDir);
     const cachePath = paths.cruxCacheJson;
-    if (!fs.existsSync(cachePath)) {
+    if (!import_node_fs.default.existsSync(cachePath)) {
       return { ok: true, count: 0, present: 0, absent: 0, path: cachePath };
     }
-    const raw = await fs.promises.readFile(cachePath, "utf-8");
+    const raw = await import_node_fs.default.promises.readFile(cachePath, "utf-8");
     const data = JSON.parse(raw);
     const entries = Object.values(data);
     const present = entries.filter(Boolean).length;
@@ -986,20 +1024,21 @@ ipcMain.handle("scraper:crux-cache-stats", async (_event, outDir) => {
     return { ok: false, error: String(error), count: 0, present: 0, absent: 0 };
   }
 });
-app.on("window-all-closed", () => {
+import_electron.app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    app.quit();
+    import_electron.app.quit();
     win = null;
   }
 });
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+import_electron.app.on("activate", () => {
+  if (import_electron.BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
 });
-app.whenReady().then(createWindow);
-export {
+import_electron.app.whenReady().then(createWindow);
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
   MAIN_DIST,
   RENDERER_DIST,
   VITE_DEV_SERVER_URL
-};
+});

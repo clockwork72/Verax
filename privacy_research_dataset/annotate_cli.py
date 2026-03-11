@@ -374,7 +374,7 @@ async def _run(args: argparse.Namespace) -> None:
         warn(
             "Cannot reach DeepSeek model at http://localhost:8901/health.\n"
             "Start the SSH tunnel first:\n"
-            "  ssh -N -f -L 8901:<gpu-node>:8901 soufiane.essahli@toubkal.hpc.um6p.ma\n"
+            "  ssh -N -f -L 8901:<gpu-node>:8901 <user>@<hpc-hostname>\n"
             "Then re-run the annotator."
         )
         return
