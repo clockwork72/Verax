@@ -1,150 +1,62 @@
-# Privacy Research Dataset
+# Privacy Research Dataset: HPC Branch Guide
 
-A research pipeline that crawls websites, discovers and extracts their privacy policies, maps observed third-party trackers to known entities, and annotates policy text with structured statements using a local LLM. An Electron dashboard provides a full UI for launching, monitoring, and inspecting runs.
+This branch is configured for Toubkal-first operation.
+The scraper runtime lives on the cluster. The dashboard stays on your workstation and talks to the cluster through an SSH tunnel on port `8910`.
 
----
+## How It Works
 
-## What it does
+The runtime is split into two parts:
 
-**Stage 1 — Scraping**
-- Fetches the home page of each site and discovers its first-party privacy policy URL
-- Extracts clean policy text via Trafilatura / Readability
-- Observes third-party network requests and maps domains to tracker entities (via DuckDuckGo Tracker Radar or Ghostery TrackerDB)
-- Fetches and extracts third-party policy text where available
-- Deduplicates artifacts: if two sites share the same policy URL, the text is scraped and cleaned once
+- Local workstation:
+  - Electron dashboard in `dashboard/`
+  - SSH tunnel bound to `127.0.0.1:8910`
+  - Optional LLM endpoint for annotation on `127.0.0.1:8901`
+- Toubkal cluster:
+  - Slurm orchestrator job in [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
+  - Control API in [`privacy_research_dataset/hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py)
+  - PostgreSQL container started through Apptainer
+  - Scraper and annotator subprocesses launched by the control API
 
-**Stage 2 — LLM Annotation**
-- Preprocesses policy text into chunks (pandoc AST → overlapping token windows)
-- Runs iterative extraction with a local LLM served via an OpenAI-compatible API (default: port 8901)
-- Produces structured statements: `action`, `data`, `processor`, `purpose`, `context`, `prohibition`
-- Streams chain-of-thought reasoning live to the dashboard UI
+Control flow:
 
-**Dashboard (Electron + React)**
-- Launch and monitor Stage 1 scrapes with live progress, ETA, and log window
-- Run Stage 2 annotation with live streaming: reasoning panel, extraction output, and color-coded entity chips
-- Explore results by site, policy, and third-party entity
-- Audit workspace for per-site re-scraping and re-annotation
-- Run history with per-folder load/delete
-- Settings: themes, CrUX filter toggle, entity filter, mapping mode
+1. Run [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh) from your workstation.
+2. It syncs the scraper payload to Toubkal under:
+   `/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
+3. It installs or refreshes the remote Python runtime.
+4. It submits the Slurm orchestrator job.
+5. Once the job is running, it opens the SSH tunnel on local port `8910`.
+6. The dashboard connects to `http://127.0.0.1:8910` and stays locked until the remote API and database are healthy.
 
----
+## Cluster Layout
 
-## Repository layout
+Remote root:
 
-```
-privacy_research_dataset/   # core Python package (scraper + annotator)
-scripts/                    # bootstrap, verification, index builders, Tranco helpers
-tracker_radar_index.json    # prebuilt DuckDuckGo Tracker Radar index
-trackerdb_index.json        # prebuilt Ghostery TrackerDB index
-tracker-radar/              # optional source checkout for rebuilding indexes
-trackerdb/                  # optional source checkout for rebuilding indexes
-dashboard/                  # Electron + Vite UI, always run locally
-outputs/                    # per-run output folders
-hpc/                        # HPC job scripts (optional)
-hpc/scraper/                # Toubkal Slurm orchestrator + deployment helpers
-```
+`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
 
----
+Important paths:
 
-## Installation (Ubuntu)
+- `repo/`: synced scraper code
+- `runtime/`: PostgreSQL data, Apptainer image, Playwright browsers
+- `logs/`: Slurm stdout/stderr logs
+- `repo/outputs/`: scrape outputs and artifacts
 
-### Fast path
+Only the scraper payload is deployed remotely. The dashboard is not copied to the cluster.
 
-```bash
-git clone <repo-url>
-cd <repo-dir>
-./scripts/bootstrap_ubuntu.sh
-source .venv/bin/activate
-export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
-./scripts/verify_setup.sh
-```
+## What You Should Do
 
-`bootstrap_ubuntu.sh` does the full first-run setup on Ubuntu:
-- installs required system packages (`python3-venv`, `pandoc`, `git`, Node.js 20 if needed)
-- creates `.venv/`
-- installs the Python package with dev tools
-- installs the Playwright Chromium browser and its Linux dependencies
-- runs `npm ci` in [`dashboard/`](/mnt/storage/projects/dashboard)
+### 1. Start the remote stack
 
-`verify_setup.sh` then checks the Python CLIs, runs the test suite, and builds the dashboard.
-
-### Manual setup
-
-If you prefer to do the steps yourself instead of using the bootstrap script:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y python3 python3-venv python3-pip git curl pandoc
-
-# Install Node.js 20 if node is missing or too old
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-pip install -e ".[dev]"
-python -m playwright install chromium
-sudo .venv/bin/python -m playwright install-deps chromium
-
-cd dashboard
-npm ci
-cd ..
-```
-
-### Tracker indexes
-
-This repository already ships with working index files:
-- [`tracker_radar_index.json`](/mnt/storage/projects/tracker_radar_index.json)
-- [`trackerdb_index.json`](/mnt/storage/projects/trackerdb_index.json)
-
-You do not need to clone external tracker repositories for normal use.
-
-If you want to rebuild the indexes from upstream sources, clone those repositories into a separate directory to avoid path conflicts with the repository checkout:
-
-```bash
-mkdir -p external
-git clone https://github.com/duckduckgo/tracker-radar.git external/tracker-radar
-python scripts/build_tracker_radar_index.py \
-  --tracker-radar-dir external/tracker-radar \
-  --out tracker_radar_index.json
-
-git clone https://github.com/ghostery/trackerdb external/trackerdb
-python scripts/build_trackerdb_index.py \
-  --trackerdb-dir external/trackerdb \
-  --out trackerdb_index.json
-```
-
----
-
-## Running the dashboard
-
-```bash
-source .venv/bin/activate
-export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
-cd dashboard
-npm run dev
-```
-
-## HPC cluster mode
-
-For the `hpc-v` branch, the scraper stack can be migrated to Toubkal and exposed locally over SSH tunnel port `8910`.
-The dashboard stays on your workstation. Only the scraper control plane and its Python runtime are deployed to the cluster.
+From the repository root on your workstation:
 
 ```bash
 hpc/scraper/launch_remote.sh
 ```
 
-That helper syncs only the HPC payload to:
+This is the main entrypoint for the branch.
 
-`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
+### 2. Start the local dashboard
 
-Remote deployment includes `privacy_research_dataset/`, `scripts/`, `hpc/`, `pyproject.toml`, the tracker indexes, and the top-level `README.md`.
-It also prunes redundant remote copies of `dashboard/`, `tests/`, and the local tracker source checkouts.
-
-After the sync, the helper installs the remote Python runtime, submits the Slurm orchestrator job, and opens the local bridge that the Electron dashboard probes at `http://127.0.0.1:8910`.
-
-Run the dashboard locally from the repository virtualenv:
+In a separate terminal:
 
 ```bash
 cd dashboard
@@ -152,123 +64,113 @@ export PRIVACY_DATASET_PYTHON="$PWD/../.venv/bin/python"
 npm run dev
 ```
 
----
+The dashboard should remain on the launcher until:
 
-## LLM annotation (Stage 2)
+- the SSH tunnel is up
+- the remote control API answers
+- PostgreSQL is ready inside the Slurm job
 
-Stage 2 annotation requires an OpenAI-compatible LLM API server listening on `http://localhost:8901`. The dashboard polls `/health` every 15 s and shows **Tunnel active / offline** status.
+### 3. Launch remote scrapes from the dashboard
 
-**Option A — local llama.cpp or Ollama**
+Use the launcher view to start runs.
+The dashboard sends commands to the remote control plane, not to local scraper subprocesses.
 
-Start any OpenAI-compatible server on port 8901 before running annotation.
+Outputs are written remotely under:
 
-**Option B — remote GPU via SSH tunnel**
+`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo/outputs`
 
-If the model runs on a remote GPU node, forward the port locally:
+### 4. Use annotation only when the LLM endpoint is available
 
-```bash
-ssh -N -f -L 8901:<gpu-node>:8901 <user>@<hpc-hostname>
-```
+Annotation expects an OpenAI-compatible endpoint on local port `8901`.
+That can be:
 
-Replace `<gpu-node>`, `<user>`, and `<hpc-hostname>` with your server details.
+- local on your workstation
+- forwarded from another remote node through SSH
 
----
+If the LLM endpoint is down, scraping can still work, but annotation should stay unused.
 
-## CLI usage (without dashboard)
+## Slurm Design
 
-**Stage 1 — scrape**
+The orchestrator job is intentionally small so it starts fast:
 
-```bash
-privacy-dataset \
-  --tranco-top 100 \
-  --tranco-date 2026-01-01 \
-  --tracker-radar-index tracker_radar_index.json \
-  --trackerdb-index trackerdb_index.json \
-  --out outputs/results.jsonl \
-  --artifacts-dir outputs/artifacts
-```
+- partition: `compute`
+- qos: `intr`
+- account: `vr_outsec-vh2sz1t4fks-default-cpu`
+- tasks: `1`
+- cpus per task: `2`
+- memory: `6G`
+- walltime: `00:10:00`
 
-For large runs (high concurrency / many sites), enable resource telemetry and bounded cache behavior:
+The orchestrator itself does not perform the full scrape workload directly. It provides the remote control plane, starts PostgreSQL, and launches scraper or annotator subprocesses when requested by the dashboard.
 
-```bash
-privacy-dataset \
-  ... \
-  --resource-monitor \
-  --resource-sample-sec 3 \
-  --resource-tracemalloc \
-  --resource-monitor-out outputs/resource_metrics.jsonl \
-  --policy-cache-max-entries 2000 \
-  --tp-cache-flush-entries 25
-```
+## Files That Matter In This Branch
 
-**Stage 2 — annotate**
+- [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
+  - Syncs the remote payload, prunes redundant files, installs runtime, submits Slurm, opens the tunnel.
+- [`hpc/scraper/install_remote.sh`](/mnt/storage/projects/hpc/scraper/install_remote.sh)
+  - Creates the remote venv, installs the package, installs Playwright Chromium, and pulls the PostgreSQL Apptainer image.
+- [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
+  - Slurm entrypoint for the control plane job.
+- [`privacy_research_dataset/hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py)
+  - Remote API, PostgreSQL lifecycle, scraper launch, annotator launch, event polling.
+- [`dashboard/electron/main.ts`](/mnt/storage/projects/dashboard/electron/main.ts)
+  - Local bridge client that talks to `127.0.0.1:8910`.
 
-```bash
-privacy-dataset-annotate \
-  --artifacts-dir outputs/artifacts \
-  --concurrency 3
-```
+## Outputs
 
-To verify the local environment before a real run:
+Each remote run writes into its output directory under `repo/outputs/`.
+Typical files are:
 
-```bash
-./scripts/verify_setup.sh
-```
-
-To package the Electron app after the regular dashboard build succeeds:
-
-```bash
-cd dashboard
-npm run package
-```
-
----
-
-## Output structure
-
-Each run stores its files under `outputs/output_<runid>/`:
-
-| File | Contents |
-|---|---|
-| `results.jsonl` | Per-site scrape results |
-| `results.summary.json` | Aggregated counts and mapping stats |
-| `run_state.json` | Live run counters |
-| `explorer.jsonl` | Site + policy + third-party data for the Explorer tab |
-| `artifacts/<site>/policy.txt` | Extracted policy text |
-| `artifacts_ok/<site>/` | Symlinks to artifacts meeting quality criteria (English policy + ≥1 third-party policy) |
-| `artifacts/<site>/policy_statements.jsonl` | Annotated statements |
-
----
+- `results.jsonl`
+- `results.summary.json`
+- `run_state.json`
+- `explorer.jsonl`
+- `dashboard_run_manifest.json`
+- `audit_state.json`
+- `artifacts/`
+- `artifacts_ok/`
 
 ## Troubleshooting
 
-**Dashboard cannot start the scraper**
-Set `PRIVACY_DATASET_PYTHON` to the repository virtualenv interpreter:
+### Tunnel is down
 
-```bash
-export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
-```
-
-**`ModuleNotFoundError` for any package**
 Run:
 
 ```bash
-./scripts/bootstrap_ubuntu.sh
-./scripts/verify_setup.sh
+hpc/scraper/launch_remote.sh
 ```
 
-**Annotation shows "Tunnel offline"**
-Start a local or remote LLM server on port 8901. The health check hits `http://localhost:8901/health`.
+The dashboard should not be used until port `8910` is back and the launcher reports the bridge as healthy.
 
-**No results in the Explorer tab**
-Make sure the run was started from the dashboard or used `--explorer-out` and `--emit-events` flags.
+### Dashboard stays locked
 
-**CrUX filter returns 403**
-Enable the Chrome UX Report API for your key in Google Cloud Console.
+Check:
 
-**`playwright install` fails**
-Run:
+- the SSH tunnel is alive
+- the Slurm orchestrator job is running
+- the remote API answers on `/health`
+- PostgreSQL came up inside the allocation
 
-```bash
-sudo .venv/bin/python -m playwright install-deps chromium
-```
+### Scrape starts and fails immediately
+
+Check:
+
+- the remote runtime exists under `.../scraper/.venv`
+- Playwright browsers exist under `.../scraper/runtime/playwright-browsers`
+- the orchestrator environment exports `PLAYWRIGHT_BROWSERS_PATH`
+
+### Annotation is unavailable
+
+Check:
+
+- an OpenAI-compatible endpoint is reachable on `127.0.0.1:8901`
+- any required SSH forwarding for the model endpoint is active
+
+## Summary
+
+For this branch, the operating model is simple:
+
+1. Start the remote stack with `hpc/scraper/launch_remote.sh`.
+2. Run the dashboard locally.
+3. Wait for the bridge to go healthy.
+4. Launch and monitor remote runs through the dashboard.
