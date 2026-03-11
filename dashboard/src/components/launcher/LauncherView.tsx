@@ -104,6 +104,10 @@ type LauncherViewProps = {
   bridgeCheckedAt?: string
   bridgeHealthyAt?: string
   bridgeFailures?: number
+  bridgeActionBusy?: 'diagnose' | 'repair' | null
+  bridgeActionMessage?: string
+  onDiagnoseBridge?: () => void
+  onRepairBridge?: () => void
   workspaceReady?: boolean
   llmModel?: string
   latestStreamEvent?: AnnotatorStreamEvent | null
@@ -157,6 +161,10 @@ export function LauncherView({
   bridgeCheckedAt = 'never',
   bridgeHealthyAt = 'never',
   bridgeFailures = 0,
+  bridgeActionBusy = null,
+  bridgeActionMessage,
+  onDiagnoseBridge,
+  onRepairBridge,
   workspaceReady = false,
   llmModel = 'openai/local',
   latestStreamEvent = null,
@@ -303,12 +311,33 @@ export function LauncherView({
               <code className="rounded-lg border border-[var(--border-soft)] bg-black/30 px-2.5 py-1 font-mono">
                 hpc/scraper/launch_remote.sh
               </code>
+              <button
+                className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px]"
+                onClick={onDiagnoseBridge}
+                disabled={bridgeActionBusy !== null}
+              >
+                {bridgeActionBusy === 'diagnose' ? 'Diagnosing...' : 'Diagnose'}
+              </button>
+              <button
+                className={`focusable rounded-full px-3 py-1 text-[11px] ${
+                  tunnelStatus === 'online'
+                    ? 'border border-[var(--border-soft)] text-[var(--muted-text)]'
+                    : 'border border-amber-500/50 text-amber-300'
+                }`}
+                onClick={onRepairBridge}
+                disabled={bridgeActionBusy !== null || tunnelStatus === 'checking' || tunnelStatus === 'online'}
+              >
+                {bridgeActionBusy === 'repair' ? 'Repairing...' : 'Repair bridge'}
+              </button>
               {bridgeNode && <span>Node {bridgeNode}</span>}
               {bridgeCurrentOutDir && <span>Remote out {bridgeCurrentOutDir}</span>}
               <span>Checked {bridgeCheckedAt}</span>
               <span>Last healthy {bridgeHealthyAt}</span>
               {bridgeFailures > 0 && tunnelStatus !== 'online' && <span>{bridgeFailures} missed heartbeat{bridgeFailures > 1 ? 's' : ''}</span>}
             </div>
+            {bridgeActionMessage && (
+              <p className="mt-3 text-[11px] text-[var(--muted-text)]">{bridgeActionMessage}</p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-text)]">
             <button

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import net from 'node:net'
@@ -10,6 +11,8 @@ process.env.APP_ROOT = path.join(__dirname, '..')
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
 export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
+const REPO_ROOT = path.resolve(process.env.APP_ROOT, '..')
+const SCRAPER_SCRIPTS_ROOT = path.join(REPO_ROOT, 'hpc', 'scraper')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
@@ -87,6 +90,56 @@ function ensureHpcPoller() {
       }
     }
   }, 1500)
+}
+
+type LocalScriptResult = {
+  ok: boolean
+  code: number
+  command: string
+  stdout: string
+  stderr: string
+  error?: string
+  hint?: string
+}
+
+async function runLocalScript(scriptName: string, args: string[] = [], timeoutMs = 30000): Promise<LocalScriptResult> {
+  const scriptPath = path.join(SCRAPER_SCRIPTS_ROOT, scriptName)
+  const command = [scriptPath, ...args].join(' ')
+  return await new Promise((resolve) => {
+    execFile(
+      scriptPath,
+      args,
+      {
+        cwd: REPO_ROOT,
+        timeout: timeoutMs,
+        env: {
+          ...process.env,
+          SSH_ASKPASS_REQUIRE: 'never',
+        },
+        maxBuffer: 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        const combined = `${stdout}\n${stderr}`.toLowerCase()
+        let hint: string | undefined
+        if (combined.includes('permission denied') || combined.includes('ssh_askpass')) {
+          hint = 'SSH authentication was required. Run the repair from a terminal or establish SSH auth first.'
+        } else if (combined.includes('could not resolve a running scraper-orch node')) {
+          hint = 'No running scraper orchestrator was found. Start or verify the Slurm job first.'
+        } else if (combined.includes('still not answering')) {
+          hint = 'The tunnel was reopened, but the remote orchestrator did not answer on /health.'
+        }
+        resolve({
+          ok: !error,
+          code: typeof (error as any)?.code === 'number' ? (error as any).code : 0,
+          command,
+          stdout,
+          stderr,
+          error: error ? String(error.message || error) : undefined,
+          hint,
+        })
+      }
+    )
+  })
 }
 
 function stopHpcPoller() {
@@ -348,6 +401,22 @@ ipcMain.handle('scraper:check-tunnel', async () => {
       ...(status?.ok ? status : {}),
       checked_at: new Date().toISOString(),
     },
+  }
+})
+
+ipcMain.handle('scraper:diagnose-bridge', async () => {
+  return await runLocalScript('check_bridge.sh')
+})
+
+ipcMain.handle('scraper:repair-bridge', async () => {
+  const repair = await runLocalScript('attach_tunnel.sh', [], 45000)
+  if (!repair.ok) {
+    return repair
+  }
+  const health = await hpcRequest('/health')
+  return {
+    ...repair,
+    health_ok: Boolean(health?.ok),
   }
 })
 

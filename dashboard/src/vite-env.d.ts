@@ -74,6 +74,17 @@ type HpcBridgeStatus = {
   tunnel_state?: 'stale' | 'offline'
 }
 
+type BridgeScriptResult = {
+  ok: boolean
+  code?: number
+  command?: string
+  stdout?: string
+  stderr?: string
+  error?: string
+  hint?: string
+  health_ok?: boolean
+}
+
 declare global {
   interface Window {
     scraper?: {
@@ -110,6 +121,8 @@ declare global {
       onAnnotatorLog: (callback: (event: any) => void) => void
       onAnnotatorExit: (callback: (event: any) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
+      diagnoseBridge: () => Promise<BridgeScriptResult>
+      repairBridge: () => Promise<BridgeScriptResult>
     }
   }
 }

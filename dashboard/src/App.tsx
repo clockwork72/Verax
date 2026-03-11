@@ -83,6 +83,17 @@ type BridgeSnapshot = {
   tunnel_state?: 'stale' | 'offline'
 }
 
+type BridgeScriptResult = {
+  ok: boolean
+  code?: number
+  command?: string
+  stdout?: string
+  stderr?: string
+  error?: string
+  hint?: string
+  health_ok?: boolean
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
   const [showExtractionMethod, setShowExtractionMethod] = useState<boolean>(() => {
@@ -129,6 +140,8 @@ function App() {
   const [bridgeFailures, setBridgeFailures] = useState(0)
   const [bridgeCheckedAt, setBridgeCheckedAt] = useState<number | null>(null)
   const [bridgeHealthyAt, setBridgeHealthyAt] = useState<number | null>(null)
+  const [bridgeActionBusy, setBridgeActionBusy] = useState<'diagnose' | 'repair' | null>(null)
+  const [bridgeActionMessage, setBridgeActionMessage] = useState<string | null>(null)
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
@@ -140,35 +153,36 @@ function App() {
   const annotateLogsRef = useRef<string[]>([])
   const llmModelRef = useRef(llmModel)
 
+  const refreshBridgeStatus = useCallback(async () => {
+    if (!window.scraper?.checkTunnel) return
+    const checkedAt = Date.now()
+    const res = await window.scraper.checkTunnel()
+    setBridgeCheckedAt(checkedAt)
+    if (res?.ok) {
+      setBackendStatus(res.data || null)
+      setTunnelStatus('online')
+      setBridgeFailures(0)
+      setBridgeHealthyAt(checkedAt)
+      return
+    }
+    setBackendStatus(res?.data || null)
+    setBridgeFailures((prev) => {
+      const next = prev + 1
+      if (res?.data?.local_port_listening) {
+        setTunnelStatus('degraded')
+        return next
+      }
+      setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
+      return next
+    })
+  }, [bridgeHealthyAt])
+
   // Poll the SSH-backed bridge and avoid tearing the UI down on a single missed heartbeat.
   useEffect(() => {
-    const check = async () => {
-      if (!window.scraper?.checkTunnel) return
-      const checkedAt = Date.now()
-      const res = await window.scraper.checkTunnel()
-      setBridgeCheckedAt(checkedAt)
-      if (res?.ok) {
-        setBackendStatus(res.data || null)
-        setTunnelStatus('online')
-        setBridgeFailures(0)
-        setBridgeHealthyAt(checkedAt)
-        return
-      }
-      setBackendStatus(res?.data || null)
-      setBridgeFailures((prev) => {
-        const next = prev + 1
-        if (res?.data?.local_port_listening) {
-          setTunnelStatus('degraded')
-          return next
-        }
-        setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
-        return next
-      })
-    }
-    check()
-    const id = setInterval(check, 5_000)
+    void refreshBridgeStatus()
+    const id = setInterval(() => { void refreshBridgeStatus() }, 5_000)
     return () => clearInterval(id)
-  }, [bridgeHealthyAt])
+  }, [refreshBridgeStatus])
 
   const dashboardLocked = (
     tunnelStatus === 'checking'
@@ -1067,6 +1081,57 @@ function App() {
     await window.scraper.openLogWindow(content, 'Run logs')
   }
 
+  const formatBridgeScriptOutput = useCallback((title: string, result: BridgeScriptResult) => {
+    return [
+      title,
+      '',
+      result.command ? `Command: ${result.command}` : null,
+      typeof result.code === 'number' ? `Exit code: ${result.code}` : null,
+      result.hint ? `Hint: ${result.hint}` : null,
+      result.error ? `Error: ${result.error}` : null,
+      '',
+      'STDOUT:',
+      result.stdout?.trim() || '(empty)',
+      '',
+      'STDERR:',
+      result.stderr?.trim() || '(empty)',
+    ].filter(Boolean).join('\n')
+  }, [])
+
+  const diagnoseBridge = useCallback(async () => {
+    if (!window.scraper?.diagnoseBridge || !window.scraper?.openLogWindow) return
+    setBridgeActionBusy('diagnose')
+    setBridgeActionMessage('Running bridge diagnostics...')
+    const result = await window.scraper.diagnoseBridge()
+    await window.scraper.openLogWindow(formatBridgeScriptOutput('Bridge diagnostics', result), 'Bridge diagnostics')
+    setBridgeActionBusy(null)
+    setBridgeActionMessage(
+      result.ok
+        ? 'Bridge diagnostics completed.'
+        : result.hint || 'Bridge diagnostics found a problem. Review the diagnostics window.'
+    )
+    await refreshBridgeStatus()
+  }, [formatBridgeScriptOutput, refreshBridgeStatus])
+
+  const repairBridge = useCallback(async () => {
+    if (!window.scraper?.repairBridge || !window.scraper?.openLogWindow) return
+    setBridgeActionBusy('repair')
+    setBridgeActionMessage('Repairing bridge tunnel...')
+    const result = await window.scraper.repairBridge()
+    if (!result.ok || !result.health_ok) {
+      await window.scraper.openLogWindow(formatBridgeScriptOutput('Bridge repair', result), 'Bridge repair')
+    }
+    setBridgeActionBusy(null)
+    setBridgeActionMessage(
+      result.ok
+        ? result.health_ok
+          ? 'Bridge repaired and health probe is responding.'
+          : result.hint || 'Tunnel reopened, but the orchestrator is still not answering.'
+        : result.hint || 'Bridge repair failed. Review the bridge repair log.'
+    )
+    await refreshBridgeStatus()
+  }, [formatBridgeScriptOutput, refreshBridgeStatus])
+
   const pageTitle = {
     launcher: 'Scraper Launcher',
     audit: 'Audit Workspace',
@@ -1132,6 +1197,10 @@ function App() {
             bridgeCheckedAt={formatAgeLabel(bridgeCheckedAt)}
             bridgeHealthyAt={formatAgeLabel(bridgeHealthyAt)}
             bridgeFailures={bridgeFailures}
+            bridgeActionBusy={bridgeActionBusy}
+            bridgeActionMessage={bridgeActionMessage || undefined}
+            onDiagnoseBridge={diagnoseBridge}
+            onRepairBridge={repairBridge}
             workspaceReady={workspaceReady}
             llmModel={llmModel}
             latestStreamEvent={latestStreamEvent}
@@ -1286,6 +1355,10 @@ function App() {
             bridgeCheckedAt={formatAgeLabel(bridgeCheckedAt)}
             bridgeHealthyAt={formatAgeLabel(bridgeHealthyAt)}
             bridgeFailures={bridgeFailures}
+            bridgeActionBusy={bridgeActionBusy}
+            bridgeActionMessage={bridgeActionMessage || undefined}
+            onDiagnoseBridge={diagnoseBridge}
+            onRepairBridge={repairBridge}
           />
         )}
       </PageShell>

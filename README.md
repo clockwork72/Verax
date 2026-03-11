@@ -423,6 +423,8 @@ Fast repair:
 hpc/scraper/attach_tunnel.sh
 ```
 
+Inside the Electron dashboard on `hpc-v`, the Launcher and Settings bridge cards now expose `Diagnose` and `Repair bridge` buttons that run these same local helpers. If SSH authentication is required and not already available, the dashboard shows the failure output and hint instead of silently hanging.
+
 ### Deployment keeps asking for TOTP multiple times
 
 The scripts now try to avoid that by reusing a single SSH control socket.

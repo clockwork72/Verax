@@ -29,6 +29,10 @@ type SettingsViewProps = {
   bridgeCheckedAt?: string
   bridgeHealthyAt?: string
   bridgeFailures?: number
+  bridgeActionBusy?: 'diagnose' | 'repair' | null
+  bridgeActionMessage?: string
+  onDiagnoseBridge?: () => void
+  onRepairBridge?: () => void
 }
 
 function ToggleRow({
@@ -87,6 +91,10 @@ export function SettingsView({
   bridgeCheckedAt = 'never',
   bridgeHealthyAt = 'never',
   bridgeFailures = 0,
+  bridgeActionBusy = null,
+  bridgeActionMessage,
+  onDiagnoseBridge,
+  onRepairBridge,
 }: SettingsViewProps) {
   const [cruxCache, setCruxCache] = useState<CruxCacheStats | null>(null)
 
@@ -275,6 +283,26 @@ export function SettingsView({
               <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-[11px] text-[var(--muted-text)]">
                 <div className="font-semibold text-[var(--color-text)]">Launch command</div>
                 <code className="mt-2 block font-mono">hpc/scraper/launch_remote.sh</code>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px]"
+                    onClick={onDiagnoseBridge}
+                    disabled={bridgeActionBusy !== null}
+                  >
+                    {bridgeActionBusy === 'diagnose' ? 'Diagnosing...' : 'Diagnose'}
+                  </button>
+                  <button
+                    className={`focusable rounded-full px-3 py-1 text-[11px] ${
+                      tunnelStatus === 'online'
+                        ? 'border border-[var(--border-soft)] text-[var(--muted-text)]'
+                        : 'border border-amber-500/50 text-amber-300'
+                    }`}
+                    onClick={onRepairBridge}
+                    disabled={bridgeActionBusy !== null || tunnelStatus === 'checking' || tunnelStatus === 'online'}
+                  >
+                    {bridgeActionBusy === 'repair' ? 'Repairing...' : 'Repair bridge'}
+                  </button>
+                </div>
               </div>
               <div className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-[11px] text-[var(--muted-text)]">
                 <div className="font-semibold text-[var(--color-text)]">Bridge telemetry</div>
@@ -287,6 +315,9 @@ export function SettingsView({
                 </div>
               </div>
             </div>
+            {bridgeActionMessage && (
+              <p className="mt-3 text-[10px] text-[var(--muted-text)]">{bridgeActionMessage}</p>
+            )}
             {!bridgeReady && (
               <p className="mt-3 text-[10px] text-[var(--color-danger)]">
                 Non-launcher workspace views stay locked until the tunnel, orchestrator API, and database are all synchronized.
