@@ -389,7 +389,12 @@ def _parse_args() -> argparse.Namespace:
     src = p.add_argument_group("Input source")
     src.add_argument("--site", action="append", default=None, help="Single site/domain/URL to process (repeatable). If set, overrides --input/Tranco.")
     src.add_argument("--input", type=str, default=None, help="Path to a newline-delimited list of domains/URLs. If omitted, uses Tranco.")
-    src.add_argument("--tranco-top", type=int, default=100, help="How many Tranco sites to include (if --input not set).")
+    src.add_argument(
+        "--tranco-top",
+        type=int,
+        default=100,
+        help="How many unique registrable Tranco domains to include (if --input not set).",
+    )
     src.add_argument("--tranco-date", type=str, default=None, help="Tranco snapshot date YYYY-MM-DD (recommended for reproducibility).")
     src.add_argument("--tranco-cache-dir", type=str, default=".tranco_cache", help="Tranco cache directory.")
     src.add_argument(
