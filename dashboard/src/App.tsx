@@ -81,6 +81,8 @@ type BridgeSnapshot = {
   probe_detail?: string
   local_port_listening?: boolean
   tunnel_state?: 'stale' | 'offline'
+  source_rev?: string
+  local_source_rev?: string
 }
 
 type BridgeScriptResult = {
@@ -92,6 +94,8 @@ type BridgeScriptResult = {
   error?: string
   hint?: string
   health_ok?: boolean
+  signal?: string | null
+  killed?: boolean
 }
 
 function App() {
@@ -191,6 +195,13 @@ function App() {
     || !backendStatus?.database_ready
     || Boolean(backendStatus?.dashboard_locked)
   )
+  const remoteCodeLegacy = Boolean(backendStatus && tunnelStatus !== 'offline' && !backendStatus.source_rev)
+  const remoteCodeMismatch = Boolean(
+    backendStatus?.source_rev
+    && backendStatus?.local_source_rev
+    && backendStatus.source_rev !== backendStatus.local_source_rev
+  )
+  const remoteCodeOutdated = remoteCodeLegacy || remoteCodeMismatch
 
   useEffect(() => {
     if (dashboardLocked && activeNav !== 'launcher') {
@@ -283,6 +294,8 @@ function App() {
       ? 'Tunnel offline'
       : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
         ? 'Tunnel attached to stale target'
+      : remoteCodeOutdated
+        ? 'Remote control plane is outdated'
       : !backendStatus?.service_ready
         ? 'Remote control plane booting'
         : !backendStatus?.database_ready
@@ -298,6 +311,10 @@ function App() {
       ? 'Start or restore the SSH tunnel before using the remote pipeline.'
       : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
         ? 'Local port 8910 is still forwarded, but the remote orchestrator behind that tunnel is not answering. Reattach the tunnel to the current compute node.'
+      : remoteCodeLegacy
+        ? 'The running orchestrator predates revision tracking and may still contain old annotation logic. Relaunch it with hpc/scraper/launch_remote.sh.'
+      : remoteCodeMismatch
+        ? `Local repo is at ${backendStatus?.local_source_rev}, but the connected orchestrator is ${backendStatus?.source_rev}. Relaunch the remote orchestrator to deploy the current annotation code.`
       : !backendStatus?.service_ready
         ? 'Tunnel is up, but the orchestrator API is still coming online.'
         : !backendStatus?.database_ready
@@ -621,6 +638,14 @@ function App() {
   ])
 
   const annotateAuditSite = useCallback(async (site: string) => {
+    if (remoteCodeOutdated) {
+      return {
+        ok: false,
+        error: remoteCodeLegacy
+          ? 'Remote orchestrator is outdated. Relaunch it with hpc/scraper/launch_remote.sh before annotating.'
+          : `Remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Relaunch it before annotating.`,
+      }
+    }
     if (!window.scraper?.annotateSite) {
       return { ok: false, error: 'annotateSite API unavailable' }
     }
@@ -641,9 +666,18 @@ function App() {
       return { ok: false, error: res?.error || 'Failed to start annotation.' }
     }
     return { ok: true }
-  }, [outDir, llmModel])
+  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus])
 
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
+    if (remoteCodeOutdated) {
+      setAnnotateRunning(false)
+      setAnnotateLogs([
+        remoteCodeLegacy
+          ? 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.'
+          : `Annotation blocked: remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Run hpc/scraper/launch_remote.sh and reconnect.`,
+      ])
+      return
+    }
     if (!window.scraper?.startAnnotate) return
     annotateLogsRef.current = []
     setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
@@ -659,7 +693,7 @@ function App() {
       setAnnotateRunning(false)
       setAnnotateLogs([`Failed to start annotator: ${res?.error ?? 'unknown error'}`])
     }
-  }, [outDir, llmModel])
+  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus])
 
   const stopAnnotate = async () => {
     if (!window.scraper?.stopAnnotate) return
@@ -1087,6 +1121,8 @@ function App() {
       '',
       result.command ? `Command: ${result.command}` : null,
       typeof result.code === 'number' ? `Exit code: ${result.code}` : null,
+      result.signal ? `Signal: ${result.signal}` : null,
+      typeof result.killed === 'boolean' ? `Killed: ${result.killed}` : null,
       result.hint ? `Hint: ${result.hint}` : null,
       result.error ? `Error: ${result.error}` : null,
       '',

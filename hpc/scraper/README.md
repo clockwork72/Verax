@@ -19,6 +19,7 @@ Quick meaning of each script:
 - [`launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
   - push code, install runtime, submit the job, and open the tunnel
   - reuses the same SSH session across deploy steps to reduce repeated MFA prompts
+  - nested helper scripts now keep that shared control socket alive instead of closing it mid-launch
   - passes `SCRAPER_LLM_BASE_URL` and `SCRAPER_LLM_HEALTH_URL` through to the Slurm job when set
 - [`attach_tunnel.sh`](/mnt/storage/projects/hpc/scraper/attach_tunnel.sh)
   - reattach local port `8910` to the currently running orchestrator node

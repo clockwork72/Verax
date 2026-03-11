@@ -11,6 +11,7 @@ SSH_OPTS=(
   -o ControlPersist=10m
   -o "ControlPath=${SSH_SOCKET}"
 )
+CREATED_SSH_MASTER=0
 
 SYNC_DIRS=(
   "privacy_research_dataset"
@@ -44,12 +45,19 @@ remote_root_q="$(printf '%q' "${REMOTE_ROOT}")"
 remote_repo_q="$(printf '%q' "${REMOTE_REPO}")"
 
 cleanup() {
-  ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
+  if [ "${CREATED_SSH_MASTER}" -eq 1 ]; then
+    ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
+  fi
 }
 
 trap cleanup EXIT
 
-ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+if ssh "${SSH_OPTS[@]}" -O check "${SSH_HOST}" >/dev/null 2>&1; then
+  CREATED_SSH_MASTER=0
+else
+  ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+  CREATED_SSH_MASTER=1
+fi
 ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'mkdir -p ${remote_repo_q} ${remote_root_q}/logs ${remote_root_q}/runtime ${remote_repo_q}/outputs'"
 
 for dir in "${SYNC_DIRS[@]}"; do

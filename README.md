@@ -392,6 +392,7 @@ The bridge is healthy when all of the following are true:
 - `curl http://127.0.0.1:8910/health` returns JSON
 - the dashboard launcher shows the bridge as active
 - PostgreSQL is reported ready
+- the remote orchestrator was launched from the current `hpc-v` code revision
 
 ## Troubleshooting
 
@@ -423,7 +424,7 @@ Fast repair:
 hpc/scraper/attach_tunnel.sh
 ```
 
-Inside the Electron dashboard on `hpc-v`, the Launcher and Settings bridge cards now expose `Diagnose` and `Repair bridge` buttons that run these same local helpers. If SSH authentication is required and not already available, the dashboard shows the failure output and hint instead of silently hanging.
+Inside the Electron dashboard on `hpc-v`, the Launcher and Settings bridge cards now expose `Diagnose` and `Repair bridge` buttons that run these same local helpers. If TOTP or another SSH verification step is required, the app opens a prompt for the code; if the flow still fails, the dashboard shows the failure output and hint instead of silently hanging.
 
 ### Deployment keeps asking for TOTP multiple times
 

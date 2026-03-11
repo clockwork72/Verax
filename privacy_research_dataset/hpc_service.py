@@ -684,6 +684,7 @@ class HpcService:
                 "remote_root": str(self.remote_root),
                 "repo_root": str(self.repo_root),
                 "current_out_dir": self.current_out_dir,
+                "source_rev": os.getenv("SCRAPER_SOURCE_REV"),
             }
         )
 

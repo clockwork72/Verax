@@ -13,14 +13,22 @@ SSH_OPTS=(
   -o ControlPersist=10m
   -o "ControlPath=${SSH_SOCKET}"
 )
+CREATED_SSH_MASTER=0
 
 cleanup() {
-  ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
+  if [ "${CREATED_SSH_MASTER}" -eq 1 ]; then
+    ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
+  fi
 }
 
 trap cleanup EXIT
 
-ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+if ssh "${SSH_OPTS[@]}" -O check "${SSH_HOST}" >/dev/null 2>&1; then
+  CREATED_SSH_MASTER=0
+else
+  ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+  CREATED_SSH_MASTER=1
+fi
 
 usage() {
   cat <<'EOF'

@@ -72,6 +72,8 @@ type HpcBridgeStatus = {
   probe_detail?: string
   local_port_listening?: boolean
   tunnel_state?: 'stale' | 'offline'
+  source_rev?: string
+  local_source_rev?: string
 }
 
 type BridgeScriptResult = {
@@ -83,6 +85,8 @@ type BridgeScriptResult = {
   error?: string
   hint?: string
   health_ok?: boolean
+  signal?: string | null
+  killed?: boolean
 }
 
 declare global {
