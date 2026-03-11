@@ -20,8 +20,8 @@ from typing import Any
 from aiohttp import web
 
 
-SAFE_SCRAPER_CONCURRENCY = 4
-SAFE_CRUX_CONCURRENCY = 8
+SAFE_SCRAPER_CONCURRENCY = 2
+SAFE_CRUX_CONCURRENCY = 4
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20
 DEFAULT_DB_PORT = 55432
@@ -332,6 +332,7 @@ class PostgresRuntime:
         self.data_dir = self.runtime_root / "postgres-data"
         self.tmp_dir = self.runtime_root / "tmp"
         self.password_path = self.runtime_root / "postgres.password"
+        self.init_marker = self.runtime_root / ".initdb-complete"
         self.password = ""
         self.proc: asyncio.subprocess.Process | None = None
         self.ready = False
@@ -358,34 +359,20 @@ class PostgresRuntime:
                     "docker://postgres:16-alpine",
                 ]
             )
-        env = {
-            "POSTGRES_PASSWORD": self.password,
-            "POSTGRES_USER": "scraper",
-            "POSTGRES_DB": "scraper",
-            "PGDATA": "/var/lib/postgresql/data/pgdata",
-        }
+        if not self.init_marker.exists():
+            await self._initialize_database()
         self.proc = await asyncio.create_subprocess_exec(
-            "apptainer",
-            "run",
-            "--cleanenv",
-            "--bind",
-            f"{self.data_dir}:/var/lib/postgresql/data",
-            "--bind",
-            f"{self.tmp_dir}:/tmp",
-            "--env",
-            f"POSTGRES_PASSWORD={env['POSTGRES_PASSWORD']}",
-            "--env",
-            f"POSTGRES_USER={env['POSTGRES_USER']}",
-            "--env",
-            f"POSTGRES_DB={env['POSTGRES_DB']}",
-            "--env",
-            f"PGDATA={env['PGDATA']}",
+            *self._apptainer_prefix(),
             str(self.image_path),
             "postgres",
+            "-D",
+            "/var/lib/postgresql/data",
             "-c",
             "listen_addresses=127.0.0.1",
             "-c",
             f"port={self.port}",
+            "-c",
+            "unix_socket_directories=/tmp",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -411,6 +398,93 @@ class PostgresRuntime:
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
             raise RuntimeError(stdout.decode("utf-8", errors="replace"))
+
+    def _apptainer_prefix(self) -> list[str]:
+        return [
+            "apptainer",
+            "exec",
+            "--cleanenv",
+            "--bind",
+            f"{self.data_dir}:/var/lib/postgresql/data",
+            "--bind",
+            f"{self.tmp_dir}:/tmp",
+        ]
+
+    async def _initialize_database(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.tmp_dir / "pwfile").write_text(self.password + "\n", encoding="utf-8")
+        await self._run_checked(
+            [
+                *self._apptainer_prefix(),
+                str(self.image_path),
+                "initdb",
+                "-D",
+                "/var/lib/postgresql/data",
+                "--username=scraper",
+                "--auth=trust",
+                "--pwfile=/tmp/pwfile",
+            ]
+        )
+        await self._run_checked(
+            [
+                *self._apptainer_prefix(),
+                str(self.image_path),
+                "sh",
+                "-lc",
+                "echo \"host all all 127.0.0.1/32 scram-sha-256\" >> /var/lib/postgresql/data/pg_hba.conf",
+            ]
+        )
+        await self._run_checked(
+            [
+                *self._apptainer_prefix(),
+                str(self.image_path),
+                "sh",
+                "-lc",
+                f"printf \"listen_addresses='127.0.0.1'\\nport={self.port}\\nunix_socket_directories='/tmp'\\n\" >> /var/lib/postgresql/data/postgresql.conf",
+            ]
+        )
+        temp_postgres = await asyncio.create_subprocess_exec(
+            *self._apptainer_prefix(),
+            str(self.image_path),
+            "postgres",
+            "-D",
+            "/var/lib/postgresql/data",
+            "-c",
+            f"port={self.port}",
+            "-c",
+            "listen_addresses=127.0.0.1",
+            "-c",
+            "unix_socket_directories=/tmp",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if await self._socket_ready():
+                    break
+                await asyncio.sleep(1)
+            else:
+                raise RuntimeError("postgres_init_start_timeout")
+            await self._run_checked(
+                [
+                    *self._apptainer_prefix(),
+                    str(self.image_path),
+                    "createdb",
+                    "-h",
+                    "127.0.0.1",
+                    "-p",
+                    str(self.port),
+                    "-U",
+                    "scraper",
+                    "scraper",
+                ]
+            )
+        finally:
+            temp_postgres.terminate()
+            with suppress(Exception):
+                await asyncio.wait_for(temp_postgres.wait(), timeout=10)
+        self.init_marker.write_text(utc_now(), encoding="utf-8")
 
     async def _wait_until_ready(self) -> None:
         deadline = time.monotonic() + 90
