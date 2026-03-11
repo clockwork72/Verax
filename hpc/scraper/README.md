@@ -1,31 +1,29 @@
-# HPC Scraper Deployment
+# HPC Scraper Scripts
 
-This folder contains the Slurm and deployment assets for the `hpc-v` cluster-backed scraper stack.
+This folder contains the scripts used to deploy, run, and retrieve scraper jobs on Toubkal.
 
-Files:
+For the full branch workflow, read the top-level guide:
 
-- `orchestrator.slurm`: long-lived control-plane job on `compute/intr`
-- `install_remote.sh`: remote bootstrap for the Python runtime and the PostgreSQL Apptainer image
-- `launch_remote.sh`: local helper that syncs only the scraper payload to Toubkal, prunes local-only files from the remote repo, installs the runtime, submits the orchestrator, and opens the `8910` SSH tunnel
+- [`README.md`](/mnt/storage/projects/README.md)
 
-Remote target:
+Quick meaning of each script:
 
-`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
+- [`push_code.sh`](/mnt/storage/projects/hpc/scraper/push_code.sh)
+  - sync local scraper code to Toubkal
+- [`install_remote.sh`](/mnt/storage/projects/hpc/scraper/install_remote.sh)
+  - build or refresh the remote runtime
+- [`orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
+  - start the remote control-plane job
+- [`launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
+  - push code, install runtime, submit the job, and open the tunnel
+- [`pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
+  - list remote runs or copy one run back to local storage
 
-Usage:
+Common commands:
 
 ```bash
+hpc/scraper/push_code.sh
 hpc/scraper/launch_remote.sh
+hpc/scraper/pull_run.sh --list
+hpc/scraper/pull_run.sh <run_dir>
 ```
-
-Remote sync is intentionally limited to the scraper runtime:
-
-- `privacy_research_dataset/`
-- `scripts/`
-- `hpc/`
-- `pyproject.toml`
-- `tracker_radar_index.json`
-- `trackerdb_index.json`
-- `README.md`
-
-The dashboard is not deployed to Toubkal. It stays local and talks to `http://127.0.0.1:8910` through the SSH tunnel opened by `launch_remote.sh`.

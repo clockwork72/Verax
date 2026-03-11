@@ -1,62 +1,158 @@
-# Privacy Research Dataset: HPC Branch Guide
+# Privacy Research Dataset: HPC Workflow Guide
 
-This branch is configured for Toubkal-first operation.
-The scraper runtime lives on the cluster. The dashboard stays on your workstation and talks to the cluster through an SSH tunnel on port `8910`.
+This branch is meant to run the scraper on Toubkal.
 
-## How It Works
+The key idea is simple:
 
-The runtime is split into two parts:
+- you develop and use the dashboard locally
+- the scraper service runs remotely inside a Slurm job
+- the local dashboard talks to the remote service through an SSH tunnel on port `8910`
+- remote outputs stay on the cluster unless you explicitly pull them back
 
-- Local workstation:
-  - Electron dashboard in `dashboard/`
-  - SSH tunnel bound to `127.0.0.1:8910`
-  - Optional LLM endpoint for annotation on `127.0.0.1:8901`
-- Toubkal cluster:
-  - Slurm orchestrator job in [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
-  - Control API in [`privacy_research_dataset/hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py)
-  - PostgreSQL container started through Apptainer
-  - Scraper and annotator subprocesses launched by the control API
+## Mental Model
 
-Control flow:
+There are two environments in this workflow.
 
-1. Run [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh) from your workstation.
-2. It syncs the scraper payload to Toubkal under:
-   `/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
-3. It installs or refreshes the remote Python runtime.
-4. It submits the Slurm orchestrator job.
-5. Once the job is running, it opens the SSH tunnel on local port `8910`.
-6. The dashboard connects to `http://127.0.0.1:8910` and stays locked until the remote API and database are healthy.
+### 1. Your local workstation
 
-## Cluster Layout
+This is where you:
 
-Remote root:
+- edit code
+- commit code
+- run the Electron dashboard
+- open the SSH tunnel to the cluster
+- optionally run or tunnel an LLM endpoint for annotation on port `8901`
+
+Important local paths:
+
+- [`dashboard/`](/mnt/storage/projects/dashboard)
+- [`hpc/scraper/`](/mnt/storage/projects/hpc/scraper)
+- local repo root: `/mnt/storage/projects`
+
+### 2. Toubkal HPC
+
+This is where the scraping runtime lives.
+
+The deployed remote root is:
 
 `/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
 
-Important paths:
+Important remote paths:
 
-- `repo/`: synced scraper code
+- `repo/`: deployed code mirror
 - `runtime/`: PostgreSQL data, Apptainer image, Playwright browsers
-- `logs/`: Slurm stdout/stderr logs
-- `repo/outputs/`: scrape outputs and artifacts
+- `logs/`: Slurm logs
+- `repo/outputs/`: run outputs
 
-Only the scraper payload is deployed remotely. The dashboard is not copied to the cluster.
+The remote repo is a deployment mirror, not the source of truth.
+You should treat local code as authoritative and remote code as disposable.
 
-## What You Should Do
+## Architecture
 
-### 1. Start the remote stack
+The branch works like this:
 
-From the repository root on your workstation:
+1. You push the scraper payload from local to the remote mirror.
+2. A Slurm job starts the orchestrator on a compute node.
+3. The orchestrator starts PostgreSQL in Apptainer.
+4. The orchestrator runs the control API from [`hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py).
+5. Your workstation opens an SSH tunnel from local `127.0.0.1:8910` to the compute node service.
+6. The Electron app probes `http://127.0.0.1:8910`.
+7. When the API and database are healthy, the dashboard unlocks.
+8. Scrape and annotation actions from the dashboard are executed remotely.
+
+## Files That Matter
+
+### Deployment and runtime
+
+- [`hpc/scraper/push_code.sh`](/mnt/storage/projects/hpc/scraper/push_code.sh)
+  - Pushes the scraper payload from local to Toubkal.
+  - Prunes remote folders that should not live on the cluster.
+- [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
+  - Pushes code, refreshes the remote runtime, submits the Slurm job, and opens the local SSH tunnel.
+- [`hpc/scraper/install_remote.sh`](/mnt/storage/projects/hpc/scraper/install_remote.sh)
+  - Builds the remote Python environment, installs Playwright Chromium, and pulls the PostgreSQL container image.
+- [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
+  - Slurm entrypoint for the remote control plane.
+- [`privacy_research_dataset/hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py)
+  - Remote control API, event bus, PostgreSQL lifecycle, scraper launch, annotator launch.
+
+### Data movement
+
+- [`hpc/scraper/pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
+  - Lists remote runs or copies one remote output folder back to local `outputs/hpc/`.
+
+### Local UI
+
+- [`dashboard/electron/main.ts`](/mnt/storage/projects/dashboard/electron/main.ts)
+  - Local bridge client that talks to `127.0.0.1:8910`.
+
+## What Gets Synced To Toubkal
+
+Only the scraper payload is deployed remotely.
+
+Included:
+
+- `privacy_research_dataset/`
+- `scripts/`
+- `hpc/`
+- `README.md`
+- `pyproject.toml`
+- `requirements.txt`
+- `tracker_radar_index.json`
+- `trackerdb_index.json`
+
+Not deployed:
+
+- `dashboard/`
+- `tests/`
+- local caches
+- tracker source checkouts
+- build artifacts
+
+That split is intentional. The dashboard stays local.
+
+## Normal Workflow
+
+This is the default workflow most people should follow.
+
+### Step 1. Edit code locally
+
+Make all code changes in your local repo:
+
+`/mnt/storage/projects`
+
+Do not use the remote repo on Toubkal as a second development checkout.
+
+### Step 2. Push code to Toubkal
+
+From the local repo root:
+
+```bash
+hpc/scraper/push_code.sh
+```
+
+This updates the remote mirror without launching a job.
+
+### Step 3. Start or restart the remote stack
+
+If you want the full flow from local, use:
 
 ```bash
 hpc/scraper/launch_remote.sh
 ```
 
-This is the main entrypoint for the branch.
+This does four things:
 
-### 2. Start the local dashboard
+1. pushes code
+2. refreshes the remote runtime
+3. submits the orchestrator Slurm job
+4. opens the SSH tunnel on local port `8910`
 
-In a separate terminal:
+This is the easiest entrypoint.
+
+### Step 4. Start the local dashboard
+
+In another local terminal:
 
 ```bash
 cd dashboard
@@ -64,62 +160,105 @@ export PRIVACY_DATASET_PYTHON="$PWD/../.venv/bin/python"
 npm run dev
 ```
 
-The dashboard should remain on the launcher until:
+The dashboard should stay on the launcher until the bridge is healthy.
 
-- the SSH tunnel is up
-- the remote control API answers
-- PostgreSQL is ready inside the Slurm job
+### Step 5. Launch runs from the dashboard
 
-### 3. Launch remote scrapes from the dashboard
+Use the dashboard launcher to start scrapes.
+Those actions do not start local scraper processes.
+They are sent through the bridge to the remote service on Toubkal.
 
-Use the launcher view to start runs.
-The dashboard sends commands to the remote control plane, not to local scraper subprocesses.
+### Step 6. Pull back results only if needed
 
-Outputs are written remotely under:
+To see what runs exist remotely:
 
-`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo/outputs`
+```bash
+hpc/scraper/pull_run.sh --list
+```
 
-### 4. Use annotation only when the LLM endpoint is available
+To copy one run back to your local machine:
 
-Annotation expects an OpenAI-compatible endpoint on local port `8901`.
-That can be:
+```bash
+hpc/scraper/pull_run.sh <run_dir>
+```
 
-- local on your workstation
-- forwarded from another remote node through SSH
+That pulls the run into:
 
-If the LLM endpoint is down, scraping can still work, but annotation should stay unused.
+`outputs/hpc/<run_dir>/`
 
-## Slurm Design
+## If You Launch The Slurm Job Directly On Toubkal
 
-The orchestrator job is intentionally small so it starts fast:
+Sometimes you may submit the orchestrator manually from the HPC side.
+That is fine, but the dashboard will still stay offline until your local machine opens the SSH tunnel.
+
+### Remote-side commands
+
+On Toubkal:
+
+```bash
+cd /srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo
+bash hpc/scraper/install_remote.sh
+sbatch hpc/scraper/orchestrator.slurm
+```
+
+The job log prints the compute node name and a suggested tunnel command.
+
+### Local-side tunnel
+
+After the job is running, open the tunnel from your workstation:
+
+```bash
+ssh -fNT -L 8910:<compute-node>:8910 soufiane.essahli@toubkal.hpc.um6p.ma
+```
+
+Replace `<compute-node>` with the node printed by the job, for example:
+
+```bash
+ssh -fNT -L 8910:slurm-compute-h21c8-u30-svn1:8910 soufiane.essahli@toubkal.hpc.um6p.ma
+```
+
+Then verify locally:
+
+```bash
+curl http://127.0.0.1:8910/health
+```
+
+If this does not return JSON, the dashboard will stay red.
+
+## Reattaching To An Existing Running Orchestrator
+
+If the Slurm job is already running and you only need to reconnect locally, you do not need to resubmit it.
+
+You only need:
+
+1. the compute node name
+2. a local SSH tunnel to port `8910`
+
+Once the tunnel is back, the dashboard should recover automatically.
+
+## Slurm Profile
+
+The orchestrator job is intentionally lightweight so it can start quickly:
 
 - partition: `compute`
 - qos: `intr`
 - account: `vr_outsec-vh2sz1t4fks-default-cpu`
+- nodes: `1`
 - tasks: `1`
 - cpus per task: `2`
 - memory: `6G`
 - walltime: `00:10:00`
 
-The orchestrator itself does not perform the full scrape workload directly. It provides the remote control plane, starts PostgreSQL, and launches scraper or annotator subprocesses when requested by the dashboard.
-
-## Files That Matter In This Branch
-
-- [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
-  - Syncs the remote payload, prunes redundant files, installs runtime, submits Slurm, opens the tunnel.
-- [`hpc/scraper/install_remote.sh`](/mnt/storage/projects/hpc/scraper/install_remote.sh)
-  - Creates the remote venv, installs the package, installs Playwright Chromium, and pulls the PostgreSQL Apptainer image.
-- [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
-  - Slurm entrypoint for the control plane job.
-- [`privacy_research_dataset/hpc_service.py`](/mnt/storage/projects/privacy_research_dataset/hpc_service.py)
-  - Remote API, PostgreSQL lifecycle, scraper launch, annotator launch, event polling.
-- [`dashboard/electron/main.ts`](/mnt/storage/projects/dashboard/electron/main.ts)
-  - Local bridge client that talks to `127.0.0.1:8910`.
+The orchestrator is not the heavy crawler itself.
+It is a control-plane job that starts the database and launches remote subprocesses on demand.
 
 ## Outputs
 
-Each remote run writes into its output directory under `repo/outputs/`.
-Typical files are:
+Remote outputs live under:
+
+`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo/outputs`
+
+Typical run contents:
 
 - `results.jsonl`
 - `results.summary.json`
@@ -130,47 +269,127 @@ Typical files are:
 - `artifacts/`
 - `artifacts_ok/`
 
+## Recommended File Management Rules
+
+Follow these rules to avoid drift and confusion:
+
+### Code
+
+- write code locally
+- commit code locally
+- push code to Toubkal with `push_code.sh`
+- avoid editing remote code directly
+
+### Remote repo
+
+- treat the remote repo as a deployment mirror
+- it may be deleted and recreated
+- do not rely on it as a persistent development checkout
+
+### Runtime state
+
+- keep PostgreSQL data in `runtime/`
+- keep Playwright browsers in `runtime/`
+- keep Slurm logs in `logs/`
+- keep scraper outputs in `repo/outputs/`
+
+### Results
+
+- leave large result sets on Toubkal
+- pull back only the runs you actually need
+
+## How To Know The System Is Healthy
+
+The bridge is healthy when all of the following are true:
+
+- the Slurm orchestrator job is running
+- your local machine has a tunnel on `127.0.0.1:8910`
+- `curl http://127.0.0.1:8910/health` returns JSON
+- the dashboard launcher shows the bridge as active
+- PostgreSQL is reported ready
+
 ## Troubleshooting
 
-### Tunnel is down
+### The orchestrator job is running, but the dashboard is red
+
+Most likely cause:
+
+- the SSH tunnel is missing on your local machine
+
+Check locally:
+
+```bash
+curl http://127.0.0.1:8910/health
+ss -ltn '( sport = :8910 )'
+```
+
+If nothing is listening locally, open the tunnel.
+
+### The dashboard says the bridge is offline
+
+Check:
+
+- the Slurm job is still running
+- the correct compute node is being tunneled
+- local port `8910` is actually forwarded
+
+### Scrape fails immediately after starting
+
+Check the remote runtime:
+
+- `.../scraper/.venv` exists
+- `.../scraper/runtime/playwright-browsers` exists
+- `PLAYWRIGHT_BROWSERS_PATH` is being set by the orchestrator
+
+### Annotation does not work
+
+Check:
+
+- an OpenAI-compatible endpoint is reachable on local `127.0.0.1:8901`
+- any needed SSH tunnel for that model endpoint is active
+
+### I changed code locally, but Toubkal still behaves like the old version
+
+You probably forgot to redeploy.
 
 Run:
+
+```bash
+hpc/scraper/push_code.sh
+```
+
+Then restart the orchestrator if needed.
+
+## Quick Reference
+
+Push code only:
+
+```bash
+hpc/scraper/push_code.sh
+```
+
+Push, submit, and tunnel:
 
 ```bash
 hpc/scraper/launch_remote.sh
 ```
 
-The dashboard should not be used until port `8910` is back and the launcher reports the bridge as healthy.
+List remote runs:
 
-### Dashboard stays locked
+```bash
+hpc/scraper/pull_run.sh --list
+```
 
-Check:
+Pull one run:
 
-- the SSH tunnel is alive
-- the Slurm orchestrator job is running
-- the remote API answers on `/health`
-- PostgreSQL came up inside the allocation
+```bash
+hpc/scraper/pull_run.sh <run_dir>
+```
 
-### Scrape starts and fails immediately
+Start dashboard locally:
 
-Check:
-
-- the remote runtime exists under `.../scraper/.venv`
-- Playwright browsers exist under `.../scraper/runtime/playwright-browsers`
-- the orchestrator environment exports `PLAYWRIGHT_BROWSERS_PATH`
-
-### Annotation is unavailable
-
-Check:
-
-- an OpenAI-compatible endpoint is reachable on `127.0.0.1:8901`
-- any required SSH forwarding for the model endpoint is active
-
-## Summary
-
-For this branch, the operating model is simple:
-
-1. Start the remote stack with `hpc/scraper/launch_remote.sh`.
-2. Run the dashboard locally.
-3. Wait for the bridge to go healthy.
-4. Launch and monitor remote runs through the dashboard.
+```bash
+cd dashboard
+export PRIVACY_DATASET_PYTHON="$PWD/../.venv/bin/python"
+npm run dev
+```
