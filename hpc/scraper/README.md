@@ -19,6 +19,7 @@ Quick meaning of each script:
 - [`launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
   - push code, install runtime, submit the job, and open the tunnel
   - reuses the same SSH session across deploy steps to reduce repeated MFA prompts
+  - passes `SCRAPER_LLM_BASE_URL` and `SCRAPER_LLM_HEALTH_URL` through to the Slurm job when set
 - [`pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
   - list remote runs or copy one run back to local storage
   - also reuses the shared SSH control socket during one pull
@@ -37,4 +38,17 @@ hpc/scraper/push_code.sh
 hpc/scraper/launch_remote.sh
 hpc/scraper/pull_run.sh --list
 hpc/scraper/pull_run.sh <run_dir>
+```
+
+Annotation endpoint notes:
+
+- scraper bridge: `127.0.0.1:8910`
+- default annotation model endpoint: `127.0.0.1:8901`
+- these are separate services
+
+If the annotation model is not running on the same node as the remote annotator, export these before `launch_remote.sh`:
+
+```bash
+export SCRAPER_LLM_BASE_URL="http://<model-host>:<model-port>/v1"
+export SCRAPER_LLM_HEALTH_URL="http://<model-host>:<model-port>/health"
 ```

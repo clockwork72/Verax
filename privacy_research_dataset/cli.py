@@ -1123,10 +1123,15 @@ async def _run(args: argparse.Namespace) -> None:
     tracker_radar = TrackerRadarIndex(args.tracker_radar_index) if args.tracker_radar_index else None
     trackerdb = TrackerDbIndex(args.trackerdb_index) if args.trackerdb_index else None
 
-    # --- OpenAI-compatible client for LLM semantic cleaning (local DeepSeek) ---
+    # --- OpenAI-compatible client for LLM semantic cleaning ---
     openai_client = None
     if not getattr(args, "no_llm_clean", False):
-        from .annotator import check_tunnel_connection, DEEPSEEK_ENDPOINT, resolve_deepseek_endpoint
+        from .annotator import (
+            annotation_endpoint_help,
+            check_tunnel_connection,
+            DEEPSEEK_ENDPOINT,
+            resolve_deepseek_endpoint,
+        )
         if check_tunnel_connection():
             try:
                 import openai as _openai
@@ -1134,14 +1139,11 @@ async def _run(args: argparse.Namespace) -> None:
                     base_url=resolve_deepseek_endpoint() or DEEPSEEK_ENDPOINT,
                     api_key="not-needed",
                 )
-                log(f"LLM semantic cleaning enabled via DeepSeek HPC (model: {args.llm_model}).")
+                log(f"LLM semantic cleaning enabled via reachable annotation endpoint (model: {args.llm_model}).")
             except ImportError:
                 warn("openai package not installed. Install with: pip install openai. LLM cleaning disabled.")
         else:
-            warn(
-                "HPC tunnel not reachable (http://localhost:8901/health). "
-                "LLM semantic cleaning disabled. Start the SSH tunnel to enable it."
-            )
+            warn(f"{annotation_endpoint_help()}\nLLM semantic cleaning disabled.")
     mapping_mode = (
         "mixed"
         if tracker_radar and trackerdb

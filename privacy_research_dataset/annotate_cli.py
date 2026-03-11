@@ -27,6 +27,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 from .annotator import (
     Annotator,
+    annotation_endpoint_help,
+    describe_annotation_endpoint,
     check_tunnel_connection,
     enable_litellm_disk_cache,
     preprocess_policy,
@@ -50,7 +52,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--llm-model", type=str, default=DEEPSEEK_MODEL_ID,
-        help=f"LiteLLM model name for statement extraction (default: {DEEPSEEK_MODEL_ID} — local DeepSeek via HPC tunnel).",
+        help=f"LiteLLM model name for statement extraction (default: {DEEPSEEK_MODEL_ID} — self-hosted OpenAI-compatible endpoint).",
     )
     p.add_argument(
         "--token-limit", type=int, default=500,
@@ -370,18 +372,13 @@ def _annotate_site(
 async def _run(args: argparse.Namespace) -> None:
     enable_litellm_disk_cache()
 
-    # Verify the HPC SSH tunnel is up before starting any LLM work.
-    health_url = resolve_deepseek_health_url() or DEEPSEEK_HEALTH_URL
-    log(f"Checking HPC tunnel connection ({health_url}) …")
+    # Verify that the configured annotation endpoint is reachable before starting any LLM work.
+    _, health_url = describe_annotation_endpoint()
+    log(f"Checking annotation model connection ({health_url}) …")
     if not check_tunnel_connection():
-        warn(
-            "Cannot reach DeepSeek model at any loopback health URL for port 8901.\n"
-            "Start the SSH tunnel first:\n"
-            "  ssh -N -f -L 8901:<gpu-node>:8901 <user>@<hpc-hostname>\n"
-            "Then re-run the annotator."
-        )
+        warn(annotation_endpoint_help())
         return
-    log("Tunnel active — DeepSeek endpoint reachable.")
+    log(f"Annotation model reachable at {health_url}.")
 
     # LiteLLM's openai/ provider still reads OPENAI_API_KEY; set a placeholder
     # so it doesn't raise an auth-configuration error for the local server.

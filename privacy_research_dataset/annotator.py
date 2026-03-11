@@ -73,7 +73,7 @@ from .annotation_types import (
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek / HPC SSH tunnel configuration
+# Annotation model endpoint configuration
 # ---------------------------------------------------------------------------
 
 DEEPSEEK_ENDPOINT = os.getenv("PRIVACY_LLM_BASE_URL", "http://localhost:8901/v1")
@@ -102,7 +102,7 @@ def _deepseek_candidate_urls() -> list[tuple[str, str]]:
     return deduped
 
 
-def _probe_tunnel_url(url: str, timeout: float) -> bool:
+def _probe_endpoint_url(url: str, timeout: float) -> bool:
     import urllib.request
 
     with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -117,7 +117,7 @@ def resolve_deepseek_endpoint(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> str | N
 
     for endpoint, health in _deepseek_candidate_urls():
         try:
-            if _probe_tunnel_url(health, timeout):
+            if _probe_endpoint_url(health, timeout):
                 _RESOLVED_DEEPSEEK_ENDPOINT = endpoint
                 _RESOLVED_DEEPSEEK_HEALTH_URL = health
                 return endpoint
@@ -140,8 +140,38 @@ def resolve_deepseek_health_url(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> str |
 
 
 def check_tunnel_connection(timeout: float = _TUNNEL_PROBE_TIMEOUT) -> bool:
-    """Return True if the HPC SSH tunnel (port 8901 → DeepSeek) is reachable."""
+    """Backward-compatible alias for annotation model reachability checks."""
     return resolve_deepseek_endpoint(timeout) is not None
+
+
+def describe_annotation_endpoint() -> tuple[str, str]:
+    endpoint = resolve_deepseek_endpoint() or DEEPSEEK_ENDPOINT
+    health = resolve_deepseek_health_url() or DEEPSEEK_HEALTH_URL
+    return endpoint, health
+
+
+def annotation_endpoint_help() -> str:
+    endpoint, health = describe_annotation_endpoint()
+    lines = [
+        f"Cannot reach annotation model health URL: {health}",
+        f"Expected API base URL: {endpoint}",
+        "The scraper bridge on port 8910 is separate from the annotation model endpoint.",
+    ]
+    if os.getenv("PRIVACY_DATASET_HPC_REMOTE") == "1":
+        lines.extend(
+            [
+                "This annotator is running on the cluster.",
+                "If the model is not running on the same node, set PRIVACY_LLM_BASE_URL and",
+                "PRIVACY_LLM_HEALTH_URL in the orchestrator environment before starting annotation.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Start the model locally, or expose it through a reachable SSH tunnel, then re-run the annotator.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def enable_litellm_disk_cache() -> None:

@@ -77,6 +77,13 @@ In practice:
 - application changes merged into `main` now flow into `hpc-v` automatically through GitHub Actions
 - `hpc-v` remains the branch you deploy to Toubkal
 - if the workflow cannot merge cleanly, it stops and you resolve the conflict in git once, then normal automation resumes
+- the sync script warns when `main` touched protected bridge files that should be reviewed manually on `hpc-v`
+
+Protected bridge files currently reviewed manually:
+
+- `dashboard/electron/main.ts`
+- `dashboard/src/App.tsx`
+- `dashboard/src/components/launcher/LauncherView.tsx`
 
 ## Architecture
 
@@ -90,6 +97,14 @@ The branch works like this:
 6. The Electron app probes `http://127.0.0.1:8910`.
 7. When the API and database are healthy, the dashboard unlocks.
 8. Scrape and annotation actions from the dashboard are executed remotely.
+
+Important separation:
+
+- port `8910` is the scraper control-plane bridge
+- port `8901` is only the default annotation model endpoint
+
+They are not the same service.
+Having a healthy scraper bridge on `8910` does not automatically mean an annotation model is reachable on `8901`.
 
 ## Files That Matter
 
@@ -205,7 +220,30 @@ Use the dashboard launcher to start scrapes.
 Those actions do not start local scraper processes.
 They are sent through the bridge to the remote service on Toubkal.
 
-### Step 6. Pull back results only if needed
+### Step 6. Configure annotation model reachability if you want Stage 2
+
+Annotation uses a separate OpenAI-compatible model endpoint.
+
+Default expectation:
+
+- API base URL: `http://localhost:8901/v1`
+- health URL: `http://localhost:8901/health`
+
+If the model is not running on the same node as the annotator, set these before running `launch_remote.sh`:
+
+```bash
+export SCRAPER_LLM_BASE_URL="http://<model-host>:<model-port>/v1"
+export SCRAPER_LLM_HEALTH_URL="http://<model-host>:<model-port>/health"
+```
+
+`launch_remote.sh` will pass them through to the Slurm job as:
+
+- `PRIVACY_LLM_BASE_URL`
+- `PRIVACY_LLM_HEALTH_URL`
+
+This keeps the annotation logs honest and prevents the annotator from pretending that the scraper bridge on `8910` is the model endpoint.
+
+### Step 7. Pull back results only if needed
 
 To see what runs exist remotely:
 
@@ -400,8 +438,9 @@ Check the remote runtime:
 
 Check:
 
-- an OpenAI-compatible endpoint is reachable on local `127.0.0.1:8901`
-- any needed SSH tunnel for that model endpoint is active
+- the annotation model endpoint is reachable from where the annotator is running
+- if the annotator is remote, set `SCRAPER_LLM_BASE_URL` and `SCRAPER_LLM_HEALTH_URL` before launching the orchestrator
+- if you intentionally use the default endpoint, confirm `http://localhost:8901/health` is valid in the annotator environment
 
 ### I changed code locally, but Toubkal still behaves like the old version
 

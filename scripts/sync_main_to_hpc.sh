@@ -7,6 +7,11 @@ SOURCE_BRANCH="${SYNC_SOURCE_BRANCH:-main}"
 TARGET_BRANCH="${SYNC_TARGET_BRANCH:-hpc-v}"
 RESET_TO_REMOTE="${SYNC_RESET_TO_REMOTE:-0}"
 PUSH_CHANGES=0
+PROTECTED_FILES=(
+  "dashboard/electron/main.ts"
+  "dashboard/src/App.tsx"
+  "dashboard/src/components/launcher/LauncherView.tsx"
+)
 
 usage() {
   cat <<'EOF'
@@ -54,6 +59,11 @@ fi
 
 git fetch "${REMOTE_NAME}" "${SOURCE_BRANCH}" "${TARGET_BRANCH}"
 
+protected_changed=()
+while IFS= read -r path; do
+  [ -n "${path}" ] && protected_changed+=("${path}")
+done < <(git diff --name-only "${REMOTE_NAME}/${TARGET_BRANCH}...${REMOTE_NAME}/${SOURCE_BRANCH}" -- "${PROTECTED_FILES[@]}")
+
 if [ "${RESET_TO_REMOTE}" = "1" ]; then
   git checkout -B "${TARGET_BRANCH}" "${REMOTE_NAME}/${TARGET_BRANCH}"
 else
@@ -67,6 +77,14 @@ else
   echo "Conflicted files:" >&2
   git diff --name-only --diff-filter=U >&2
   exit 1
+fi
+
+if [ "${#protected_changed[@]}" -gt 0 ]; then
+  echo
+  echo "Manual review recommended for protected HPC bridge files touched by ${SOURCE_BRANCH}:"
+  for path in "${protected_changed[@]}"; do
+    echo "  - ${path}"
+  done
 fi
 
 if [ "${PUSH_CHANGES}" -eq 1 ]; then
