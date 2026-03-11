@@ -72,6 +72,12 @@ What this means operationally:
 The most likely conflict zone is still the local dashboard bridge files, because `hpc-v` intentionally changes how the local UI connects to the remote runtime.
 So the automation removes routine sync work, but it does not make conflicting edits mathematically disappear.
 
+In practice:
+
+- application changes merged into `main` now flow into `hpc-v` automatically through GitHub Actions
+- `hpc-v` remains the branch you deploy to Toubkal
+- if the workflow cannot merge cleanly, it stops and you resolve the conflict in git once, then normal automation resumes
+
 ## Architecture
 
 The branch works like this:
@@ -92,8 +98,10 @@ The branch works like this:
 - [`hpc/scraper/push_code.sh`](/mnt/storage/projects/hpc/scraper/push_code.sh)
   - Pushes the scraper payload from local to Toubkal.
   - Prunes remote folders that should not live on the cluster.
+  - Reuses a single SSH control connection so deployment usually needs only one MFA/TOTP challenge.
 - [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
   - Pushes code, refreshes the remote runtime, submits the Slurm job, and opens the local SSH tunnel.
+  - Reuses the same SSH control socket across deploy and scheduler calls to avoid repeated authentication prompts.
 - [`hpc/scraper/install_remote.sh`](/mnt/storage/projects/hpc/scraper/install_remote.sh)
   - Builds the remote Python environment, installs Playwright Chromium, and pulls the PostgreSQL container image.
 - [`hpc/scraper/orchestrator.slurm`](/mnt/storage/projects/hpc/scraper/orchestrator.slurm)
@@ -105,6 +113,7 @@ The branch works like this:
 
 - [`hpc/scraper/pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
   - Lists remote runs or copies one remote output folder back to local `outputs/hpc/`.
+  - Also reuses the SSH control socket so listing or copying runs does not repeatedly re-authenticate during one operation.
 
 ### Local UI
 
@@ -158,6 +167,8 @@ hpc/scraper/push_code.sh
 
 This updates the remote mirror without launching a job.
 
+`push_code.sh` now opens one shared SSH master connection for the whole sync, so the normal expectation is one MFA prompt per deployment instead of one prompt per `ssh` or `rsync` subcommand.
+
 ### Step 3. Start or restart the remote stack
 
 If you want the full flow from local, use:
@@ -174,6 +185,7 @@ This does four things:
 4. opens the SSH tunnel on local port `8910`
 
 This is the easiest entrypoint.
+It is also the preferred path when MFA is enabled, because the script now reuses one SSH control socket across the whole deployment.
 
 ### Step 4. Start the local dashboard
 
@@ -365,6 +377,16 @@ Check:
 - the Slurm job is still running
 - the correct compute node is being tunneled
 - local port `8910` is actually forwarded
+
+### Deployment keeps asking for TOTP multiple times
+
+The scripts now try to avoid that by reusing a single SSH control socket.
+
+If you still see repeated prompts, check:
+
+- you are using the current versions of `push_code.sh`, `pull_run.sh`, and `launch_remote.sh`
+- no stale SSH socket path is conflicting with the current one
+- the login host did not drop the master connection mid-run
 
 ### Scrape fails immediately after starting
 
