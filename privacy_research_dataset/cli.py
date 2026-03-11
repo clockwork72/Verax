@@ -752,12 +752,12 @@ def _origin_for_site(site: str) -> str | None:
 
 
 def _load_crux_cache(cache_path: Path) -> dict[str, bool]:
-    """Load the persistent CrUX origin cache from disk (origin → present bool)."""
+    """Load the persistent CrUX origin cache from disk (positive origins only)."""
     if not cache_path.exists():
         return {}
     try:
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
-        return {k: bool(v) for k, v in raw.items() if isinstance(k, str)}
+        return {k: True for k, v in raw.items() if isinstance(k, str) and bool(v)}
     except Exception:
         return {}
 
@@ -766,7 +766,7 @@ def _save_crux_cache(cache_path: Path, cache: dict[str, bool]) -> None:
     """Persist the CrUX origin cache to disk."""
     try:
         cache_path.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=1),
+            json.dumps({k: True for k, v in sorted(cache.items()) if v}, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
     except Exception as e:
@@ -812,7 +812,7 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
 
     cache_lock = asyncio.Lock()
     headers = {"Content-Type": "application/json"}
-    # Start with disk cache as the in-memory cache; new hits are added here too.
+    # Start with disk cache as the in-memory cache; only positive hits are stored.
     cache: dict[str, bool] = dict(disk_cache)
     status_counts: dict[str, int] = {}
     restricted_hits: dict[str, int] = {}
@@ -825,10 +825,15 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
             origin = _origin_for_site(dom)
             if not origin:
                 return False
+            origin_http = None
+            if args.crux_allow_http and origin.startswith("https://"):
+                origin_http = "http://" + origin[len("https://"):]
 
             async with cache_lock:
                 if origin in cache:
-                    return cache[origin]
+                    return True
+                if origin_http and origin_http in cache:
+                    return True
 
             ok, status, err = await _crux_has_record(
                 session,
@@ -843,8 +848,9 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
             elif err:
                 status_counts[err] = status_counts.get(err, 0) + 1
 
-            if (not ok) and args.crux_allow_http and origin.startswith("https://"):
-                origin_http = "http://" + origin[len("https://"):]
+            cache_key = origin if ok else None
+
+            if (not ok) and origin_http:
                 ok, status, err = await _crux_has_record(
                     session,
                     api_key=api_key,
@@ -857,10 +863,12 @@ async def _crux_filter_sites(args: argparse.Namespace, sites: list[dict[str, Any
                         restricted_hits[origin_http] = restricted_hits.get(origin_http, 0) + 1
                 elif err:
                     status_counts[err] = status_counts.get(err, 0) + 1
+                if ok:
+                    cache_key = origin_http
 
             async with cache_lock:
-                if origin not in cache:
-                    cache[origin] = ok
+                if cache_key and cache_key not in cache:
+                    cache[cache_key] = True
                     new_entries += 1
             return ok
 
@@ -1140,8 +1148,6 @@ async def _run(args: argparse.Namespace) -> None:
     )
     sites = _load_input_sites(args)
     target_total_sites = len(sites)
-    if isinstance(getattr(args, "expected_total_sites", None), int) and int(args.expected_total_sites) > 0:
-        target_total_sites = max(target_total_sites, int(args.expected_total_sites))
 
     def emit_event(evt: dict[str, Any]) -> None:
         if not args.emit_events:
@@ -1206,6 +1212,7 @@ async def _run(args: argparse.Namespace) -> None:
             current_stage = "crux_filter"
             try:
                 sites = await _crux_filter_sites(args, sites)
+                target_total_sites = len(sites)
                 emit_event({
                     "type": "run_stage",
                     "run_id": run_id,
@@ -1220,6 +1227,7 @@ async def _run(args: argparse.Namespace) -> None:
             current_stage = "prefilter"
             try:
                 sites = await _prefilter_sites(args, sites)
+                target_total_sites = len(sites)
                 emit_event({
                     "type": "run_stage",
                     "run_id": run_id,
@@ -1363,6 +1371,7 @@ async def _run(args: argparse.Namespace) -> None:
                     warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
 
             async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
+                nonlocal tp_cache_dirty_entries
                 req_key = _normalize_policy_url(policy_url) or policy_url
                 owner = False
                 lookup_key = req_key

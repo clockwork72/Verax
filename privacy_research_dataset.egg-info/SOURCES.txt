@@ -26,6 +26,10 @@ privacy_research_dataset/utils/etld.py
 privacy_research_dataset/utils/io.py
 privacy_research_dataset/utils/logging.py
 tests/test_annotator.py
+tests/test_cli_pipeline.py
+tests/test_cli_resource_scaling.py
+tests/test_cli_resume_logic.py
 tests/test_non_browsable.py
 tests/test_policy_finder.py
+tests/test_summary.py
 tests/test_text_extract.py

@@ -16,7 +16,7 @@ dependencies = [
   "tldextract>=5.1.0",
   "beautifulsoup4>=4.12.3",
   "lxml>=5.2.2",
-  "requests>=2.31.0",
+  "chardet>=5.2.0,<6",
   "tqdm>=4.66.4",
   "python-dateutil>=2.9.0.post0",
   "aiohttp>=3.9",
@@ -35,6 +35,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9",
+]
 openwpm = [
   # OpenWPM is heavy and OS-dependent. Install separately if you need it.
 ]

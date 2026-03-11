@@ -1,11 +1,14 @@
 {
-  "name": "dashboard",
+  "name": "privacy-research-dataset-dashboard",
   "private": true,
   "version": "0.0.0",
+  "description": "Electron dashboard for the Privacy Research Dataset pipeline",
+  "author": "Privacy Research Dataset contributors",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build": "tsc && vite build",
+    "package": "npm run build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },

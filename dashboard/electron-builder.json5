@@ -1,9 +1,9 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  "appId": "org.privacyresearch.dataset.dashboard",
   "asar": true,
-  "productName": "YourAppName",
+  "productName": "Privacy Research Dataset",
   "directories": {
     "output": "release/${version}"
   },
@@ -35,6 +35,7 @@
     "deleteAppDataOnUninstall": false
   },
   "linux": {
+    "category": "Science",
     "target": [
       "AppImage"
     ],

@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -585,7 +585,7 @@ async def process_site(
     - Extract third-party domains from network logs (Crawl4AI) or OpenWPM (optional)
     - Map third parties via Tracker Radar / Ghostery TrackerDB (+ optionally fetch their policy texts)
     """
-    started_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     t_total = time.perf_counter()
 
     site_url = domain_or_url.strip()
@@ -624,7 +624,7 @@ async def process_site(
             "total_ms": int((time.perf_counter() - t_total) * 1000),
             "run_id": run_id,
             "started_at": started_at,
-            "ended_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
 
     # 2) Privacy policy discovery + fetch
@@ -978,5 +978,5 @@ async def process_site(
         "total_ms": int((time.perf_counter() - t_total) * 1000),
         "run_id": run_id,
         "started_at": started_at,
-        "ended_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }

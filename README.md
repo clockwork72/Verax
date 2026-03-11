@@ -33,9 +33,11 @@ A research pipeline that crawls websites, discovers and extracts their privacy p
 
 ```
 privacy_research_dataset/   # core Python package (scraper + annotator)
-scripts/                    # index builders, Tranco helpers
-tracker-radar/              # DuckDuckGo Tracker Radar (clone here)
-trackerdb/                  # Ghostery TrackerDB (clone here, optional)
+scripts/                    # bootstrap, verification, index builders, Tranco helpers
+tracker_radar_index.json    # prebuilt DuckDuckGo Tracker Radar index
+trackerdb_index.json        # prebuilt Ghostery TrackerDB index
+tracker-radar/              # optional source checkout for rebuilding indexes
+trackerdb/                  # optional source checkout for rebuilding indexes
 dashboard/                  # Electron + Vite UI
 outputs/                    # per-run output folders
 hpc/                        # HPC job scripts (optional)
@@ -45,64 +47,71 @@ hpc/                        # HPC job scripts (optional)
 
 ## Installation (Ubuntu)
 
-### System requirements
+### Fast path
 
 ```bash
-# Node.js 18+ (via NodeSource)
+git clone <repo-url>
+cd <repo-dir>
+./scripts/bootstrap_ubuntu.sh
+source .venv/bin/activate
+export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
+./scripts/verify_setup.sh
+```
+
+`bootstrap_ubuntu.sh` does the full first-run setup on Ubuntu:
+- installs required system packages (`python3-venv`, `pandoc`, `git`, Node.js 20 if needed)
+- creates `.venv/`
+- installs the Python package with dev tools
+- installs the Playwright Chromium browser and its Linux dependencies
+- runs `npm ci` in [`dashboard/`](/mnt/storage/projects/dashboard)
+
+`verify_setup.sh` then checks the Python CLIs, runs the test suite, and builds the dashboard.
+
+### Manual setup
+
+If you prefer to do the steps yourself instead of using the bootstrap script:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip git curl pandoc
+
+# Install Node.js 20 if node is missing or too old
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# pandoc (for policy text preprocessing)
-sudo apt-get install -y pandoc
-
-# Git (to clone tracker datasets)
-sudo apt-get install -y git
-```
-
-### Python environment
-
-Python 3.10+ is required. [Miniforge](https://github.com/conda-forge/miniforge) (conda-forge) is recommended:
-
-```bash
-# Download and install Miniforge (skip if conda/mamba already available)
-wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-bash Miniforge3-Linux-x86_64.sh -b -p ~/miniforge3
-~/miniforge3/bin/conda init bash
-source ~/.bashrc
-
-# Create and activate the project environment
-conda create -n privacy python=3.12 -y
-conda activate privacy
-
-# Install the package and all dependencies
-pip install -e .
-
-# Install Playwright browser (used by Crawl4AI for JavaScript-heavy pages)
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -e ".[dev]"
 python -m playwright install chromium
-python -m playwright install-deps chromium
+sudo .venv/bin/python -m playwright install-deps chromium
+
+cd dashboard
+npm ci
+cd ..
 ```
 
-> **Alternative (venv without conda)**
-> ```bash
-> python3 -m venv .venv
-> source .venv/bin/activate
-> pip install -e .
-> python -m playwright install chromium
-> python -m playwright install-deps chromium
-> ```
+### Tracker indexes
 
-### Build tracker indexes
+This repository already ships with working index files:
+- [`tracker_radar_index.json`](/mnt/storage/projects/tracker_radar_index.json)
+- [`trackerdb_index.json`](/mnt/storage/projects/trackerdb_index.json)
+
+You do not need to clone external tracker repositories for normal use.
+
+If you want to rebuild the indexes from upstream sources, clone those repositories into a separate directory to avoid path conflicts with the repository checkout:
 
 ```bash
-# DuckDuckGo Tracker Radar (required for entity mapping)
-git clone https://github.com/duckduckgo/tracker-radar.git tracker-radar
+mkdir -p external
+git clone https://github.com/duckduckgo/tracker-radar.git external/tracker-radar
 python scripts/build_tracker_radar_index.py \
-  --tracker-radar-dir tracker-radar --out tracker_radar_index.json
+  --tracker-radar-dir external/tracker-radar \
+  --out tracker_radar_index.json
 
-# Ghostery TrackerDB (optional, used as fallback in mixed mode)
-git clone https://github.com/ghostery/trackerdb trackerdb
+git clone https://github.com/ghostery/trackerdb external/trackerdb
 python scripts/build_trackerdb_index.py \
-  --trackerdb-dir trackerdb --out trackerdb_index.json
+  --trackerdb-dir external/trackerdb \
+  --out trackerdb_index.json
 ```
 
 ---
@@ -110,23 +119,17 @@ python scripts/build_trackerdb_index.py \
 ## Running the dashboard
 
 ```bash
+source .venv/bin/activate
+export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
 cd dashboard
-npm install
 npm run dev
 ```
 
-The dashboard launches the scraper and annotator as subprocesses. It auto-detects the active conda environment via `$CONDA_PREFIX`. If that is not set or points to the wrong environment, export the interpreter path explicitly:
+The dashboard launches the scraper and annotator as subprocesses. The most reliable setup is to point it at the repository virtualenv explicitly:
 
 ```bash
-export PRIVACY_DATASET_PYTHON=/path/to/conda/envs/privacy/bin/python
-# example with miniforge default location:
-export PRIVACY_DATASET_PYTHON=~/miniforge3/envs/privacy/bin/python
-```
-
-You can add this export to your `~/.bashrc` or pass it when starting the dashboard:
-
-```bash
-PRIVACY_DATASET_PYTHON=~/miniforge3/envs/privacy/bin/python npm run dev
+export PRIVACY_DATASET_PYTHON="$PWD/../.venv/bin/python"
+npm run dev
 ```
 
 ---
@@ -186,6 +189,19 @@ privacy-dataset-annotate \
   --concurrency 3
 ```
 
+To verify the local environment before a real run:
+
+```bash
+./scripts/verify_setup.sh
+```
+
+To package the Electron app after the regular dashboard build succeeds:
+
+```bash
+cd dashboard
+npm run package
+```
+
 ---
 
 ## Output structure
@@ -207,10 +223,19 @@ Each run stores its files under `outputs/output_<runid>/`:
 ## Troubleshooting
 
 **Dashboard cannot start the scraper**
-Set `PRIVACY_DATASET_PYTHON` to the full path of the Python interpreter in the correct environment (see [Running the dashboard](#running-the-dashboard) above).
+Set `PRIVACY_DATASET_PYTHON` to the repository virtualenv interpreter:
+
+```bash
+export PRIVACY_DATASET_PYTHON="$PWD/.venv/bin/python"
+```
 
 **`ModuleNotFoundError` for any package**
-Make sure you ran `pip install -e .` inside the activated conda/venv environment, and that the dashboard is using the same interpreter via `PRIVACY_DATASET_PYTHON`.
+Run:
+
+```bash
+./scripts/bootstrap_ubuntu.sh
+./scripts/verify_setup.sh
+```
 
 **Annotation shows "Tunnel offline"**
 Start a local or remote LLM server on port 8901. The health check hits `http://localhost:8901/health`.
@@ -222,4 +247,8 @@ Make sure the run was started from the dashboard or used `--explorer-out` and `-
 Enable the Chrome UX Report API for your key in Google Cloud Console.
 
 **`playwright install` fails**
-Run `python -m playwright install-deps chromium` (requires sudo on some systems) to install OS-level browser dependencies.
+Run:
+
+```bash
+sudo .venv/bin/python -m playwright install-deps chromium
+```
