@@ -25,4 +25,5 @@ jobs:
 
       - name: Merge main into hpc-v
         run: |
+          export SYNC_RESET_TO_REMOTE=1
           bash scripts/sync_main_to_hpc.sh --push

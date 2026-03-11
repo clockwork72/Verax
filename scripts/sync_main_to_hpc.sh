@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_NAME="${SYNC_REMOTE_NAME:-origin}"
 SOURCE_BRANCH="${SYNC_SOURCE_BRANCH:-main}"
 TARGET_BRANCH="${SYNC_TARGET_BRANCH:-hpc-v}"
+RESET_TO_REMOTE="${SYNC_RESET_TO_REMOTE:-0}"
 PUSH_CHANGES=0
 
 usage() {
@@ -22,6 +23,7 @@ Environment overrides:
   SYNC_REMOTE_NAME
   SYNC_SOURCE_BRANCH
   SYNC_TARGET_BRANCH
+  SYNC_RESET_TO_REMOTE
 EOF
 }
 
@@ -51,7 +53,12 @@ if [ -n "$(git status --short)" ]; then
 fi
 
 git fetch "${REMOTE_NAME}" "${SOURCE_BRANCH}" "${TARGET_BRANCH}"
-git checkout -B "${TARGET_BRANCH}" "${REMOTE_NAME}/${TARGET_BRANCH}"
+
+if [ "${RESET_TO_REMOTE}" = "1" ]; then
+  git checkout -B "${TARGET_BRANCH}" "${REMOTE_NAME}/${TARGET_BRANCH}"
+else
+  git checkout "${TARGET_BRANCH}"
+fi
 
 if git merge --no-edit "${REMOTE_NAME}/${SOURCE_BRANCH}"; then
   echo "Merged ${REMOTE_NAME}/${SOURCE_BRANCH} into ${TARGET_BRANCH}."
