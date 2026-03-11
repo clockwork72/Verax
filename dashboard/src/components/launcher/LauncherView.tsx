@@ -176,7 +176,7 @@ export function LauncherView({
   const logRef = useRef<HTMLDivElement | null>(null)
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
   const [showFlow, setShowFlow] = useState(false)
-  const [annotateConcurrency, setAnnotateConcurrency] = useState('3')
+  const [annotateConcurrency, setAnnotateConcurrency] = useState('1')
   const visibleLogs = useMemo(() => {
     if (logs && logs.length > 0) return logs.slice(-120)
     if (!hasRun) return []
@@ -635,7 +635,7 @@ export function LauncherView({
                       if (annotateRunning) {
                         onStopAnnotate?.()
                       } else {
-                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 3, force: false })
+                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })
                       }
                     }}
                     disabled={!annotateRunning && !hasRun && !(annotationStats?.total_sites > 0)}
@@ -646,7 +646,7 @@ export function LauncherView({
                     <button
                       className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)]"
                       onClick={() =>
-                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 3, force: true })
+                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: true })
                       }
                     >
                       Re-annotate (force)

@@ -625,7 +625,7 @@ function App() {
     const res = await window.scraper.startAnnotate({
       artifactsDir: `${outDir}/artifacts`,
       llmModel: opts.llmModel ?? llmModel,
-      concurrency: opts.concurrency ?? 3,
+      concurrency: opts.concurrency ?? 1,
       force: opts.force ?? false,
     })
     if (!res?.ok) {

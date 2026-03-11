@@ -167,6 +167,42 @@ function buildTopPhrases(
     .slice(0, n)
 }
 
+function deriveSourceText(statement: Statement | undefined, doc: DocumentJson | null): string {
+  if (!statement || !doc?.blocks?.length) return ''
+  const blockIdxs = new Set<number>()
+  for (const field of FIELDS) {
+    const vals = (statement[field] as PhraseId[] | undefined) ?? []
+    for (const [idx] of vals) {
+      if (idx >= 0 && idx < doc.blocks.length) blockIdxs.add(idx)
+    }
+  }
+  return [...blockIdxs]
+    .sort((a, b) => a - b)
+    .map((idx) => doc.blocks[idx]?.text ?? '')
+    .filter(Boolean)
+    .join(' ')
+}
+
+function parseStatementLines(raw: string, doc: DocumentJson | null): AnnotatedStatement[] {
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((line: string) => {
+      try {
+        const parsed = JSON.parse(line)
+        if (!parsed || typeof parsed !== 'object' || !parsed.statement) return null
+        return {
+          chunk_index: Number(parsed.chunk_index) || 0,
+          source_text: String(parsed.source_text || deriveSourceText(parsed.statement, doc) || ''),
+          statement: parsed.statement as Statement,
+        } as AnnotatedStatement
+      } catch {
+        return null
+      }
+    })
+    .filter((item): item is AnnotatedStatement => Boolean(item))
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function MiniBar({ count, max, color }: { count: number; max: number; color: string }) {
@@ -415,11 +451,15 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
     const root = outDir || 'outputs'
 
     try {
-      const [pRes, sRes, dRes] = await Promise.all([
+      const [pRes, sRes, bRes, dRes] = await Promise.all([
         window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/policy.txt` }),
         window.scraper.readArtifactText({
           outDir: root,
           relativePath: `${base}/policy_statements_annotated.jsonl`,
+        }),
+        window.scraper.readArtifactText({
+          outDir: root,
+          relativePath: `${base}/policy_statements.jsonl`,
         }),
         window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/document.json` }),
       ])
@@ -430,28 +470,23 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
         setLoadError(`Policy text not found at ${root}/${base}/policy.txt`)
       }
 
-      if (sRes?.ok && sRes.data) {
-        const parsed: AnnotatedStatement[] = (sRes.data as string)
-          .split('\n')
-          .filter(Boolean)
-          .map((l: string) => {
-            try {
-              return JSON.parse(l)
-            } catch {
-              return null
-            }
-          })
-          .filter(Boolean)
-        setStatements(parsed)
-      }
-
+      let parsedDoc: DocumentJson | null = null
       if (dRes?.ok && dRes.data) {
         try {
-          setDocJson(JSON.parse(dRes.data as string))
+          parsedDoc = JSON.parse(dRes.data as string)
+          setDocJson(parsedDoc)
         } catch {
           /* ignore */
         }
       }
+
+      const annotatedStatements = sRes?.ok && sRes.data
+        ? parseStatementLines(sRes.data as string, parsedDoc)
+        : []
+      const baseStatements = bRes?.ok && bRes.data
+        ? parseStatementLines(bRes.data as string, parsedDoc)
+        : []
+      setStatements(annotatedStatements.length > 0 ? annotatedStatements : baseStatements)
     } catch (e) {
       setLoadError(String(e))
     }
