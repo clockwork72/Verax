@@ -25,7 +25,6 @@ const DEEPSEEK_MODEL = { value: 'openai/local', label: 'DeepSeek-R1-70B (HPC)', 
 const logLines = ['']
 
 const STAGE_STEPS = ['Home fetch', 'Policy discovery', '3P extraction', '3P policies']
-const PIPELINE_STEPS = ['Fetch', 'Crawl', 'Extract', 'Map', 'Output']
 
 // Arc progress circle
 function ArcProgress({ pct, size = 80 }: { pct: number; size?: number }) {
@@ -104,6 +103,7 @@ type LauncherViewProps = {
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
   topNLocked?: boolean
+  lastTrancoRank?: number | null
 }
 
 export function LauncherView({
@@ -162,6 +162,7 @@ export function LauncherView({
   resumeMode = false,
   onToggleResumeMode,
   topNLocked = false,
+  lastTrancoRank = null,
 }: LauncherViewProps) {
   const logRef = useRef<HTMLDivElement | null>(null)
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
@@ -244,7 +245,7 @@ export function LauncherView({
         excludeSameEntity={excludeSameEntity}
         onToggleExcludeSameEntity={onToggleExcludeSameEntity}
         onStart={onStart}
-        running={running}
+        running={scraperActive}
       />
 
       {/* ── Bridge Status Card ─────────────────────────────────────── */}
@@ -379,7 +380,7 @@ export function LauncherView({
                 disabled={topNLocked || !bridgeReady}
               />
               <span className="text-[12px] text-[var(--muted-text)]">
-                {topNLocked ? 'locked to dataset' : resumeMode ? 'target total' : 'sites from Tranco'}
+                {topNLocked ? 'locked to dataset' : resumeMode ? 'target total' : 'sites to scrape'}
               </span>
 
               <div className="ml-2 flex flex-wrap items-center gap-1.5">
@@ -420,16 +421,16 @@ export function LauncherView({
                 </span>
               </div>
             </div>
-            {running && (
+            {scraperActive && (
               <div className="flex items-center gap-1.5 text-[11px] text-[var(--color-primary)]">
                 <PulseRing status="online" size={7} />
                 {Object.keys(activeSites).length} concurrent
               </div>
             )}
-            {!running && progress >= 100 && (
+            {!scraperActive && progress >= 100 && (
               <span className="text-[11px] text-[var(--color-success)]">Completed</span>
             )}
-            {etaText && running && (
+            {etaText && scraperActive && (
               <span className="text-[11px] text-[var(--muted-text)]">ETA {etaText}</span>
             )}
           </BentoCard>
@@ -446,46 +447,6 @@ export function LauncherView({
             transition={{ type: 'spring', stiffness: 280, damping: 24 }}
           >
             <div className="glass-card p-5 flex flex-col gap-5">
-              {/* Pipeline step timeline */}
-              <div className="flex items-center gap-0">
-                {PIPELINE_STEPS.map((step, i) => {
-                  const stepPct = (i / (PIPELINE_STEPS.length - 1)) * 100
-                  const done = progress > stepPct + 5
-                  const active = !done && progress >= stepPct - 5
-                  return (
-                    <div key={step} className="flex flex-1 items-center">
-                      <div className="flex flex-col items-center gap-1.5">
-                        <div className={`relative flex h-7 w-7 items-center justify-center rounded-full border-2 transition-all duration-500 ${
-                          done
-                            ? 'border-[var(--color-primary)] bg-[rgba(0,230,255,0.12)]'
-                            : active
-                              ? 'border-[var(--color-primary)] bg-transparent'
-                              : 'border-[var(--border-soft)] bg-transparent'
-                        }`}>
-                          {done
-                            ? <svg className="h-3.5 w-3.5 text-[var(--color-primary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
-                            : active
-                              ? <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-primary)]" />
-                              : <span className="h-2 w-2 rounded-full bg-[var(--border-soft)]" />
-                          }
-                        </div>
-                        <span className={`text-[10px] font-medium ${done || active ? 'text-[var(--color-text)]' : 'text-[var(--muted-text)]'}`}>
-                          {step}
-                        </span>
-                      </div>
-                      {i < PIPELINE_STEPS.length - 1 && (
-                        <div className="relative mx-1 mt-[-14px] h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--border-soft)]">
-                          <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-[var(--color-primary)] transition-all duration-700"
-                            style={{ width: done ? '100%' : active ? '50%' : '0%', boxShadow: '0 0 6px rgba(0,230,255,0.6)' }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-
               {/* Header + controls */}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -494,7 +455,7 @@ export function LauncherView({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[var(--muted-text)]">
-                    {progress.toFixed(0)}% · {topN} sites · {etaText ? `ETA ${etaText}` : 'ETA --'}
+                    {progress.toFixed(0)}% · {topN} sites{lastTrancoRank ? ` · Tranco rank #${lastTrancoRank}` : ''} · {etaText ? `ETA ${etaText}` : 'ETA --'}
                   </span>
                   {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
                     <span className="text-[12px] text-[var(--color-primary)]">
@@ -632,7 +593,7 @@ export function LauncherView({
               >
                 {visibleLogs.length === 0 && <div className="text-[var(--muted-text)]">Launch a run to see logs.</div>}
                 {visibleLogs.map((line, i) => (
-                  <div key={`${line}-${i}`} className={`flex gap-2 ${i === visibleLogs.length - 1 ? 'shimmer-bar rounded' : ''}`}>
+                  <div key={`${line}-${i}`} className="flex gap-2">
                     <span className="shrink-0 text-[var(--muted-text)]">{String(i + 1).padStart(2, '0')}</span>
                     <span className="text-[var(--color-text)]">{line}</span>
                   </div>
@@ -672,24 +633,27 @@ export function LauncherView({
                 </button>
               )}
               <motion.button
-                className={`focusable rounded-full border px-5 py-2 text-xs font-semibold transition-colors ${
-                  annotateRunning
-                    ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
-                    : 'border-[var(--color-primary)] bg-[rgba(0,230,255,0.08)] text-[var(--color-primary)]'
-                }`}
-                onClick={() => {
-                  if (annotateRunning) onStopAnnotate?.()
-                  else onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })
-                }}
-                disabled={!annotateRunning && !hasRun && !((annotationStats?.total_sites ?? 0) > 0)}
+                className="focusable rounded-full border border-[var(--color-primary)] bg-[rgba(0,230,255,0.08)] px-5 py-2 text-xs font-semibold text-[var(--color-primary)] transition-colors"
+                onClick={() => onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })}
+                disabled={annotateRunning || !bridgeReady || (!hasRun && !((annotationStats?.total_sites ?? 0) > 0))}
                 whileTap={reduce ? undefined : { scale: 0.95 }}
               >
-                {annotateRunning ? 'Stop annotation' : 'Annotate policies'}
+                Annotate policies
               </motion.button>
+              {annotateRunning && (
+                <motion.button
+                  className="focusable rounded-full border border-[var(--color-danger)] px-4 py-2 text-xs font-semibold text-[var(--color-danger)] transition-colors"
+                  onClick={onStopAnnotate}
+                  whileTap={reduce ? undefined : { scale: 0.95 }}
+                >
+                  Stop annotation
+                </motion.button>
+              )}
               {!annotateRunning && (hasRun || (annotationStats?.total_sites ?? 0) > 0) && (
                 <button
-                  className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] transition-colors hover:text-[var(--color-text)]"
+                  className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] transition-colors hover:text-[var(--color-text)] disabled:opacity-40 disabled:cursor-not-allowed"
                   onClick={() => onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: true })}
+                  disabled={!bridgeReady}
                 >
                   Re-annotate (force)
                 </button>
@@ -751,7 +715,7 @@ export function LauncherView({
           )}
 
           {/* Active annotation sites */}
-          {annotateSites.length > 0 && (
+          {annotateRunning && annotateSites.length > 0 && (
             <div>
               <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Actively annotating</p>
               <div className="overflow-hidden rounded-xl border border-[var(--border-soft)]">

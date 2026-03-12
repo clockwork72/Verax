@@ -13,6 +13,7 @@ import type {
   RunRecord,
   RunState,
   RunSummary,
+  ScraperActivitySnapshot,
   SiteActionResponse,
   StartRunResponse,
   ScraperExitEvent,
@@ -597,6 +598,15 @@ export function subscribeScraperEvents(handlers: {
   if (handlers.onLog && scraper.onLog) scraper.onLog(handlers.onLog)
   if (handlers.onError && scraper.onError) scraper.onError(handlers.onError)
   if (handlers.onExit && scraper.onExit) scraper.onExit(handlers.onExit)
+  return () => {}
+}
+
+export function subscribeScraperActivitySnapshots(
+  callback: (snapshot: ScraperActivitySnapshot) => void,
+): (() => void) | null {
+  const scraper = getScraperBridge()
+  if (!scraper?.onActivitySnapshot) return null
+  scraper.onActivitySnapshot(callback)
   return () => {}
 }
 

@@ -46,6 +46,10 @@ contextBridge.exposeInMainWorld('scraper', {
     ipcRenderer.removeAllListeners('scraper:event')
     ipcRenderer.on('scraper:event', (_evt, data) => callback(data))
   },
+  onActivitySnapshot: (callback: (snapshot: any) => void) => {
+    ipcRenderer.removeAllListeners('scraper:activity-snapshot')
+    ipcRenderer.on('scraper:activity-snapshot', (_evt, data) => callback(data))
+  },
   onLog: (callback: (event: any) => void) => {
     ipcRenderer.removeAllListeners('scraper:log')
     ipcRenderer.on('scraper:log', (_evt, data) => callback(data))

@@ -129,6 +129,12 @@ export type RunMappingSummary = {
   radar_mapped: number
   trackerdb_mapped: number
   unmapped: number
+  /** Unique eTLD+1 domains matched via Tracker Radar */
+  unique_radar_mapped?: number
+  /** Unique eTLD+1 domains matched via TrackerDB */
+  unique_trackerdb_mapped?: number
+  /** Unique eTLD+1 domains with no mapping source */
+  unique_unmapped?: number
 }
 
 export type RunThirdPartySummary = {
@@ -425,6 +431,13 @@ export type CompletedSiteInfo = {
   status: string
   cached: boolean
   annotated?: boolean
+}
+
+export type ScraperActivitySnapshot = {
+  activeSites: Record<string, ActiveSiteInfo>
+  recentCompleted: CompletedSiteInfo[]
+  running: boolean
+  currentOutDir?: string
 }
 
 export type ScraperRunStartedEvent = {

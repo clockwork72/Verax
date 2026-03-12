@@ -37,10 +37,91 @@ const policyWindows = new Set<BrowserWindow>()
 const logWindows = new Set<BrowserWindow>()
 let hpcPollCursor = 0
 let hpcPollTimer: NodeJS.Timeout | null = null
+let scraperActivitySnapshot: {
+  activeSites: Record<string, { label: string; stepIndex: number; rank: number }>
+  recentCompleted: Array<{ site: string; status: string; cached: boolean; annotated?: boolean }>
+} = {
+  activeSites: {},
+  recentCompleted: [],
+}
+
+const SCRAPER_STAGE_LABELS: Record<string, { label: string; stepIndex: number }> = {
+  home_fetch: { label: 'Home fetch', stepIndex: 0 },
+  policy_discovery: { label: 'Policy discovery', stepIndex: 1 },
+  third_party_extract: { label: '3P extraction', stepIndex: 2 },
+  third_party_policy_fetch: { label: '3P policies', stepIndex: 3 },
+}
 
 function sendToRenderer(channel: string, payload: unknown) {
   if (win && !win.isDestroyed()) {
     win.webContents.send(channel, payload)
+  }
+}
+
+function resetScraperActivitySnapshot() {
+  scraperActivitySnapshot = {
+    activeSites: {},
+    recentCompleted: [],
+  }
+}
+
+function pushScraperActivitySnapshot(running: boolean, currentOutDir?: string) {
+  sendToRenderer('scraper:activity-snapshot', {
+    activeSites: scraperActivitySnapshot.activeSites,
+    recentCompleted: scraperActivitySnapshot.recentCompleted,
+    running,
+    currentOutDir,
+  })
+}
+
+function applyScraperActivityPayload(payload: unknown) {
+  if (!payload || typeof payload !== 'object') return
+  const event = payload as Record<string, unknown>
+  const type = typeof event.type === 'string' ? event.type : ''
+  const site = typeof event.site === 'string' ? event.site : ''
+  const rank = typeof event.rank === 'number' && Number.isFinite(event.rank) ? event.rank : 0
+
+  switch (type) {
+    case 'run_started':
+      resetScraperActivitySnapshot()
+      return
+    case 'site_started':
+      if (!site) return
+      scraperActivitySnapshot.activeSites[site] = { label: 'Home fetch', stepIndex: 0, rank }
+      return
+    case 'site_stage': {
+      if (!site) return
+      const stage = typeof event.stage === 'string' ? event.stage : ''
+      const stageInfo = SCRAPER_STAGE_LABELS[stage]
+      if (!stageInfo) return
+      scraperActivitySnapshot.activeSites[site] = {
+        ...(scraperActivitySnapshot.activeSites[site] ?? { label: stageInfo.label, stepIndex: stageInfo.stepIndex, rank }),
+        label: stageInfo.label,
+        stepIndex: stageInfo.stepIndex,
+        rank: scraperActivitySnapshot.activeSites[site]?.rank ?? rank,
+      }
+      return
+    }
+    case 'site_finished': {
+      if (!site) return
+      delete scraperActivitySnapshot.activeSites[site]
+      const completed = {
+        site,
+        status: typeof event.status === 'string' ? event.status : 'ok',
+        cached: Boolean(event.cached),
+        annotated: typeof event.annotated === 'boolean' ? event.annotated : undefined,
+      }
+      scraperActivitySnapshot.recentCompleted = [
+        completed,
+        ...scraperActivitySnapshot.recentCompleted.filter((entry) => entry.site !== site),
+      ].slice(0, 15)
+      return
+    }
+    case 'run_completed':
+      scraperActivitySnapshot.activeSites = {}
+      return
+    default:
+      return
   }
 }
 
@@ -99,11 +180,18 @@ function ensureHpcPoller() {
     if (!res?.ok) return
     hpcPollCursor = Number(res.cursor || hpcPollCursor)
     for (const item of res.items || []) {
+      if (item?.channel === 'scraper:event') {
+        applyScraperActivityPayload(item.payload)
+      }
       sendToRenderer('pipeline:event', item)
       if (item?.channel) {
         sendToRenderer(item.channel, item.payload)
       }
     }
+    if (!res.running) {
+      scraperActivitySnapshot.activeSites = {}
+    }
+    pushScraperActivitySnapshot(Boolean(res.running), typeof res.currentOutDir === 'string' ? res.currentOutDir : undefined)
   }, 1500)
 }
 
@@ -526,17 +614,27 @@ ipcMain.handle('scraper:list-runs', async (_event, baseOutDir?: string) => {
 })
 
 ipcMain.handle('scraper:start', async (_event, payload?: unknown) => {
-  return hpcRequest('/api/start-run', {
+  const result = await hpcRequest('/api/start-run', {
     method: 'POST',
     body: JSON.stringify(payload || {}),
   })
+  if (result?.ok) {
+    resetScraperActivitySnapshot()
+    pushScraperActivitySnapshot(true)
+  }
+  return result
 })
 
 ipcMain.handle('scraper:rerun-site', async (_event, payload?: unknown) => {
-  return hpcRequest('/api/rerun-site', {
+  const result = await hpcRequest('/api/rerun-site', {
     method: 'POST',
     body: JSON.stringify(payload || {}),
   })
+  if (result?.ok) {
+    resetScraperActivitySnapshot()
+    pushScraperActivitySnapshot(true)
+  }
+  return result
 })
 
 ipcMain.handle('scraper:stop', async () => {

@@ -69,7 +69,7 @@ function NodeShell({
 
 function InputNode({ data }: NodeProps<NodeData>) {
   return (
-    <NodeShell title="Input" subtitle="Select Tranco Top‑N" width={220} source>
+    <NodeShell title="Input" subtitle="Number of sites to scrape" width={220} source>
       <input
         type="number"
         min={1}

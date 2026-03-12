@@ -125,7 +125,10 @@ export function buildLauncherState({
   dashboardLocked: boolean
   outDir: string
 }): LauncherState {
-  const currentTargetTotal = datasetState.manifestTopN || datasetState.totalSites || datasetState.uniqueSiteCount
+  // totalSites (from summary/state file) reflects what the scraper actually targeted this run.
+  // manifestTopN is config metadata that may be stale (e.g. a failed extend wrote topN=1500
+  // but only 138 sites were processed). Prefer the live data over the manifest.
+  const currentTargetTotal = datasetState.totalSites || datasetState.uniqueSiteCount || datasetState.manifestTopN || 0
   const requestedTargetTotal = Number(topN || 0)
   const canExtendByTarget = (
     resumeMode

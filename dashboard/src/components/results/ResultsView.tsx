@@ -4,6 +4,7 @@ import type {
   AnnotationSiteRecord,
   AnnotationStats,
   ResultRecord,
+  RunMappingSummary,
   RunSummary,
   RunSummaryCategory,
   RunSummaryEntity,
@@ -81,7 +82,7 @@ export function ResultsView({
   annotationStats,
 }: ResultsViewProps) {
   const fallbackThirdParty = { total: 0, mapped: 0, unmapped: 0, no_policy_url: 0, unique: 0, unique_mapped: 0, unique_with_policy: 0 }
-  const fallbackMapping = { mode: null, radar_mapped: 0, trackerdb_mapped: 0, unmapped: 0 } as const
+  const fallbackMapping: RunMappingSummary = { mode: null, radar_mapped: 0, trackerdb_mapped: 0, unmapped: 0 }
 
   if (!hasRun) {
     return (
@@ -132,17 +133,36 @@ export function ResultsView({
   const mapping = summary?.mapping ?? fallbackMapping
   const mappingLabel = mapping.mode === 'trackerdb' ? 'TrackerDB' : mapping.mode === 'mixed' ? 'Mixed' : mapping.mode === 'radar' ? 'Tracker Radar'
     : mappingMode === 'trackerdb' ? 'TrackerDB' : mappingMode === 'mixed' ? 'Mixed' : 'Tracker Radar'
-  const radarMappedCount = mapping?.radar_mapped ?? null
-  const trackerdbMappedCount = mapping?.trackerdb_mapped ?? null
-  let mappingRadar = radarMappedCount, mappingDb = trackerdbMappedCount
-  if (mappingRadar === null && mappingDb === null) {
-    if (mappingLabel === 'Tracker Radar') mappingRadar = uniqueMapped
-    if (mappingLabel === 'TrackerDB') mappingDb = uniqueMapped
+
+  // Prefer unique per-source counts (new backend fields); fall back to
+  // proportional estimate from raw occurrence counts so old summaries
+  // still render sensible numbers.
+  let mappingRadar: number
+  let mappingDb: number
+  let mappingUnmapped: number
+
+  if (typeof mapping.unique_radar_mapped === 'number' || typeof mapping.unique_trackerdb_mapped === 'number') {
+    // New-style summary with unique per-source counts
+    mappingRadar = mapping.unique_radar_mapped ?? 0
+    mappingDb = mapping.unique_trackerdb_mapped ?? 0
+    mappingUnmapped = mapping.unique_unmapped ?? Math.max(0, thirdPartyDetected - mappingRadar - mappingDb)
+  } else {
+    // Legacy summary: proportionally distribute unique count using the
+    // raw occurrence ratio so bars never exceed the unique total.
+    const rawTotal = (mapping.radar_mapped ?? 0) + (mapping.trackerdb_mapped ?? 0) + (mapping.unmapped ?? 0)
+    if (rawTotal > 0 && thirdPartyDetected > 0) {
+      mappingRadar = Math.round(thirdPartyDetected * (mapping.radar_mapped ?? 0) / rawTotal)
+      mappingDb = Math.round(thirdPartyDetected * (mapping.trackerdb_mapped ?? 0) / rawTotal)
+      mappingUnmapped = Math.max(0, thirdPartyDetected - mappingRadar - mappingDb)
+    } else {
+      mappingRadar = uniqueMapped
+      mappingDb = 0
+      mappingUnmapped = Math.max(0, thirdPartyDetected - mappingRadar)
+    }
   }
-  const mappingTotal = (mappingRadar ?? 0) + (mappingDb ?? 0)
-  const mappingUnmapped = mapping?.unmapped ?? Math.max(0, thirdPartyDetected - mappingTotal)
-  const radarPct = thirdPartyDetected ? Math.round(((mappingRadar ?? 0) / thirdPartyDetected) * 100) : 0
-  const trackerdbPct = thirdPartyDetected ? Math.round(((mappingDb ?? 0) / thirdPartyDetected) * 100) : 0
+
+  const radarPct = thirdPartyDetected ? Math.round((mappingRadar / thirdPartyDetected) * 100) : 0
+  const trackerdbPct = thirdPartyDetected ? Math.round((mappingDb / thirdPartyDetected) * 100) : 0
   const unmappedPct = Math.max(0, 100 - radarPct - trackerdbPct)
   const mappedPct = Math.max(0, 100 - unmappedPct)
   const targetSites = typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || metrics.totalSitesProcessed

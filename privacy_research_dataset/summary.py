@@ -115,6 +115,9 @@ class SummaryBuilder:
     third_party_no_policy_url: int = 0
     third_party_radar_mapped: int = 0
     third_party_trackerdb_mapped: int = 0
+    third_party_unique_radar_domains: set = field(default_factory=set)
+    third_party_unique_trackerdb_domains: set = field(default_factory=set)
+    third_party_unique_unmapped_domains: set = field(default_factory=set)
     english_policy_count: int = 0
     category_counts: Counter = field(default_factory=Counter)
     category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
@@ -160,8 +163,15 @@ class SummaryBuilder:
 
             if tp.get("tracker_radar_source_domain_file"):
                 self.third_party_radar_mapped += 1
+                if isinstance(domain, str) and domain:
+                    self.third_party_unique_radar_domains.add(domain)
             elif tp.get("trackerdb_source_pattern_file") or tp.get("trackerdb_source_org_file"):
                 self.third_party_trackerdb_mapped += 1
+                if isinstance(domain, str) and domain:
+                    self.third_party_unique_trackerdb_domains.add(domain)
+            else:
+                if isinstance(domain, str) and domain:
+                    self.third_party_unique_unmapped_domains.add(domain)
 
             service_key = _third_party_service_key(tp)
             normalized_cats = {
@@ -254,6 +264,9 @@ class SummaryBuilder:
                 "radar_mapped": self.third_party_radar_mapped,
                 "trackerdb_mapped": self.third_party_trackerdb_mapped,
                 "unmapped": max(0, self.third_party_total - self.third_party_radar_mapped - self.third_party_trackerdb_mapped),
+                "unique_radar_mapped": len(self.third_party_unique_radar_domains),
+                "unique_trackerdb_mapped": len(self.third_party_unique_trackerdb_domains),
+                "unique_unmapped": len(self.third_party_unique_unmapped_domains),
             },
             "categories": categories,
             "entities": entities,

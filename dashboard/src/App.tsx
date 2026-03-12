@@ -460,6 +460,7 @@ function App() {
             primaryActionHint={launcherActionHint}
             primaryActionDisabled={cruxKeyMissing}
             topNLocked={datasetState.isIncomplete}
+            lastTrancoRank={datasetState.lastSuccessfulRank}
           />
         )}
         {activeNav === 'audit' && (

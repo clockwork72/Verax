@@ -79,7 +79,12 @@ export function applyWorkspaceSnapshotState(
       ? (snapshot.annotationRunState ?? emptyAnnotationRunState())
       : state.annotationRunState,
     hasRun: mergeHasRun ? state.hasRun || snapshot.hasAnyResults : snapshot.hasAnyResults,
-    progress: mergeProgress ? Math.max(state.progress, snapshot.progress) : snapshot.progress,
+    // mergeProgress: prevent live progress going backwards due to a stale snapshot poll.
+    // But if the snapshot claims 100% while we know we're still running (extend mode),
+    // the snapshot is stale (reflects the old completed run) — keep current progress.
+    progress: mergeProgress
+      ? (snapshot.progress >= 100 ? state.progress : Math.max(state.progress, snapshot.progress))
+      : snapshot.progress,
   }
 }
 

@@ -21,6 +21,7 @@ import type {
   RunRecord,
   RunState,
   RunSummary,
+  ScraperActivitySnapshot,
   ScraperExitEvent,
   ScraperMessageEvent,
   ScraperRuntimeEvent,
@@ -89,6 +90,7 @@ declare global {
       openLogWindow: (content: string, title?: string) => Promise<{ ok: boolean; error?: string }>
       openPolicyWindow: (url: string) => Promise<{ ok: boolean; error?: string }>
       onEvent: (callback: (event: ScraperRuntimeEvent) => void) => void
+      onActivitySnapshot: (callback: (snapshot: ScraperActivitySnapshot) => void) => void
       onLog: (callback: (event: ScraperMessageEvent) => void) => void
       onError: (callback: (event: ScraperMessageEvent) => void) => void
       onExit: (callback: (event: ScraperExitEvent) => void) => void

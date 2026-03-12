@@ -1,6 +1,7 @@
 import type {
   ActiveSiteInfo,
   CompletedSiteInfo,
+  ScraperActivitySnapshot,
   ScraperExitEvent,
   ScraperMessageEvent,
   ScraperRuntimeEvent,
@@ -19,6 +20,17 @@ export function emptyScraperSiteActivityState(): ScraperSiteActivityState {
     activeSites: {},
     recentCompleted: [],
     logs: [],
+  }
+}
+
+export function applyScraperActivitySnapshot(
+  state: ScraperSiteActivityState,
+  snapshot: ScraperActivitySnapshot,
+): ScraperSiteActivityState {
+  return {
+    ...state,
+    activeSites: snapshot.activeSites || {},
+    recentCompleted: Array.isArray(snapshot.recentCompleted) ? snapshot.recentCompleted.slice(0, 15) : [],
   }
 }
 

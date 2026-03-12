@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  applyScraperActivitySnapshot,
   applyScraperRuntimeEvent,
   emptyScraperSiteActivityState,
   normalizeScraperExitEvent,
@@ -57,6 +58,28 @@ describe('scraperRuntime', () => {
       cached: true,
       annotated: true,
     })
+  })
+
+  it('hydrates activity state from a snapshot without clobbering logs', () => {
+    const next = applyScraperActivitySnapshot(
+      {
+        activeSites: {},
+        recentCompleted: [],
+        logs: ['hello'],
+      },
+      {
+        activeSites: {
+          'docker.com': { label: '3P extraction', stepIndex: 2, rank: 4 },
+        },
+        recentCompleted: [{ site: 'openai.com', status: 'ok', cached: false }],
+        running: true,
+        currentOutDir: 'outputs/unified',
+      },
+    )
+
+    expect(next.logs).toEqual(['hello'])
+    expect(next.activeSites['docker.com']).toEqual({ label: '3P extraction', stepIndex: 2, rank: 4 })
+    expect(next.recentCompleted[0]).toEqual({ site: 'openai.com', status: 'ok', cached: false })
   })
 
   it('normalizes log and exit payloads', () => {

@@ -1155,6 +1155,8 @@ async def _run(args: argparse.Namespace) -> None:
     )
     sites = _load_input_sites(args)
     target_total_sites = len(sites)
+    if isinstance(getattr(args, "expected_total_sites", None), int) and args.expected_total_sites > 0:
+        target_total_sites = max(target_total_sites, args.expected_total_sites)
 
     def emit_event(evt: dict[str, Any]) -> None:
         if not args.emit_events:

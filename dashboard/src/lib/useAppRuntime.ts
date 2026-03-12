@@ -9,12 +9,14 @@ import {
   readAnnotationStats,
   readFolderSize,
   readWorkspaceSnapshot,
+  subscribeScraperActivitySnapshots,
   subscribeAnnotatorEvents,
   subscribePipelineEvents,
   subscribeScraperEvents,
   type WorkspaceSnapshot,
 } from './scraperClient'
 import {
+  applyScraperActivitySnapshot,
   applyScraperRuntimeEvent,
   emptyScraperSiteActivityState,
   normalizeScraperExitEvent,
@@ -173,6 +175,7 @@ export function useAppRuntime({
         setAutoAnnotatePending(false)
         setStopRunPending(false)
         setAuditBusySite(null)
+        setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
       },
       onExit: (rawEvent) => {
@@ -190,8 +193,20 @@ export function useAppRuntime({
         setAutoAnnotatePending(false)
         setStopRunPending(false)
         setAuditBusySite(null)
+        setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
       },
+    })
+
+    const unsubscribeScraperActivity = subscribeScraperActivitySnapshots((snapshot) => {
+      setScraperActivity((prev) => applyScraperActivitySnapshot(prev, snapshot))
+      setRunning(snapshot.running)
+      if (snapshot.running) {
+        updateWorkspaceData({ hasRun: true })
+        if (!runStartedAt) {
+          setRunStartedAt(Date.now())
+        }
+      }
     })
 
     const unsubscribeAnnotator = subscribeAnnotatorEvents({
@@ -246,6 +261,7 @@ export function useAppRuntime({
 
     return () => {
       unsubscribeScraper?.()
+      unsubscribeScraperActivity?.()
       unsubscribeAnnotator?.()
       unsubscribePipeline?.()
     }
@@ -256,6 +272,7 @@ export function useAppRuntime({
     launchStartingProgress,
     outDir,
     refreshRuns,
+    runStartedAt,
     setAnnotateLogs,
     setAnnotateRunning,
     setAuditAnnotatingSite,

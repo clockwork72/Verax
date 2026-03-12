@@ -24,6 +24,7 @@ import {
   runRemoteRefresh,
   subscribeAnnotatorEvents,
   subscribePipelineEvents,
+  subscribeScraperActivitySnapshots,
   subscribeScraperEvents,
   writeAuditState,
 } from './scraperClient'
@@ -112,6 +113,7 @@ function installScraperMock(overrides: Partial<NonNullable<Window['scraper']>>) 
     cruxCacheStats: async () => ({ ok: true, count: 0, present: 0, absent: 0, path: 'results.crux_cache.json' }),
     openPolicyWindow: async () => ({ ok: true }),
     onEvent: () => {},
+    onActivitySnapshot: () => {},
     onLog: () => {},
     onError: () => {},
     onExit: () => {},
@@ -374,6 +376,7 @@ describe('scraperClient', () => {
     let runtimeLogHandler: Parameters<NonNullable<Window['scraper']>['onLog']>[0] = () => {}
     let runtimeErrorHandler: Parameters<NonNullable<Window['scraper']>['onError']>[0] = () => {}
     let runtimeExitHandler: Parameters<NonNullable<Window['scraper']>['onExit']>[0] = () => {}
+    let activitySnapshotHandler: Parameters<NonNullable<Window['scraper']>['onActivitySnapshot']>[0] = () => {}
     let annotatorLogHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorLog']>[0] = () => {}
     let annotatorStreamHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorStream']>[0] = () => {}
     let annotatorExitHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorExit']>[0] = () => {}
@@ -381,6 +384,7 @@ describe('scraperClient', () => {
 
     installScraperMock({
       onEvent: (handler) => { runtimeEventHandler = handler },
+      onActivitySnapshot: (handler) => { activitySnapshotHandler = handler },
       onLog: (handler) => { runtimeLogHandler = handler },
       onError: (handler) => { runtimeErrorHandler = handler },
       onExit: (handler) => { runtimeExitHandler = handler },
@@ -402,11 +406,15 @@ describe('scraperClient', () => {
       onStream: (event) => { seen.push(`annotator-stream:${event.site}`) },
       onExit: (event) => { seen.push(`annotator-exit:${event.code}`) },
     })
+    subscribeScraperActivitySnapshots((snapshot) => {
+      seen.push(`activity:${Object.keys(snapshot.activeSites).length}:${snapshot.running ? 'running' : 'idle'}`)
+    })
     subscribePipelineEvents((event) => {
       seen.push(`pipeline:${event.channel}`)
     })
 
     runtimeEventHandler({ type: 'run_started' })
+    activitySnapshotHandler({ activeSites: { 'docker.com': { label: 'Home fetch', stepIndex: 0, rank: 1 } }, recentCompleted: [], running: true })
     runtimeLogHandler({ message: 'hello' })
     runtimeErrorHandler({ message: 'boom' })
     runtimeExitHandler({ code: 0 })
@@ -417,6 +425,7 @@ describe('scraperClient', () => {
 
     expect(seen).toEqual([
       'runtime:run_started',
+      'activity:1:running',
       'log:hello',
       'error:boom',
       'exit:0',
