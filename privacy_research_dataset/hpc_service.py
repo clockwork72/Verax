@@ -19,6 +19,13 @@ from typing import Any
 
 from aiohttp import web
 
+from .annotation_state import (
+    count_jsonl_records,
+    has_completed_annotation_output,
+    read_annotation_status,
+)
+from .hpc_contracts import AnnotationSiteRecord, AnnotationStatsResponse, PipelineEventEnvelope
+
 
 SAFE_SCRAPER_CONCURRENCY = 2
 SAFE_CRUX_CONCURRENCY = 4
@@ -174,12 +181,11 @@ class EventBuffer:
 
     def push(self, channel: str, payload: dict[str, Any]) -> None:
         self._cursor += 1
+        event = PipelineEventEnvelope.from_payload(channel, utc_now(), payload).to_dict()
         self._items.append(
             {
                 "id": self._cursor,
-                "channel": channel,
-                "payload": payload,
-                "timestamp": utc_now(),
+                **event,
             }
         )
         while len(self._items) > self._max_items:
@@ -313,6 +319,13 @@ class ProcessHandle:
                 if text.startswith("[STREAM] "):
                     try:
                         self.bus.push("annotator:stream", json.loads(text[9:]))
+                    except json.JSONDecodeError:
+                        self.bus.push("annotator:log", {"message": text})
+                elif text.startswith("[EVENT] "):
+                    try:
+                        payload = json.loads(text[8:])
+                        channel = "annotator:progress" if payload.get("type") == "annotation.progress" else "annotator:event"
+                        self.bus.push(channel, payload)
                     except json.JSONDecodeError:
                         self.bus.push("annotator:log", {"message": text})
                 else:
@@ -1016,7 +1029,18 @@ class HpcService:
         artifacts_dir = request.query.get("artifactsDir")
         target = (self.repo_root / artifacts_dir).resolve() if artifacts_dir else self.last_paths.artifacts_dir
         if not target.exists():
-            return web.json_response({"ok": True, "total_sites": 0, "annotated_sites": 0, "total_statements": 0, "per_site": []})
+            return web.json_response(
+                AnnotationStatsResponse(
+                    total_sites=0,
+                    annotated_sites=0,
+                    total_statements=0,
+                    per_site=[],
+                    tp_total=0,
+                    tp_annotated=0,
+                    tp_total_statements=0,
+                    per_tp=[],
+                ).to_dict()
+            )
         per_site: list[dict[str, Any]] = []
         per_tp: list[dict[str, Any]] = []
         total_statements = 0
@@ -1025,46 +1049,66 @@ class HpcService:
             if not site_dir.is_dir():
                 continue
             statements_path = site_dir / "policy_statements.jsonl"
-            annotated_path = site_dir / "policy_statements_annotated.jsonl"
-            complete_marker = site_dir / "annotation_complete.json"
-            count = 0
-            completed = complete_marker.exists() or annotated_path.exists() or statements_path.exists()
-            has_statements = False
-            if statements_path.exists():
-                count = len([line for line in statements_path.read_text(encoding="utf-8").splitlines() if line.strip()])
-                total_statements += count
-                has_statements = count > 0
-            per_site.append({"site": site_dir.name, "count": count, "has_statements": has_statements, "completed": completed})
+            count = count_jsonl_records(statements_path)
+            total_statements += count
+            site_status = read_annotation_status(site_dir) or {}
+            completed = has_completed_annotation_output(site_dir)
+            per_site.append(
+                AnnotationSiteRecord(
+                    site=site_dir.name,
+                    count=count,
+                    has_statements=count > 0,
+                    completed=completed,
+                    status=str(site_status.get("status") or ("completed" if completed else "pending")),
+                    updated_at=site_status.get("updated_at"),
+                    finished_at=site_status.get("finished_at"),
+                    reason=site_status.get("reason"),
+                    error=site_status.get("error"),
+                    model=site_status.get("model"),
+                    tokens_in=site_status.get("tokens_in"),
+                    tokens_out=site_status.get("tokens_out"),
+                ).to_dict()
+            )
             tp_root = site_dir / "third_party"
             if tp_root.exists():
                 for tp_dir in sorted(tp_root.iterdir()):
                     if not tp_dir.is_dir():
                         continue
                     tp_path = tp_dir / "policy_statements.jsonl"
-                    tp_annotated_path = tp_dir / "policy_statements_annotated.jsonl"
-                    tp_complete_marker = tp_dir / "annotation_complete.json"
-                    tp_count = 0
-                    tp_completed = tp_complete_marker.exists() or tp_annotated_path.exists() or tp_path.exists()
-                    tp_has = False
-                    if tp_path.exists():
-                        tp_count = len([line for line in tp_path.read_text(encoding="utf-8").splitlines() if line.strip()])
-                        tp_total_statements += tp_count
-                        tp_has = tp_count > 0
-                    per_tp.append({"site": site_dir.name, "tp": tp_dir.name, "count": tp_count, "has_statements": tp_has, "completed": tp_completed})
+                    tp_count = count_jsonl_records(tp_path)
+                    tp_total_statements += tp_count
+                    tp_status = read_annotation_status(tp_dir) or {}
+                    tp_completed = has_completed_annotation_output(tp_dir)
+                    per_tp.append(
+                        {
+                            "site": site_dir.name,
+                            "tp": tp_dir.name,
+                            "count": tp_count,
+                            "has_statements": tp_count > 0,
+                            "completed": tp_completed,
+                            "status": str(tp_status.get("status") or ("completed" if tp_completed else "pending")),
+                            "updated_at": tp_status.get("updated_at"),
+                            "finished_at": tp_status.get("finished_at"),
+                            "reason": tp_status.get("reason"),
+                            "error": tp_status.get("error"),
+                            "model": tp_status.get("model"),
+                            "tokens_in": tp_status.get("tokens_in"),
+                            "tokens_out": tp_status.get("tokens_out"),
+                        }
+                    )
         annotated_sites = sum(1 for row in per_site if row["completed"])
         tp_annotated = sum(1 for row in per_tp if row["completed"])
         return web.json_response(
-            {
-                "ok": True,
-                "total_sites": len(per_site),
-                "annotated_sites": annotated_sites,
-                "total_statements": total_statements,
-                "per_site": per_site,
-                "tp_total": len(per_tp),
-                "tp_annotated": tp_annotated,
-                "tp_total_statements": tp_total_statements,
-                "per_tp": per_tp,
-            }
+            AnnotationStatsResponse(
+                total_sites=len(per_site),
+                annotated_sites=annotated_sites,
+                total_statements=total_statements,
+                per_site=per_site,
+                tp_total=len(per_tp),
+                tp_annotated=tp_annotated,
+                tp_total_statements=tp_total_statements,
+                per_tp=per_tp,
+            ).to_dict()
         )
 
     async def handle_start_run(self, request: web.Request) -> web.Response:

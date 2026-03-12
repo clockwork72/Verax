@@ -1,5 +1,12 @@
 /// <reference types="vite/client" />
 
+import type {
+  AnnotationStats,
+  BridgeScriptResult,
+  HpcBridgeStatus,
+  PipelineEvent,
+} from './contracts/api'
+
 type ScraperStartOptions = {
   topN?: number
   sites?: string[]
@@ -53,42 +60,6 @@ type AnnotateSiteOptions = {
   force?: boolean
 }
 
-type HpcBridgeStatus = {
-  service_ready?: boolean
-  database_ready?: boolean
-  scraper_connected?: boolean
-  dashboard_locked?: boolean
-  active_run?: boolean
-  annotator_running?: boolean
-  running?: boolean
-  annotateRunning?: boolean
-  node?: string
-  port?: number
-  db_port?: number
-  current_out_dir?: string
-  checked_at?: string
-  dbReady?: boolean
-  probe_error?: string
-  probe_detail?: string
-  local_port_listening?: boolean
-  tunnel_state?: 'stale' | 'offline'
-  source_rev?: string
-  local_source_rev?: string
-}
-
-type BridgeScriptResult = {
-  ok: boolean
-  code?: number
-  command?: string
-  stdout?: string
-  stderr?: string
-  error?: string
-  hint?: string
-  health_ok?: boolean
-  signal?: string | null
-  killed?: boolean
-}
-
 declare global {
   interface Window {
     scraper?: {
@@ -119,13 +90,14 @@ declare global {
       checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string; data?: HpcBridgeStatus }>
       stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
       annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
-      annotationStats: (artifactsDir?: string) => Promise<{ ok: boolean; error?: string; total_sites?: number; annotated_sites?: number; total_statements?: number; per_site?: { site: string; count: number; has_statements: boolean }[] }>
+      annotationStats: (artifactsDir?: string) => Promise<AnnotationStats>
       countOkArtifacts: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; sites?: string[]; path?: string }>
       readTpCache: (outDir?: string) => Promise<{ ok: boolean; error?: string; total?: number; fetched?: number; failed?: number; by_status?: Record<string, number> }>
       cruxCacheStats: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; present?: number; absent?: number; path?: string }>
       onAnnotatorLog: (callback: (event: any) => void) => void
       onAnnotatorExit: (callback: (event: any) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
+      onPipelineEvent: (callback: (event: PipelineEvent) => void) => void
       diagnoseBridge: () => Promise<BridgeScriptResult>
       repairBridge: () => Promise<BridgeScriptResult>
       refreshRemote: () => Promise<BridgeScriptResult>

@@ -38,6 +38,11 @@ from .annotator import (
     resolve_deepseek_endpoint,
     resolve_deepseek_health_url,
 )
+from .annotation_state import (
+    has_completed_annotation_output,
+    mark_stale_annotation_states,
+    write_annotation_status,
+)
 from .utils.logging import log, warn
 
 
@@ -217,10 +222,52 @@ def _policy_source_url(policy_dir: Path) -> str | None:
 
 
 def _has_annotation_outputs(policy_dir: Path) -> bool:
-    return (
-        (policy_dir / "annotation_complete.json").exists()
-        or (policy_dir / "policy_statements_annotated.jsonl").exists()
+    return has_completed_annotation_output(policy_dir)
+
+
+def _emit_event(payload: dict) -> None:
+    print(f"[EVENT] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+
+
+def _emit_site_progress(
+    site_dir: Path,
+    *,
+    status: str,
+    model_name: str,
+    phase: str,
+    **updates: object,
+) -> dict:
+    state = write_annotation_status(
+        site_dir,
+        status,
+        model=model_name,
+        phase=phase,
+        site=site_dir.name,
+        **updates,
     )
+    _emit_event(
+        {
+            "type": "annotation.progress",
+            "site": site_dir.name,
+            "status": status,
+            "phase": phase,
+            "message": updates.get("message") or f"{site_dir.name}: {status}",
+            "metrics": {
+                key: value
+                for key, value in {
+                    "statements": state.get("statements"),
+                    "chunks": state.get("chunks"),
+                    "blocks": state.get("blocks"),
+                    "tokens_in": state.get("tokens_in"),
+                    "tokens_out": state.get("tokens_out"),
+                    "chunk_index": state.get("chunk_index"),
+                    "chunk_total": state.get("chunk_total"),
+                }.items()
+                if value is not None
+            },
+        }
+    )
+    return state
 
 
 def _copy_annotation_outputs(
@@ -275,6 +322,18 @@ def _copy_annotation_outputs(
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    write_annotation_status(
+        dst_dir,
+        "reused",
+        phase="complete",
+        model=meta.get("model") or model_name,
+        site=dst_dir.name,
+        statements=meta.get("statements"),
+        chunks=meta.get("chunks"),
+        blocks=meta.get("blocks"),
+        source_policy_url=policy_url,
+        reused_from=str(src_dir),
+    )
     return True
 
 
@@ -291,10 +350,32 @@ def _annotate_site(
     disable_exhaustion_check: bool = False,
 ) -> dict:
     """Synchronous: preprocess + annotate one site. Called from a thread executor."""
+    _emit_site_progress(
+        site_dir,
+        status="pending",
+        model_name=model_name,
+        phase="queue",
+        message=f"{site_dir.name}: queued for annotation",
+    )
     policy_text = (site_dir / "policy.txt").read_text(encoding="utf-8").strip()
     if not policy_text:
+        _emit_site_progress(
+            site_dir,
+            status="failed",
+            model_name=model_name,
+            phase="preprocessing",
+            reason="empty_policy",
+            message=f"{site_dir.name}: policy text is empty",
+        )
         return {"status": "empty_policy", "statements": 0}
 
+    _emit_site_progress(
+        site_dir,
+        status="preprocessing",
+        model_name=model_name,
+        phase="preprocessing",
+        message=f"{site_dir.name}: preprocessing policy text",
+    )
     doc = preprocess_policy(policy_text, token_limit=token_limit)
 
     # Write document.json
@@ -314,37 +395,87 @@ def _annotate_site(
     # policy_statements.jsonl          — original format (chunk_index + statement only)
     # policy_statements_annotated.jsonl — includes source_text before the statement
     statements_path = site_dir / "policy_statements.jsonl"
-    annotated_path  = site_dir / "policy_statements_annotated.jsonl"
+    annotated_path = site_dir / "policy_statements_annotated.jsonl"
+    statements_tmp = site_dir / ".policy_statements.jsonl.tmp"
+    annotated_tmp = site_dir / ".policy_statements_annotated.jsonl.tmp"
 
     blocks = doc["blocks"]
     n = 0
-    with statements_path.open("w", encoding="utf-8") as fout, \
-         annotated_path.open("w", encoding="utf-8") as fanno:
-        for chunk_index, statement in annotator.run(doc):  # token usage accumulates here
-            # Collect unique block indices (in document order) for source_text.
-            block_indices: list[int] = []
-            seen: set[int] = set()
-            for value in statement.values():
-                if isinstance(value, list):
-                    for item in value:
-                        if isinstance(item, (list, tuple)) and len(item) == 2:
-                            idx = item[0]
-                            if idx not in seen:
-                                seen.add(idx)
-                                block_indices.append(idx)
-            block_indices.sort()
-            source_text = " ".join(blocks[i]["text"] for i in block_indices)
+    _emit_site_progress(
+        site_dir,
+        status="extracting",
+        model_name=model_name,
+        phase="extracting",
+        chunks=len(doc["chunks"]),
+        blocks=len(doc["blocks"]),
+        message=f"{site_dir.name}: extracting statements",
+    )
+    for tmp_path in (statements_tmp, annotated_tmp):
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        with statements_tmp.open("w", encoding="utf-8") as fout, \
+             annotated_tmp.open("w", encoding="utf-8") as fanno:
+            for chunk_index, statement in annotator.run(doc):  # token usage accumulates here
+                # Collect unique block indices (in document order) for source_text.
+                block_indices: list[int] = []
+                seen: set[int] = set()
+                for value in statement.values():
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, (list, tuple)) and len(item) == 2:
+                                idx = item[0]
+                                if idx not in seen:
+                                    seen.add(idx)
+                                    block_indices.append(idx)
+                block_indices.sort()
+                source_text = " ".join(blocks[i]["text"] for i in block_indices)
 
-            base_rec = {"chunk_index": chunk_index, "statement": statement}
-            print(json.dumps(base_rec, ensure_ascii=False), file=fout)
-            print(
-                json.dumps(
-                    {"chunk_index": chunk_index, "source_text": source_text, "statement": statement},
-                    ensure_ascii=False,
-                ),
-                file=fanno,
-            )
-            n += 1
+                base_rec = {"chunk_index": chunk_index, "statement": statement}
+                print(json.dumps(base_rec, ensure_ascii=False), file=fout)
+                print(
+                    json.dumps(
+                        {"chunk_index": chunk_index, "source_text": source_text, "statement": statement},
+                        ensure_ascii=False,
+                    ),
+                    file=fanno,
+                )
+                n += 1
+                _emit_site_progress(
+                    site_dir,
+                    status="extracting",
+                    model_name=model_name,
+                    phase="extracting",
+                    statements=n,
+                    chunks=len(doc["chunks"]),
+                    blocks=len(doc["blocks"]),
+                    tokens_in=annotator.usage["prompt_tokens"],
+                    tokens_out=annotator.usage["completion_tokens"],
+                    chunk_index=chunk_index + 1,
+                    chunk_total=len(doc["chunks"]),
+                )
+        _emit_site_progress(
+            site_dir,
+            status="committing",
+            model_name=model_name,
+            phase="committing",
+            statements=n,
+            chunks=len(doc["chunks"]),
+            blocks=len(doc["blocks"]),
+            tokens_in=annotator.usage["prompt_tokens"],
+            tokens_out=annotator.usage["completion_tokens"],
+            message=f"{site_dir.name}: committing annotation outputs",
+        )
+        statements_tmp.replace(statements_path)
+        annotated_tmp.replace(annotated_path)
+    finally:
+        for tmp_path in (statements_tmp, annotated_tmp):
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     # Write annotation_complete.json — authoritative per-site marker for future skip checks.
     try:
@@ -361,6 +492,19 @@ def _annotate_site(
         )
     except Exception:
         pass  # Non-fatal; the JSONL outputs are the primary deliverables.
+
+    _emit_site_progress(
+        site_dir,
+        status="completed",
+        model_name=model_name,
+        phase="complete",
+        statements=n,
+        chunks=len(doc["chunks"]),
+        blocks=len(doc["blocks"]),
+        tokens_in=annotator.usage["prompt_tokens"],
+        tokens_out=annotator.usage["completion_tokens"],
+        message=f"{site_dir.name}: annotation complete",
+    )
 
     return {
         "status": "ok",
@@ -394,6 +538,9 @@ async def _run(args: argparse.Namespace) -> None:
         return
 
     all_dirs = _find_all_policy_dirs(artifacts_dir)
+    stale_marked = mark_stale_annotation_states(all_dirs)
+    if stale_marked:
+        log(f"Marked {stale_marked} stale in-progress annotation state file(s) as stopped.")
     if args.target_dir:
         targets = _resolve_target_dirs(artifacts_dir, args.target_dir)
         if not targets:
@@ -471,6 +618,18 @@ async def _run(args: argparse.Namespace) -> None:
     for src, dst, policy_url in immediate_reuse:
         if _copy_annotation_outputs(src, dst, model_name=args.llm_model, policy_url=policy_url):
             reused_now += 1
+            _emit_event(
+                {
+                    "type": "annotation.progress",
+                    "site": dst.name,
+                    "status": "reused",
+                    "phase": "complete",
+                    "message": f"{dst.name}: reused annotation outputs from {src.name}",
+                    "metrics": {
+                        "source_policy_url": policy_url,
+                    },
+                }
+            )
             log(f"[reuse] {_label(dst)} — reused annotation from {_label(src)} (same policy URL)")
         else:
             warn(f"[reuse-miss] {_label(dst)} — failed to copy from {_label(src)}, will annotate directly.")
@@ -529,6 +688,25 @@ async def _run(args: argparse.Namespace) -> None:
                 else:
                     warn(f"[skip] {label} — {result['status']}")
             except Exception as e:
+                write_annotation_status(
+                    site_dir,
+                    "failed",
+                    phase="extracting",
+                    model=args.llm_model,
+                    site=site_dir.name,
+                    error=str(e),
+                    reason="exception",
+                )
+                _emit_event(
+                    {
+                        "type": "annotation.progress",
+                        "site": site_dir.name,
+                        "status": "failed",
+                        "phase": "extracting",
+                        "message": f"{site_dir.name}: {e}",
+                        "error": str(e),
+                    }
+                )
                 warn(f"[error] {label}: {e}")
 
     await asyncio.gather(*[process_one(d) for d in leaders])

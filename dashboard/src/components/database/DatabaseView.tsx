@@ -1,3 +1,5 @@
+import type { AnnotationSiteRecord, AnnotationStats } from '../../contracts/api'
+
 type DatabaseViewProps = {
   runsRoot?: string
   runs?: any[]
@@ -13,7 +15,7 @@ type DatabaseViewProps = {
   onDeleteOutDir: () => void
   onDeleteAllOutputs: () => void
   folderBytes?: number | null
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
   deleteEnabled?: boolean
 }
 
@@ -311,7 +313,7 @@ export function DatabaseView({
               {
                 label: 'document.json',
                 value: annotationStats.per_site
-                  ? annotationStats.per_site.filter((s: any) => s.has_statements).length
+                  ? annotationStats.per_site.filter((s: AnnotationSiteRecord) => s.has_statements).length
                   : '—',
                 detail: 'Sites with document structure',
               },

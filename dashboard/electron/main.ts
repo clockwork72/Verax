@@ -99,6 +99,7 @@ function ensureHpcPoller() {
     if (!res?.ok) return
     hpcPollCursor = Number(res.cursor || hpcPollCursor)
     for (const item of res.items || []) {
+      sendToRenderer('pipeline:event', item)
       if (item?.channel) {
         sendToRenderer(item.channel, item.payload)
       }

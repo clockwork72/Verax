@@ -1,4 +1,5 @@
 import { baseResults } from '../../data/results'
+import type { AnnotationSiteRecord, AnnotationStats } from '../../contracts/api'
 import { ResultsMetrics } from '../../utils/results'
 import { CATEGORY_ORDER } from '../../utils/trackerCategories'
 
@@ -11,7 +12,7 @@ type ResultsViewProps = {
   sites?: any[]
   useCrux?: boolean
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
 }
 
 export function ResultsView({
@@ -450,13 +451,13 @@ export function ResultsView({
               <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Top sites by statement count</p>
               <div className="mt-3 space-y-2 text-xs">
                 {[...annotationStats.per_site]
-                  .filter((s: any) => s.has_statements)
-                  .sort((a: any, b: any) => b.count - a.count)
+                  .filter((s: AnnotationSiteRecord) => s.has_statements)
+                  .sort((a: AnnotationSiteRecord, b: AnnotationSiteRecord) => b.count - a.count)
                   .slice(0, 8)
-                  .map((s: any) => {
+                  .map((s: AnnotationSiteRecord) => {
                     const max = annotationStats.per_site
-                      .filter((x: any) => x.has_statements)
-                      .reduce((m: number, x: any) => Math.max(m, x.count), 1)
+                      .filter((x: AnnotationSiteRecord) => x.has_statements)
+                      .reduce((m: number, x: AnnotationSiteRecord) => Math.max(m, x.count), 1)
                     return (
                       <div key={s.site} className="flex items-center gap-4">
                         <span className="w-36 truncate text-[var(--muted-text)]">{s.site}</span>

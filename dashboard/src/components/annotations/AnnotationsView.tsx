@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import type { AnnotationStats } from '../../contracts/api'
 
 type AnnotationsViewProps = {
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
   outDir?: string
 }
 

@@ -1,7 +1,9 @@
+import type { AnnotationStats } from '../../contracts/api'
+
 type AnalyticsViewProps = {
   summary?: any
   state?: any
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
   tpCacheStats?: any
 }
 

@@ -78,6 +78,10 @@ contextBridge.exposeInMainWorld('scraper', {
     ipcRenderer.removeAllListeners('annotator:stream')
     ipcRenderer.on('annotator:stream', (_evt, data) => callback(data))
   },
+  onPipelineEvent: (callback: (event: any) => void) => {
+    ipcRenderer.removeAllListeners('pipeline:event')
+    ipcRenderer.on('pipeline:event', (_evt, data) => callback(data))
+  },
   checkTunnel: () => ipcRenderer.invoke('scraper:check-tunnel'),
   diagnoseBridge: () => ipcRenderer.invoke('scraper:diagnose-bridge'),
   repairBridge: () => ipcRenderer.invoke('scraper:repair-bridge'),

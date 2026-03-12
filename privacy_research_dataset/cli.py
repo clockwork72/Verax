@@ -22,6 +22,7 @@ from .crawler import process_site
 from .tracker_radar import TrackerRadarIndex
 from .trackerdb import TrackerDbIndex
 from .tranco_list import get_tranco_sites
+from .annotation_state import has_completed_annotation_output
 from .utils.io import append_jsonl, write_json
 from .utils.logging import log, warn
 from .summary import SummaryBuilder, site_to_explorer_record
@@ -1054,11 +1055,11 @@ def _load_annotated_sites(artifacts_dir: Path) -> set[str]:
     """Return the set of site names that already have a completed annotation output.
 
     Primary marker: ``annotation_complete.json`` (written by the annotator on success).
-    Fallback:       ``policy_statements_annotated.jsonl`` (legacy, for runs before the marker
-                    was introduced).
+    Fallback:       non-empty ``policy_statements_annotated.jsonl`` (legacy, for runs before
+                    the marker was introduced).
 
-    We require the *annotated* variant (not just ``policy_statements.jsonl``) so that a
-    partially-completed annotation run does not cause the site to be skipped prematurely.
+    We require either the marker or a non-empty annotated JSONL so that a placeholder file
+    from an interrupted run does not cause the site to be skipped prematurely.
     """
     if not artifacts_dir.is_dir():
         return set()
@@ -1066,8 +1067,7 @@ def _load_annotated_sites(artifacts_dir: Path) -> set[str]:
     for site_dir in artifacts_dir.iterdir():
         if not site_dir.is_dir():
             continue
-        if (site_dir / "annotation_complete.json").exists() or \
-                (site_dir / "policy_statements_annotated.jsonl").exists():
+        if has_completed_annotation_output(site_dir):
             annotated.add(site_dir.name)
     return annotated
 

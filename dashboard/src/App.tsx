@@ -10,9 +10,11 @@ import { ConsistencyCheckerView } from './components/consistency/ConsistencyChec
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
+import type { AnnotationRunState, AnnotationStats, BridgeScriptResult, HpcBridgeStatus } from './contracts/api'
+import { applyAnnotationProgressEvent, annotationRunStateFromStats, emptyAnnotationRunState } from './lib/annotationRunState'
+import { readAnnotationStats, readBridgeStatus } from './lib/scraperClient'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
-import { parseAnnotationDoneUsage } from './utils/annotationCost'
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -49,40 +51,7 @@ function resultSiteKey(record: any): string {
 
 type TunnelStatus = 'checking' | 'online' | 'degraded' | 'offline'
 
-type BridgeSnapshot = {
-  service_ready?: boolean
-  database_ready?: boolean
-  scraper_connected?: boolean
-  dashboard_locked?: boolean
-  active_run?: boolean
-  annotator_running?: boolean
-  running?: boolean
-  annotateRunning?: boolean
-  node?: string
-  port?: number
-  db_port?: number
-  current_out_dir?: string
-  checked_at?: string
-  probe_error?: string
-  probe_detail?: string
-  local_port_listening?: boolean
-  tunnel_state?: 'stale' | 'offline'
-  source_rev?: string
-  local_source_rev?: string
-}
-
-type BridgeScriptResult = {
-  ok: boolean
-  code?: number
-  command?: string
-  stdout?: string
-  stderr?: string
-  error?: string
-  hint?: string
-  health_ok?: boolean
-  signal?: string | null
-  killed?: boolean
-}
+type BridgeSnapshot = HpcBridgeStatus
 
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
@@ -135,8 +104,8 @@ function App() {
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
-  const [, setAnnotateRunUsage] = useState({ tokensIn: 0, tokensOut: 0 })
-  const [annotationStats, setAnnotationStats] = useState<any>(null)
+  const [annotationStats, setAnnotationStats] = useState<AnnotationStats | null>(null)
+  const [annotationRunState, setAnnotationRunState] = useState<AnnotationRunState>(emptyAnnotationRunState())
   const [autoAnnotate, setAutoAnnotate] = useState(true)
   const [autoAnnotatePending, setAutoAnnotatePending] = useState(false)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
@@ -154,6 +123,7 @@ function App() {
     setRunManifest(null)
     setFolderBytes(null)
     setAnnotationStats(null)
+    setAnnotationRunState(emptyAnnotationRunState())
     setAuditVerifiedSites([])
     setAuditUrlOverrides({})
     setAuditBusySite(null)
@@ -190,11 +160,10 @@ function App() {
   }, [defaultOutDir, outDir, resetLoadedOutputState, runsRoot])
 
   const refreshBridgeStatus = useCallback(async () => {
-    if (!window.scraper?.checkTunnel) return
     const checkedAt = Date.now()
-    const res = await window.scraper.checkTunnel()
+    const res = await readBridgeStatus()
     setBridgeCheckedAt(checkedAt)
-    if (res?.ok) {
+    if (res.ok) {
       setBackendStatus(res.data || null)
       setTunnelStatus('online')
       setBridgeFailures(0)
@@ -587,15 +556,14 @@ function App() {
         const lines = raw.split('\n').map((l: string) => l.trimEnd()).filter(Boolean)
         if (lines.length) {
           annotateLogsRef.current = [...annotateLogsRef.current, ...lines]
-          const delta = parseAnnotationDoneUsage(lines)
-          if (delta.tokensIn || delta.tokensOut) {
-            setAnnotateRunUsage((prev) => ({
-              tokensIn: prev.tokensIn + delta.tokensIn,
-              tokensOut: prev.tokensOut + delta.tokensOut,
-            }))
-          }
           setAnnotateLogs((prev) => [...prev.slice(-(200 - lines.length)), ...lines])
         }
+      })
+    }
+
+    if (scraper.onPipelineEvent) {
+      scraper.onPipelineEvent((evt) => {
+        setAnnotationRunState((prev) => applyAnnotationProgressEvent(prev, evt))
       })
     }
 
@@ -627,11 +595,12 @@ function App() {
           return annotateLogsRef.current
         })
         // refresh stats after annotator finishes
-        if (scraper.annotationStats) {
-          scraper.annotationStats(`${outDir}/artifacts`).then((res: any) => {
-            if (res?.ok) setAnnotationStats(res)
-          })
-        }
+        void readAnnotationStats(`${outDir}/artifacts`).then((res) => {
+          if (res?.ok) {
+            setAnnotationStats(res)
+            setAnnotationRunState(annotationRunStateFromStats(res))
+          }
+        })
       })
     }
   }, [autoAnnotate, launchStartingProgress, outDir, syncLoadedRunState])
@@ -649,10 +618,12 @@ function App() {
   }
 
   const refreshAnnotationStats = useCallback(async () => {
-    if (!window.scraper?.annotationStats) return
     const artifactsDir = `${outDir}/artifacts`
-    const res = await window.scraper.annotationStats(artifactsDir)
-    if (res?.ok) setAnnotationStats(res)
+    const res = await readAnnotationStats(artifactsDir)
+    if (res?.ok) {
+      setAnnotationStats(res)
+      setAnnotationRunState(annotationRunStateFromStats(res))
+    }
   }, [outDir])
 
   const loadAuditWorkspace = useCallback(async (dirOverride?: string) => {
@@ -782,7 +753,7 @@ function App() {
       return { ok: false, error: 'annotateSite API unavailable' }
     }
     annotateLogsRef.current = []
-    setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
+    setAnnotationRunState(emptyAnnotationRunState(annotationStats?.total_sites ?? 1))
     setAnnotateLogs([`Starting annotation for ${site}...`])
     setAnnotateRunning(true)
     setAuditAnnotatingSite(site)
@@ -801,7 +772,7 @@ function App() {
       return { ok: false, error: res?.error || 'Failed to start annotation.' }
     }
     return { ok: true }
-  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus])
+  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus, annotationStats])
 
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
     if (remoteCodeOutdated) {
@@ -819,7 +790,7 @@ function App() {
       return
     }
     annotateLogsRef.current = []
-    setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
+    setAnnotationRunState(emptyAnnotationRunState(annotationStats?.total_sites ?? 0))
     setAnnotateLogs(['Starting annotator...'])
     setAnnotateRunning(true)
     const res = await window.scraper.startAnnotate({
@@ -842,7 +813,7 @@ function App() {
       annotateLogsRef.current = [message]
       setAnnotateLogs([message])
     }
-  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus, refreshBridgeStatus])
+  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus, refreshBridgeStatus, annotationStats])
 
   const stopAnnotate = async () => {
     if (!window.scraper?.stopAnnotate) return
@@ -1222,10 +1193,13 @@ function App() {
       setProgress(0)
     }
     // Load annotation stats for the new outDir
-    if (window.scraper?.annotationStats) {
-      const annRes = await window.scraper.annotationStats(`${targetDir}/artifacts`)
-      if (annRes?.ok) setAnnotationStats(annRes)
-      else setAnnotationStats(null)
+    const annRes = await readAnnotationStats(`${targetDir}/artifacts`)
+    if (annRes?.ok) {
+      setAnnotationStats(annRes)
+      setAnnotationRunState(annotationRunStateFromStats(annRes))
+    } else {
+      setAnnotationStats(null)
+      setAnnotationRunState(emptyAnnotationRunState())
     }
   }
 
@@ -1452,6 +1426,7 @@ function App() {
             annotateRunning={annotateRunning}
             annotateLogs={annotateLogs}
             annotationStats={annotationStats}
+            annotationRunState={annotationRunState}
             onStartAnnotate={startAnnotate}
             onStopAnnotate={stopAnnotate}
             resumeMode={resumeMode}

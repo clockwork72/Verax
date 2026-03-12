@@ -1,55 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { parseAnnotationUsage, pricingForModel } from '../../utils/annotationCost'
+import type { AnnotationRunState, AnnotationStats, HpcBridgeStatus } from '../../contracts/api'
+import { pricingForModel } from '../../utils/annotationCost'
 import { LiveAnnotatorPanel } from './LiveAnnotatorPanel'
 import type { AnnotatorStreamEvent } from '../../vite-env'
-
-type AnnotateSiteStatus = 'active' | 'done' | 'skip' | 'error'
-type AnnotateSiteEntry = { site: string; status: AnnotateSiteStatus; statements?: number }
-
-function parseAnnotateLogs(logs: string[]): {
-  activeSites: string[]
-  completed: AnnotateSiteEntry[]
-  totalSites: number
-  tokensIn: number
-  tokensOut: number
-} {
-  const active = new Map<string, true>()
-  const completed: AnnotateSiteEntry[] = []
-  let totalSites = 0
-  let tokensIn = 0
-  let tokensOut = 0
-
-  for (const line of logs) {
-    // "Found N site(s) ready for annotation in ..."
-    const totalM = line.match(/Found (\d+) site/)
-    if (totalM) totalSites = Number(totalM[1])
-
-    // "[start] site.com"
-    const startM = line.match(/\[start\]\s+(.+)$/)
-    if (startM) { active.set(startM[1].trim(), true); continue }
-
-    // "[done]  site.com — N statements from M chunks (P blocks) | X↑/Y↓ tokens"
-    const doneM = line.match(/\[done\]\s+(.+?) — (\d+) statements.*\|\s*([\d,]+)↑\/([\d,]+)↓/)
-    if (doneM) {
-      const site = doneM[1].trim()
-      active.delete(site)
-      completed.push({ site, status: 'done', statements: Number(doneM[2]) })
-      tokensIn += Number(doneM[3].replace(/,/g, ''))
-      tokensOut += Number(doneM[4].replace(/,/g, ''))
-      continue
-    }
-
-    // "[skip] site.com — ..."
-    const skipM = line.match(/\[skip\]\s+([^\s]+)/)
-    if (skipM) { active.delete(skipM[1]); completed.push({ site: skipM[1], status: 'skip' }); continue }
-
-    // "[error] site.com: ..."
-    const errM = line.match(/\[error\]\s+([^\s:]+)/)
-    if (errM) { active.delete(errM[1]); completed.push({ site: errM[1], status: 'error' }); continue }
-  }
-
-  return { activeSites: [...active.keys()], completed, totalSites, tokensIn, tokensOut }
-}
 
 function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
@@ -102,7 +55,7 @@ type LauncherViewProps = {
   bridgeReady?: boolean
   bridgeHeadline?: string
   bridgeDetail?: string
-  bridgeNode?: string
+  bridgeNode?: HpcBridgeStatus['node']
   bridgeCurrentOutDir?: string
   bridgeCheckedAt?: string
   bridgeHealthyAt?: string
@@ -118,7 +71,8 @@ type LauncherViewProps = {
   latestStreamEvent?: AnnotatorStreamEvent | null
   annotateRunning?: boolean
   annotateLogs?: string[]
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
+  annotationRunState?: AnnotationRunState
   onStartAnnotate?: (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => void
   onStopAnnotate?: () => void
   // Resume mode — use unified output dir to skip already-scraped sites
@@ -177,6 +131,7 @@ export function LauncherView({
   annotateRunning = false,
   annotateLogs = [],
   annotationStats,
+  annotationRunState,
   onStartAnnotate,
   onStopAnnotate,
   resumeMode = false,
@@ -494,9 +449,9 @@ export function LauncherView({
               <span>{progress.toFixed(0)}% complete</span>
               <span>{etaText ? `ETA ${etaText}` : 'ETA --'}</span>
               <span>{topN} sites total</span>
-              {resumeMode && annotationStats?.annotated_sites > 0 && (
+              {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
                 <span className="text-[var(--color-primary)]">
-                  {annotationStats.annotated_sites} annotated — will skip
+                  {annotationStats?.annotated_sites ?? 0} annotated — will skip
                 </span>
               )}
             </div>
@@ -631,14 +586,24 @@ export function LauncherView({
       {/* Stage 2 — Annotation */}
       <section className="card rounded-2xl p-6">
         {(() => {
-          const { activeSites: annotateSites, completed: annotateCompleted, totalSites } =
-            parseAnnotateLogs(annotateLogs)
-          const parsedUsage = parseAnnotationUsage(annotateLogs)
-          const tokensIn = parsedUsage.tokensIn
-          const tokensOut = parsedUsage.tokensOut
-          const knownTotal = totalSites || annotationStats?.total_sites || 0
-          const doneCount = annotateCompleted.filter((s) => s.status !== 'skip' || annotateSites.length === 0).length
-          const progressPct = knownTotal > 0 ? Math.round((annotateCompleted.length / knownTotal) * 100) : 0
+          const runtimeState = annotationRunState ?? {
+            totalSites: annotationStats?.total_sites ?? 0,
+            sites: {},
+            processedSites: 0,
+            completedSites: annotationStats?.annotated_sites ?? 0,
+            activeSites: [],
+            tokensIn: 0,
+            tokensOut: 0,
+          }
+          const knownTotal = runtimeState.totalSites || annotationStats?.total_sites || 0
+          const doneCount = runtimeState.processedSites
+          const progressPct = knownTotal > 0 ? Math.round((doneCount / knownTotal) * 100) : 0
+          const annotateSites = runtimeState.activeSites
+          const annotateCompleted = Object.values(runtimeState.sites)
+            .filter((site) => !['pending', 'preprocessing', 'extracting', 'committing'].includes(site.status))
+            .sort((a, b) => a.site.localeCompare(b.site))
+          const tokensIn = runtimeState.tokensIn
+          const tokensOut = runtimeState.tokensOut
 
           return (
             <>
@@ -651,7 +616,7 @@ export function LauncherView({
                     eligible.
                     {annotationStats && (
                       <span className="ml-1 text-[var(--color-text)]">
-                        {annotationStats.annotated_sites}/{annotationStats.total_sites} done ·{' '}
+                        {annotationStats.annotated_sites ?? 0}/{annotationStats.total_sites ?? 0} done ·{' '}
                         {(annotationStats.total_statements ?? 0).toLocaleString()} statements
                       </span>
                     )}
@@ -680,11 +645,11 @@ export function LauncherView({
                         onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })
                       }
                     }}
-                    disabled={!annotateRunning && !hasRun && !(annotationStats?.total_sites > 0)}
+                    disabled={!annotateRunning && !hasRun && !((annotationStats?.total_sites ?? 0) > 0)}
                   >
                     {annotateRunning ? 'Stop annotation' : 'Annotate policies'}
                   </button>
-                  {!annotateRunning && (hasRun || annotationStats?.total_sites > 0) && (
+                  {!annotateRunning && (hasRun || (annotationStats?.total_sites ?? 0) > 0) && (
                     <button
                       className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)]"
                       onClick={() =>
@@ -732,11 +697,11 @@ export function LauncherView({
               </div>
 
               {/* Progress bar + stats — shown when running or after a run */}
-              {(annotateRunning || annotateCompleted.length > 0) && (
+              {(annotateRunning || doneCount > 0) && (
                 <div className="mt-5">
                   <div className="flex items-center justify-between text-xs text-[var(--muted-text)]">
                     <span>
-                      {annotateCompleted.length}
+                      {doneCount}
                       {knownTotal > 0 ? ` / ${knownTotal}` : ''} sites processed
                       {annotateSites.length > 0 && (
                         <span className="ml-2 text-[var(--color-primary)]">· {annotateSites.length} active</span>
@@ -785,7 +750,12 @@ export function LauncherView({
                       >
                         <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--color-primary)]" />
                         <span className="mono text-sm text-[var(--color-text)]">{site}</span>
-                        <span className="text-xs text-[var(--muted-text)]">annotating…</span>
+                        <span className="text-xs text-[var(--muted-text)]">
+                          {runtimeState.sites[site]?.phase || runtimeState.sites[site]?.status || 'annotating'}
+                          {typeof runtimeState.sites[site]?.statements === 'number' && runtimeState.sites[site].statements > 0
+                            ? ` · ${runtimeState.sites[site].statements} stmts`
+                            : '…'}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -803,16 +773,16 @@ export function LauncherView({
                       <span
                         key={`${item.site}-${i}`}
                         className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                          item.status === 'done'
+                          item.status === 'completed' || item.status === 'reused'
                             ? 'border-[var(--color-success)] text-[var(--color-success)]'
-                            : item.status === 'skip'
+                            : item.status === 'stopped'
                               ? 'border-[var(--border-soft)] text-[var(--muted-text)]'
                               : 'border-[var(--color-danger)] text-[var(--color-danger)]'
                         }`}
                       >
-                        {item.status === 'done' ? '✓' : item.status === 'skip' ? '↩' : '✕'}
+                        {item.status === 'completed' || item.status === 'reused' ? '✓' : item.status === 'stopped' ? '↩' : '✕'}
                         {item.site}
-                        {item.statements !== undefined && (
+                        {item.statements > 0 && (
                           <span className="opacity-60">{item.statements} stmts</span>
                         )}
                       </span>

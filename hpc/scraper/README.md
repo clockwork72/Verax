@@ -26,6 +26,8 @@ Quick meaning of each script:
   - kills stale local `8910` forwards before opening a fresh tunnel
 - [`check_bridge.sh`](/mnt/storage/projects/hpc/scraper/check_bridge.sh)
   - show the local tunnel state, `curl` health result, and the current Slurm node when reachable
+- [`validate_cpu_bridge.sh`](/mnt/storage/projects/hpc/scraper/validate_cpu_bridge.sh)
+  - run a CPU-safe validation sweep against `/health`, `/api/status`, `/api/annotation-stats`, bridge scripts, and Slurm
 - [`pull_run.sh`](/mnt/storage/projects/hpc/scraper/pull_run.sh)
   - list remote runs or copy one run back to local storage
   - also reuses the shared SSH control socket during one pull
@@ -44,6 +46,7 @@ hpc/scraper/push_code.sh
 hpc/scraper/launch_remote.sh
 hpc/scraper/check_bridge.sh
 hpc/scraper/attach_tunnel.sh
+hpc/scraper/validate_cpu_bridge.sh
 hpc/scraper/pull_run.sh --list
 hpc/scraper/pull_run.sh <run_dir>
 ```

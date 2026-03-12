@@ -43,6 +43,7 @@ Important remote paths:
 - `runtime/`: PostgreSQL data, Apptainer image, Playwright browsers
 - `logs/`: Slurm logs
 - `repo/outputs/`: run outputs
+- [`docs/hpc_architecture_audit.md`](/mnt/storage/projects/docs/hpc_architecture_audit.md): checked-in architecture and baseline audit for the hardening wave
 
 The remote repo is a deployment mirror, not the source of truth.
 You should treat local code as authoritative and remote code as disposable.

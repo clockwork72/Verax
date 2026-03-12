@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { AnnotationSiteRecord, AnnotationStats, AnnotationThirdPartyRecord } from '../../contracts/api'
 import { ExplorerSite } from '../../data/explorer'
 
 type PolicyViewerViewProps = {
   sites?: ExplorerSite[]
-  annotationStats?: any
+  annotationStats?: AnnotationStats | null
   outDir?: string
 }
 
@@ -362,7 +363,9 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
   const annotatedSites = useMemo<Set<string>>(() => {
     if (!annotationStats?.per_site) return new Set()
     return new Set(
-      (annotationStats.per_site as any[]).filter((s) => s.has_statements).map((s) => s.site as string)
+      annotationStats.per_site
+        .filter((s: AnnotationSiteRecord) => s.has_statements)
+        .map((s: AnnotationSiteRecord) => s.site)
     )
   }, [annotationStats])
 
@@ -370,8 +373,8 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
   const annotatedTps = useMemo<Set<string>>(() => {
     if (!annotationStats?.per_tp) return new Set()
     return new Set(
-      (annotationStats.per_tp as any[])
-        .filter((t) => t.has_statements)
+      annotationStats.per_tp
+        .filter((t: AnnotationThirdPartyRecord) => t.has_statements)
         .map((t) => `${t.site}/${t.tp}`)
     )
   }, [annotationStats])

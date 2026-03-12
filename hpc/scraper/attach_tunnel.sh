@@ -6,6 +6,7 @@ SERVICE_PORT="${SCRAPER_SERVICE_PORT:-8910}"
 JOB_NAME="${SCRAPER_ORCH_JOB_NAME:-scraper-orch}"
 HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/health"
 SSH_SOCKET="${SCRAPER_SSH_SOCKET:-/tmp/scraper-ssh-${USER}.sock}"
+FORWARD_STATE="${SCRAPER_SSH_FORWARD_STATE:-/tmp/scraper-ssh-forward-${USER}-${SERVICE_PORT}.target}"
 SSH_OPTS=(
   -o ControlMaster=auto
   -o ControlPersist=10m
@@ -39,6 +40,20 @@ extract_target() {
   sed -n "s/.*-L ${SERVICE_PORT}:\\([^: ]*\\):${SERVICE_PORT}.*/\\1/p"
 }
 
+current_target() {
+  if [ -f "${FORWARD_STATE}" ]; then
+    head -n 1 "${FORWARD_STATE}" | tr -d '[:space:]'
+    return 0
+  fi
+  list_local_tunnels | extract_target | head -n 1 || true
+}
+
+cancel_forward() {
+  local target="$1"
+  [ -n "${target}" ] || return 0
+  ssh "${SSH_OPTS[@]}" -O cancel -L "${SERVICE_PORT}:${target}:${SERVICE_PORT}" "${SSH_HOST}" >/dev/null 2>&1 || true
+}
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -63,11 +78,13 @@ fi
 
 CURRENT_TARGET=""
 if curl -fsS --max-time 3 "${HEALTH_URL}" >/dev/null 2>&1; then
-  CURRENT_TARGET="$(list_local_tunnels | extract_target | head -n 1 || true)"
+  CURRENT_TARGET="$(current_target)"
   if [ -n "${CURRENT_TARGET}" ] && [ "${CURRENT_TARGET}" = "${NODE}" ]; then
     echo "Bridge already healthy on ${HEALTH_URL} via ${CURRENT_TARGET}"
     exit 0
   fi
+else
+  CURRENT_TARGET="$(current_target)"
 fi
 
 mapfile -t EXISTING_PIDS < <(list_local_tunnels | awk '{ print $1 }')
@@ -77,8 +94,13 @@ if [ "${#EXISTING_PIDS[@]}" -gt 0 ]; then
   sleep 1
 fi
 
+if [ -n "${CURRENT_TARGET}" ] && [ "${CURRENT_TARGET}" != "${NODE}" ]; then
+  cancel_forward "${CURRENT_TARGET}"
+fi
+
 echo "Opening local tunnel on 127.0.0.1:${SERVICE_PORT} -> ${NODE}:${SERVICE_PORT} via ${SSH_HOST}"
-ssh "${SSH_OPTS[@]}" -fNT -o ExitOnForwardFailure=yes -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
+ssh "${SSH_OPTS[@]}" -O forward -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
+printf '%s\n' "${NODE}" > "${FORWARD_STATE}"
 
 for _ in $(seq 1 10); do
   if curl -fsS --max-time 3 "${HEALTH_URL}" >/dev/null 2>&1; then
