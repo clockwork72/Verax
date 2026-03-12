@@ -14,7 +14,6 @@ import type {
   AnnotationRunState,
   AnnotationStats,
   BridgeScriptResult,
-  HpcBridgeStatus,
   RunManifest,
   RunRecord,
   RunState,
@@ -31,11 +30,11 @@ import {
 import {
   listRunRecords,
   readAnnotationStats,
-  readBridgeStatus,
   readFolderSize,
   readWorkspaceSnapshot,
   type WorkspaceSnapshot,
 } from './lib/scraperClient'
+import { useBridgeStatus } from './lib/useBridgeStatus'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
 
@@ -71,10 +70,6 @@ function resultSiteKey(record: any): string {
   const candidate = record?.site_etld1 || record?.input || record?.site || ''
   return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
 }
-
-type TunnelStatus = 'checking' | 'online' | 'degraded' | 'offline'
-
-type BridgeSnapshot = HpcBridgeStatus
 
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
@@ -116,11 +111,6 @@ function App() {
   const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
   const [auditAnnotatingSite, setAuditAnnotatingSite] = useState<string | null>(null)
   // Stage 2 — Annotation state
-  const [tunnelStatus, setTunnelStatus] = useState<TunnelStatus>('checking')
-  const [backendStatus, setBackendStatus] = useState<BridgeSnapshot | null>(null)
-  const [bridgeFailures, setBridgeFailures] = useState(0)
-  const [bridgeCheckedAt, setBridgeCheckedAt] = useState<number | null>(null)
-  const [bridgeHealthyAt, setBridgeHealthyAt] = useState<number | null>(null)
   const [bridgeActionBusy, setBridgeActionBusy] = useState<'diagnose' | 'repair' | 'refresh' | null>(null)
   const [bridgeActionMessage, setBridgeActionMessage] = useState<string | null>(null)
   const [stopRunPending, setStopRunPending] = useState(false)
@@ -231,57 +221,6 @@ function App() {
     setRunRecords(await listRunRecords(runsRoot))
   }, [defaultOutDir, outDir, resetLoadedOutputState, runsRoot])
 
-  const refreshBridgeStatus = useCallback(async () => {
-    const checkedAt = Date.now()
-    const res = await readBridgeStatus()
-    setBridgeCheckedAt(checkedAt)
-    if (res.ok) {
-      setBackendStatus(res.data || null)
-      setTunnelStatus('online')
-      setBridgeFailures(0)
-      setBridgeHealthyAt(checkedAt)
-      return
-    }
-    setBackendStatus(res?.data || null)
-    setBridgeFailures((prev) => {
-      const next = prev + 1
-      if (res?.data?.local_port_listening) {
-        setTunnelStatus('degraded')
-        return next
-      }
-      setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
-      return next
-    })
-  }, [bridgeHealthyAt])
-
-  // Poll the SSH-backed bridge and avoid tearing the UI down on a single missed heartbeat.
-  useEffect(() => {
-    void refreshBridgeStatus()
-    const id = setInterval(() => { void refreshBridgeStatus() }, 5_000)
-    return () => clearInterval(id)
-  }, [refreshBridgeStatus])
-
-  const dashboardLocked = (
-    tunnelStatus === 'checking'
-    || tunnelStatus === 'offline'
-    || !backendStatus?.service_ready
-    || !backendStatus?.database_ready
-    || Boolean(backendStatus?.dashboard_locked)
-  )
-  const remoteCodeLegacy = Boolean(backendStatus && tunnelStatus !== 'offline' && !backendStatus.source_rev)
-  const remoteCodeMismatch = Boolean(
-    backendStatus?.source_rev
-    && backendStatus?.local_source_rev
-    && backendStatus.source_rev !== backendStatus.local_source_rev
-  )
-  const remoteCodeOutdated = remoteCodeLegacy || remoteCodeMismatch
-
-  useEffect(() => {
-    if (dashboardLocked && activeNav !== 'launcher') {
-      setActiveNav('launcher')
-    }
-  }, [dashboardLocked, activeNav])
-
   const SITE_STAGE_LABELS: Record<string, { label: string; index: number }> = {
     home_fetch:               { label: 'Home fetch',       index: 0 },
     policy_discovery:         { label: 'Policy discovery', index: 1 },
@@ -354,54 +293,42 @@ function App() {
       manifestCruxFilter: typeof runManifest?.cruxFilter === 'boolean' ? runManifest.cruxFilter : undefined,
     }
   }, [summaryData, stateData, resultsData, runManifest])
-  const bridgeReady = !dashboardLocked
-  const scraperActive = running || stopRunPending || Boolean(backendStatus?.active_run || backendStatus?.running)
-  const workspaceReady = bridgeReady && (running || hasRun || datasetState.hasDataset)
-  const bridgeHeadline = tunnelStatus === 'checking'
-    ? 'Probing local tunnel'
-    : tunnelStatus === 'offline'
-      ? 'Tunnel offline'
-      : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
-        ? 'Tunnel attached to stale target'
-      : remoteCodeOutdated
-        ? 'Remote control plane is outdated'
-      : !backendStatus?.service_ready
-        ? 'Remote control plane booting'
-        : !backendStatus?.database_ready
-          ? 'PostgreSQL warming up'
-          : running || backendStatus?.active_run || backendStatus?.running
-            ? 'Cluster pipeline active'
-            : workspaceReady
-              ? 'Cluster workspace synchronized'
-              : 'Bridge ready for launch'
-  const bridgeDetail = tunnelStatus === 'checking'
-    ? 'Waiting for port 8910 to answer from the workstation side.'
-    : tunnelStatus === 'offline'
-      ? 'Start or restore the SSH tunnel before using the remote pipeline.'
-      : tunnelStatus === 'degraded' && backendStatus?.local_port_listening && !backendStatus?.service_ready
-        ? 'Local port 8910 is still forwarded, but the remote orchestrator behind that tunnel is not answering. Reattach the tunnel to the current compute node.'
-      : remoteCodeLegacy
-        ? 'The running orchestrator predates revision tracking and may still contain old annotation logic. Relaunch it with hpc/scraper/launch_remote.sh.'
-      : remoteCodeMismatch
-        ? `Local repo is at ${backendStatus?.local_source_rev}, but the connected orchestrator is ${backendStatus?.source_rev}. Relaunch the remote orchestrator to deploy the current annotation code.`
-      : !backendStatus?.service_ready
-        ? 'Tunnel is up, but the orchestrator API is still coming online.'
-        : !backendStatus?.database_ready
-          ? 'Control plane is reachable, but PostgreSQL has not finished initializing.'
-          : running || backendStatus?.active_run || backendStatus?.running
-            ? 'The workstation is attached to a live remote run and status is streaming from the cluster.'
-            : workspaceReady
-              ? 'Remote state is synced and downstream views are unlocked.'
-              : 'Bridge is healthy. Launch a remote job to unlock the full workspace.'
+  const localScraperActive = running || stopRunPending
+  const workspaceReady = running || hasRun || datasetState.hasDataset
+  const {
+    tunnelStatus,
+    backendStatus,
+    bridgeFailures,
+    bridgeCheckedAt,
+    bridgeHealthyAt,
+    dashboardLocked,
+    bridgeReady,
+    remoteCodeLegacy,
+    remoteCodeOutdated,
+    bridgeHeadline,
+    bridgeDetail,
+    refreshBridgeStatus,
+  } = useBridgeStatus({
+    workspaceReady,
+    scraperActive: localScraperActive,
+  })
+  const scraperActive = localScraperActive || Boolean(backendStatus?.active_run || backendStatus?.running)
+  const workspaceUnlocked = bridgeReady && workspaceReady
+
+  useEffect(() => {
+    if (dashboardLocked && activeNav !== 'launcher') {
+      setActiveNav('launcher')
+    }
+  }, [dashboardLocked, activeNav])
   const disabledNavs = {
     launcher: false,
     settings: false,
     database: !bridgeReady,
-    results: !workspaceReady,
-    audit: !workspaceReady,
-    explorer: !workspaceReady,
-    annotations: !workspaceReady,
-    consistency: !workspaceReady,
+    results: !workspaceUnlocked,
+    audit: !workspaceUnlocked,
+    explorer: !workspaceUnlocked,
+    annotations: !workspaceUnlocked,
+    consistency: !workspaceUnlocked,
   } satisfies Record<NavId, boolean>
   const handleSelectNav = useCallback((next: NavId) => {
     if (!disabledNavs[next]) {
