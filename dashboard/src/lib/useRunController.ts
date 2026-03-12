@@ -1,0 +1,576 @@
+import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+
+import type { HpcBridgeStatus } from '../contracts/api'
+import { emptyAnnotationRunState } from './annotationRunState'
+import { emptyScraperSiteActivityState, type ScraperSiteActivityState } from './scraperRuntime'
+import type { WorkspaceDataUpdate } from './useWorkspaceData'
+
+export type LauncherMode = 'start' | 'continue' | 'extend'
+
+export type RunDatasetState = {
+  isIncomplete: boolean
+  manifestMode?: string
+  pendingManifestSites: string[]
+  totalSites: number
+  uniqueSiteCount: number
+  lastSuccessfulRank: number | null
+  manifestTopN: number | null
+  manifestTrancoDate?: string
+  manifestCruxFilter?: boolean
+}
+
+type StartRunOptions = Parameters<NonNullable<Window['scraper']>['startRun']>[0]
+
+type UseRunControllerArgs = {
+  outDir: string
+  runsRoot: string
+  topN: string
+  resumeMode: boolean
+  useCrux: boolean
+  cruxApiKey: string
+  excludeSameEntity: boolean
+  mappingMode: 'radar' | 'trackerdb' | 'mixed'
+  llmModel: string
+  scraperActive: boolean
+  dashboardLocked: boolean
+  cruxKeyMissing: boolean
+  launcherMode: LauncherMode
+  currentTargetTotal: number
+  requestedTargetTotal: number
+  launchStartingProgress: number
+  datasetState: RunDatasetState
+  auditVerifiedSites: string[]
+  auditUrlOverrides: Record<string, string>
+  annotationStatsTotalSites: number
+  remoteCodeOutdated: boolean
+  remoteCodeLegacy: boolean
+  backendStatus: HpcBridgeStatus | null
+  persistAuditState: (nextVerifiedSites: string[], nextUrlOverrides: Record<string, string>, dirOverride?: string) => Promise<void>
+  refreshBridgeStatus: () => Promise<void>
+  updateWorkspaceData: (updater: WorkspaceDataUpdate) => void
+  setOutDir: (value: string) => void
+  setRunning: (value: boolean) => void
+  setRunStartedAt: (value: number | null) => void
+  setEtaText: (value: string) => void
+  setErrorMessage: (value: string | null) => void
+  setScraperActivity: Dispatch<SetStateAction<ScraperSiteActivityState>>
+  setAuditBusySite: (value: string | null) => void
+  setAuditAnnotatingSite: (value: string | null) => void
+  setAnnotateLogs: Dispatch<SetStateAction<string[]>>
+  setAnnotateRunning: (value: boolean) => void
+  annotateLogsRef: MutableRefObject<string[]>
+}
+
+type BuildStartRunPlanArgs = {
+  scraperActive: boolean
+  dashboardLocked: boolean
+  cruxKeyMissing: boolean
+  launcherMode: LauncherMode
+  topN: string
+  currentTargetTotal: number
+  requestedTargetTotal: number
+  mappingMode: 'radar' | 'trackerdb' | 'mixed'
+  runsRoot: string
+  resumeMode: boolean
+  outDir: string
+  datasetState: RunDatasetState
+  useCrux: boolean
+  cruxApiKey: string
+  excludeSameEntity: boolean
+}
+
+export type StartRunPlan = {
+  blocked: boolean
+  errorMessage: string | null
+  resetWorkspace: boolean
+  runOutDir: string | null
+  startOptions: StartRunOptions | null
+}
+
+export type AnnotationBlock = {
+  message: string
+  error: string
+}
+
+function normalizeSiteKey(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function createRunId() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `run_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+  }
+}
+
+export function buildAnnotationBlock({
+  remoteCodeOutdated,
+  remoteCodeLegacy,
+  backendStatus,
+}: {
+  remoteCodeOutdated: boolean
+  remoteCodeLegacy: boolean
+  backendStatus: Pick<HpcBridgeStatus, 'source_rev' | 'local_source_rev'> | null
+}): AnnotationBlock | null {
+  if (!remoteCodeOutdated) return null
+  if (remoteCodeLegacy) {
+    return {
+      message: 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.',
+      error: 'Remote orchestrator is outdated. Relaunch it with hpc/scraper/launch_remote.sh before annotating.',
+    }
+  }
+  return {
+    message: `Annotation blocked: remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Run hpc/scraper/launch_remote.sh and reconnect.`,
+    error: `Remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Relaunch it before annotating.`,
+  }
+}
+
+export function buildStartRunPlan({
+  scraperActive,
+  dashboardLocked,
+  cruxKeyMissing,
+  launcherMode,
+  topN,
+  currentTargetTotal,
+  requestedTargetTotal,
+  mappingMode,
+  runsRoot,
+  resumeMode,
+  outDir,
+  datasetState,
+  useCrux,
+  cruxApiKey,
+  excludeSameEntity,
+}: BuildStartRunPlanArgs): StartRunPlan {
+  if (scraperActive) {
+    return {
+      blocked: true,
+      errorMessage: null,
+      resetWorkspace: false,
+      runOutDir: null,
+      startOptions: null,
+    }
+  }
+  if (dashboardLocked) {
+    return {
+      blocked: true,
+      errorMessage: 'Cluster bridge is offline. Start the remote orchestrator and port 8910 tunnel first.',
+      resetWorkspace: false,
+      runOutDir: null,
+      startOptions: null,
+    }
+  }
+  if (cruxKeyMissing) {
+    return {
+      blocked: true,
+      errorMessage: 'CrUX is enabled for this run. Enter a CrUX API key in Settings before starting the scraper.',
+      resetWorkspace: false,
+      runOutDir: null,
+      startOptions: null,
+    }
+  }
+  if (launcherMode === 'start' && (!topN || Number(topN) <= 0)) {
+    return {
+      blocked: true,
+      errorMessage: null,
+      resetWorkspace: false,
+      runOutDir: null,
+      startOptions: null,
+    }
+  }
+  if (launcherMode === 'extend' && requestedTargetTotal <= currentTargetTotal) {
+    return {
+      blocked: true,
+      errorMessage: `Enter a target total higher than the current ${currentTargetTotal} sites to continue this dataset.`,
+      resetWorkspace: false,
+      runOutDir: null,
+      startOptions: null,
+    }
+  }
+
+  const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
+  const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
+  const runId = createRunId()
+  const freshOutDir = resumeMode ? `${runsRoot}/unified` : `${runsRoot}/output_${runId}`
+  let runOutDir = freshOutDir
+  let startOptions: StartRunOptions = {
+    trackerRadarIndex,
+    trackerDbIndex,
+    excludeSameEntity,
+  }
+
+  if (launcherMode === 'continue' && datasetState.isIncomplete) {
+    runOutDir = outDir
+    if (datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0) {
+      startOptions = {
+        ...startOptions,
+        sites: datasetState.pendingManifestSites,
+        outDir: runOutDir,
+        artifactsDir: `${runOutDir}/artifacts`,
+        runId,
+        expectedTotalSites: datasetState.totalSites || datasetState.uniqueSiteCount + datasetState.pendingManifestSites.length,
+        upsertBySite: true,
+      }
+    } else {
+      startOptions = {
+        ...startOptions,
+        topN: datasetState.manifestTopN || datasetState.totalSites,
+        trancoDate: datasetState.manifestTrancoDate,
+        outDir: runOutDir,
+        artifactsDir: `${runOutDir}/artifacts`,
+        runId,
+        resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
+        expectedTotalSites: datasetState.totalSites,
+        upsertBySite: true,
+        cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
+        cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
+      }
+    }
+  } else if (launcherMode === 'extend') {
+    runOutDir = outDir
+    startOptions = {
+      ...startOptions,
+      topN: requestedTargetTotal,
+      trancoDate: datasetState.manifestTrancoDate,
+      outDir: runOutDir,
+      artifactsDir: `${runOutDir}/artifacts`,
+      runId,
+      resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
+      expectedTotalSites: requestedTargetTotal,
+      upsertBySite: true,
+      cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
+      cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
+    }
+  } else {
+    startOptions = {
+      ...startOptions,
+      topN: Number(topN),
+      outDir: freshOutDir,
+      artifactsDir: `${freshOutDir}/artifacts`,
+      runId: resumeMode ? undefined : runId,
+      cruxFilter: useCrux,
+      cruxApiKey: useCrux ? cruxApiKey : undefined,
+    }
+  }
+
+  return {
+    blocked: false,
+    errorMessage: null,
+    resetWorkspace: launcherMode === 'start' && !resumeMode,
+    runOutDir,
+    startOptions,
+  }
+}
+
+export function useRunController({
+  outDir,
+  runsRoot,
+  topN,
+  resumeMode,
+  useCrux,
+  cruxApiKey,
+  excludeSameEntity,
+  mappingMode,
+  llmModel,
+  scraperActive,
+  dashboardLocked,
+  cruxKeyMissing,
+  launcherMode,
+  currentTargetTotal,
+  requestedTargetTotal,
+  launchStartingProgress,
+  datasetState,
+  auditVerifiedSites,
+  auditUrlOverrides,
+  annotationStatsTotalSites,
+  remoteCodeOutdated,
+  remoteCodeLegacy,
+  backendStatus,
+  persistAuditState,
+  refreshBridgeStatus,
+  updateWorkspaceData,
+  setOutDir,
+  setRunning,
+  setRunStartedAt,
+  setEtaText,
+  setErrorMessage,
+  setScraperActivity,
+  setAuditBusySite,
+  setAuditAnnotatingSite,
+  setAnnotateLogs,
+  setAnnotateRunning,
+  annotateLogsRef,
+}: UseRunControllerArgs) {
+  const markAuditVerified = useCallback(async (site: string) => {
+    const siteKey = normalizeSiteKey(site)
+    const next = Array.from(new Set([...auditVerifiedSites, siteKey]))
+    await persistAuditState(next, auditUrlOverrides)
+  }, [auditUrlOverrides, auditVerifiedSites, persistAuditState])
+
+  const saveAuditOverride = useCallback(async (site: string, url: string) => {
+    const siteKey = normalizeSiteKey(site)
+    const nextOverrides = { ...auditUrlOverrides }
+    const normalizedUrl = url.trim()
+    if (normalizedUrl) {
+      nextOverrides[siteKey] = normalizedUrl
+    } else {
+      delete nextOverrides[siteKey]
+    }
+    await persistAuditState(auditVerifiedSites, nextOverrides)
+  }, [auditUrlOverrides, auditVerifiedSites, persistAuditState])
+
+  const rerunAuditSite = useCallback(async (site: string, overrideUrl?: string) => {
+    if (!window.scraper?.rerunSite) {
+      return { ok: false, error: 'rerunSite API unavailable' }
+    }
+    const siteKey = normalizeSiteKey(site)
+    const normalizedOverride = (overrideUrl || '').trim()
+    const nextOverrides = { ...auditUrlOverrides }
+    if (normalizedOverride) {
+      nextOverrides[siteKey] = normalizedOverride
+    } else {
+      delete nextOverrides[siteKey]
+    }
+    await persistAuditState(auditVerifiedSites, nextOverrides)
+
+    const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
+    const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
+    setAuditBusySite(site)
+    const res = await window.scraper.rerunSite({
+      site,
+      outDir,
+      artifactsDir: `${outDir}/artifacts`,
+      runId: createRunId(),
+      trackerRadarIndex,
+      trackerDbIndex,
+      policyUrlOverride: normalizedOverride || undefined,
+      excludeSameEntity,
+      llmModel,
+    })
+    if (!res?.ok) {
+      setAuditBusySite(null)
+      return { ok: false, error: res?.error || 'Failed to start rerun.' }
+    }
+    updateWorkspaceData({ hasRun: true })
+    setRunning(true)
+    updateWorkspaceData({ progress: 0 })
+    return { ok: true }
+  }, [
+    auditUrlOverrides,
+    auditVerifiedSites,
+    excludeSameEntity,
+    llmModel,
+    mappingMode,
+    outDir,
+    persistAuditState,
+    setAuditBusySite,
+    setRunning,
+    updateWorkspaceData,
+  ])
+
+  const annotateAuditSite = useCallback(async (site: string) => {
+    const blocked = buildAnnotationBlock({ remoteCodeOutdated, remoteCodeLegacy, backendStatus })
+    if (blocked) {
+      annotateLogsRef.current = [blocked.message]
+      setAnnotateLogs([blocked.message])
+      return { ok: false, error: blocked.error }
+    }
+    if (!window.scraper?.annotateSite) {
+      annotateLogsRef.current = ['Annotation API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotation API unavailable in the current Electron session.'])
+      return { ok: false, error: 'annotateSite API unavailable' }
+    }
+    annotateLogsRef.current = []
+    updateWorkspaceData({ annotationRunState: emptyAnnotationRunState(annotationStatsTotalSites || 1) })
+    setAnnotateLogs([`Starting annotation for ${site}...`])
+    setAnnotateRunning(true)
+    setAuditAnnotatingSite(site)
+    const res = await window.scraper.annotateSite({
+      site,
+      outDir,
+      llmModel,
+      force: true,
+    })
+    if (!res?.ok) {
+      setAnnotateRunning(false)
+      setAuditAnnotatingSite(null)
+      const message = `Failed to start annotation: ${res?.error || 'unknown error'}`
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
+      return { ok: false, error: res?.error || 'Failed to start annotation.' }
+    }
+    return { ok: true }
+  }, [
+    annotationStatsTotalSites,
+    annotateLogsRef,
+    backendStatus,
+    llmModel,
+    outDir,
+    remoteCodeLegacy,
+    remoteCodeOutdated,
+    setAnnotateLogs,
+    setAnnotateRunning,
+    setAuditAnnotatingSite,
+    updateWorkspaceData,
+  ])
+
+  const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
+    const blocked = buildAnnotationBlock({ remoteCodeOutdated, remoteCodeLegacy, backendStatus })
+    if (blocked) {
+      setAnnotateRunning(false)
+      annotateLogsRef.current = [blocked.message]
+      setAnnotateLogs([blocked.message])
+      return
+    }
+    if (!window.scraper?.startAnnotate) {
+      annotateLogsRef.current = ['Annotator start API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotator start API unavailable in the current Electron session.'])
+      return
+    }
+    annotateLogsRef.current = []
+    updateWorkspaceData({ annotationRunState: emptyAnnotationRunState(annotationStatsTotalSites) })
+    setAnnotateLogs(['Starting annotator...'])
+    setAnnotateRunning(true)
+    const res = await window.scraper.startAnnotate({
+      artifactsDir: `${outDir}/artifacts`,
+      llmModel: opts.llmModel ?? llmModel,
+      concurrency: opts.concurrency ?? 1,
+      force: opts.force ?? false,
+    })
+    if (!res?.ok) {
+      if (res?.error === 'annotator_already_running') {
+        const message = 'Annotator is already running on the remote orchestrator. Reattaching to the live job.'
+        annotateLogsRef.current = [message]
+        setAnnotateLogs([message])
+        setAnnotateRunning(true)
+        await refreshBridgeStatus()
+        return
+      }
+      setAnnotateRunning(false)
+      const message = `Failed to start annotator: ${res?.error ?? 'unknown error'}`
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
+    }
+  }, [
+    annotationStatsTotalSites,
+    annotateLogsRef,
+    backendStatus,
+    llmModel,
+    outDir,
+    refreshBridgeStatus,
+    remoteCodeLegacy,
+    remoteCodeOutdated,
+    setAnnotateLogs,
+    setAnnotateRunning,
+    updateWorkspaceData,
+  ])
+
+  const stopAnnotate = useCallback(async () => {
+    if (!window.scraper?.stopAnnotate) return
+    await window.scraper.stopAnnotate()
+    setAnnotateRunning(false)
+    setAuditAnnotatingSite(null)
+  }, [setAnnotateRunning, setAuditAnnotatingSite])
+
+  const startRun = useCallback(async () => {
+    const plan = buildStartRunPlan({
+      scraperActive,
+      dashboardLocked,
+      cruxKeyMissing,
+      launcherMode,
+      topN,
+      currentTargetTotal,
+      requestedTargetTotal,
+      mappingMode,
+      runsRoot,
+      resumeMode,
+      outDir,
+      datasetState,
+      useCrux,
+      cruxApiKey,
+      excludeSameEntity,
+    })
+
+    if (plan.errorMessage) {
+      setErrorMessage(plan.errorMessage)
+      return
+    }
+    if (plan.blocked || !plan.startOptions || !plan.runOutDir) {
+      return
+    }
+
+    setErrorMessage(null)
+    setScraperActivity(emptyScraperSiteActivityState())
+    if (plan.resetWorkspace) {
+      updateWorkspaceData((prev) => ({
+        ...prev,
+        summaryData: null,
+        explorerData: null,
+        resultsData: null,
+        auditVerifiedSites: [],
+        auditUrlOverrides: {},
+        runManifest: null,
+      }))
+    }
+
+    setOutDir(plan.runOutDir)
+    if (window.scraper) {
+      const res = await window.scraper.startRun(plan.startOptions)
+      if (!res.ok) {
+        setErrorMessage(res.error || 'Failed to start scraper')
+      } else {
+        updateWorkspaceData({ hasRun: true })
+        setRunning(true)
+        updateWorkspaceData({ progress: launchStartingProgress })
+        setRunStartedAt(Date.now())
+        setEtaText('')
+        if (window.scraper.readRunManifest) {
+          const manifestRes = await window.scraper.readRunManifest(plan.runOutDir)
+          updateWorkspaceData({ runManifest: manifestRes?.ok ? (manifestRes.data ?? null) : null })
+        }
+      }
+      return
+    }
+
+    updateWorkspaceData({ hasRun: true })
+    setRunning(true)
+    updateWorkspaceData({ progress: launchStartingProgress })
+    setRunStartedAt(Date.now())
+    setEtaText('')
+  }, [
+    cruxApiKey,
+    cruxKeyMissing,
+    currentTargetTotal,
+    dashboardLocked,
+    datasetState,
+    excludeSameEntity,
+    launchStartingProgress,
+    launcherMode,
+    mappingMode,
+    outDir,
+    requestedTargetTotal,
+    resumeMode,
+    runsRoot,
+    scraperActive,
+    setErrorMessage,
+    setEtaText,
+    setOutDir,
+    setRunStartedAt,
+    setRunning,
+    setScraperActivity,
+    topN,
+    updateWorkspaceData,
+    useCrux,
+  ])
+
+  return {
+    markAuditVerified,
+    saveAuditOverride,
+    rerunAuditSite,
+    annotateAuditSite,
+    startAnnotate,
+    stopAnnotate,
+    startRun,
+  }
+}
