@@ -6,6 +6,7 @@ import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
 import { ConsistencyCheckerView } from './components/consistency/ConsistencyCheckerView'
 import { DatabaseView } from './components/database/DatabaseView'
 import { ExplorerView } from './components/explorer/ExplorerView'
+import { useBridgeAutoRecovery } from './lib/useBridgeAutoRecovery'
 import { PageShell } from './components/layout/PageShell'
 import { Sidebar } from './components/layout/Sidebar'
 import { LauncherView } from './components/launcher/LauncherView'
@@ -324,6 +325,13 @@ function App() {
     setStopRunPending,
     setBridgeActionBusy,
     setBridgeActionMessage,
+  })
+
+  useBridgeAutoRecovery({
+    tunnelStatus,
+    bridgeFailures,
+    bridgeActionBusy,
+    refreshRemote,
   })
 
   const { latestStreamEvent } = useAppRuntime({
