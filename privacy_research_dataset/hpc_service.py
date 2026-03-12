@@ -19,13 +19,9 @@ from typing import Any
 
 from aiohttp import web
 
+from .hpc_artifacts import artifact_routes
 from .hpc_control_plane import control_plane_routes
-from .annotation_state import (
-    count_jsonl_records,
-    has_completed_annotation_output,
-    read_annotation_status,
-)
-from .hpc_contracts import AnnotationSiteRecord, AnnotationStatsResponse, PipelineEventEnvelope
+from .hpc_contracts import PipelineEventEnvelope
 
 
 SAFE_SCRAPER_CONCURRENCY = 2
@@ -44,21 +40,6 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-
-
-def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
-    out: list[Any] = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            out.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            out.append({"_error": "invalid_json", "raw": stripped})
-        if limit and len(out) >= limit:
-            break
-    return out
 
 
 def normalize_site_key(value: str) -> str:
@@ -738,59 +719,6 @@ class HpcService:
     async def read_json_file(self, path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
 
-    async def handle_read_summary(self, request: web.Request) -> web.Response:
-        target = self.resolve_repo_path(request.query.get("filePath"), self.last_paths.summary_json)
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        return web.json_response({"ok": True, "data": await self.read_json_file(target), "path": str(target)})
-
-    async def handle_read_state(self, request: web.Request) -> web.Response:
-        target = self.resolve_repo_path(request.query.get("filePath"), self.last_paths.state_json)
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        return web.json_response({"ok": True, "data": await self.read_json_file(target), "path": str(target)})
-
-    async def handle_read_explorer(self, request: web.Request) -> web.Response:
-        target = self.resolve_repo_path(request.query.get("filePath"), self.last_paths.explorer_jsonl)
-        limit = int(request.query.get("limit", "0") or "0") or None
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        if target.suffix == ".jsonl":
-            data = parse_jsonl(target.read_text(encoding="utf-8"), limit)
-        else:
-            data = await self.read_json_file(target)
-        return web.json_response({"ok": True, "data": data, "path": str(target)})
-
-    async def handle_read_results(self, request: web.Request) -> web.Response:
-        target = self.resolve_repo_path(request.query.get("filePath"), self.last_paths.results_jsonl)
-        limit = int(request.query.get("limit", "0") or "0") or None
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        data = parse_jsonl(target.read_text(encoding="utf-8"), limit)
-        return web.json_response({"ok": True, "data": data, "path": str(target)})
-
-    async def handle_read_artifact_text(self, request: web.Request) -> web.Response:
-        payload = await request.json()
-        relative_path = str(payload.get("relativePath") or "").strip()
-        if not relative_path:
-            return web.json_response({"ok": False, "error": "missing_relative_path"})
-        target = self.safe_resolve(payload.get("outDir"), relative_path)
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        return web.json_response({"ok": True, "data": target.read_text(encoding="utf-8"), "path": str(target)})
-
-    async def handle_read_run_manifest(self, request: web.Request) -> web.Response:
-        target = self.manifest_path(request.query.get("outDir"))
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        return web.json_response({"ok": True, "data": await self.read_json_file(target), "path": str(target)})
-
-    async def handle_read_audit_state(self, request: web.Request) -> web.Response:
-        target = self.audit_state_path(request.query.get("outDir"))
-        if not target.exists():
-            return web.json_response({"ok": True, "data": {"verifiedSites": [], "urlOverrides": {}}, "path": str(target)})
-        return web.json_response({"ok": True, "data": await self.read_json_file(target), "path": str(target)})
-
     async def handle_write_audit_state(self, request: web.Request) -> web.Response:
         payload = await request.json()
         target = self.audit_state_path(payload.get("outDir"))
@@ -877,174 +805,6 @@ class HpcService:
                 entry.unlink()
             removed.append(str(entry))
         return web.json_response({"ok": True, "removed": removed, "path": str(self.outputs_root)})
-
-    async def handle_folder_size(self, request: web.Request) -> web.Response:
-        target = self.default_paths(request.query.get("outDir")).out_dir
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        size = 0
-        for path in target.rglob("*"):
-            if path.is_file():
-                with suppress(Exception):
-                    size += path.stat().st_size
-        return web.json_response({"ok": True, "bytes": size, "path": str(target)})
-
-    async def handle_list_runs(self, request: web.Request) -> web.Response:
-        base = request.query.get("baseOutDir") or "outputs"
-        root = (self.repo_root / base).resolve()
-        if not root.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(root)})
-        runs: list[dict[str, Any]] = []
-        for entry in root.iterdir():
-            if not entry.is_dir():
-                continue
-            summary_path = entry / "results.summary.json"
-            state_path = entry / "run_state.json"
-            summary = None
-            state = None
-            if summary_path.exists():
-                with suppress(Exception):
-                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            if state_path.exists():
-                with suppress(Exception):
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
-            if not summary and not state and not entry.name.startswith("output_"):
-                continue
-            runs.append(
-                {
-                    "runId": (summary or {}).get("run_id") or (state or {}).get("run_id") or entry.name.removeprefix("output_"),
-                    "folder": entry.name,
-                    "outDir": os.path.relpath(entry, self.repo_root),
-                    "summary": summary,
-                    "state": state,
-                    "updated_at": (summary or {}).get("updated_at") or (state or {}).get("updated_at") or datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc).isoformat(),
-                    "started_at": (summary or {}).get("started_at") or (state or {}).get("started_at"),
-                }
-            )
-        runs.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
-        return web.json_response({"ok": True, "root": str(root), "runs": runs})
-
-    async def handle_count_ok_artifacts(self, request: web.Request) -> web.Response:
-        ok_dir = self.default_paths(request.query.get("outDir")).artifacts_ok_dir
-        if not ok_dir.exists():
-            return web.json_response({"ok": True, "count": 0, "sites": [], "path": str(ok_dir)})
-        sites = [entry.name for entry in ok_dir.iterdir() if entry.is_dir() or entry.is_symlink()]
-        return web.json_response({"ok": True, "count": len(sites), "sites": sites, "path": str(ok_dir)})
-
-    async def handle_read_tp_cache(self, request: web.Request) -> web.Response:
-        cache_path = self.default_paths(request.query.get("outDir")).out_dir / "results.tp_cache.json"
-        if not cache_path.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(cache_path)})
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
-        total = 0
-        fetched = 0
-        failed = 0
-        by_status: dict[str, int] = {}
-        for entry in raw.values():
-            total += 1
-            if entry.get("text") is not None:
-                fetched += 1
-            elif entry.get("error_message"):
-                failed += 1
-            status = str(entry.get("status_code", "unknown"))
-            by_status[status] = by_status.get(status, 0) + 1
-        return web.json_response({"ok": True, "total": total, "fetched": fetched, "failed": failed, "by_status": by_status})
-
-    async def handle_crux_cache_stats(self, request: web.Request) -> web.Response:
-        cache_path = self.default_paths(request.query.get("outDir")).crux_cache_json
-        if not cache_path.exists():
-            return web.json_response({"ok": True, "count": 0, "present": 0, "absent": 0, "path": str(cache_path)})
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
-        values = list(raw.values())
-        present = sum(1 for value in values if value)
-        absent = len(values) - present
-        return web.json_response({"ok": True, "count": len(values), "present": present, "absent": absent, "path": str(cache_path)})
-
-    async def handle_annotation_stats(self, request: web.Request) -> web.Response:
-        artifacts_dir = request.query.get("artifactsDir")
-        target = (self.repo_root / artifacts_dir).resolve() if artifacts_dir else self.last_paths.artifacts_dir
-        if not target.exists():
-            return web.json_response(
-                AnnotationStatsResponse(
-                    total_sites=0,
-                    annotated_sites=0,
-                    total_statements=0,
-                    per_site=[],
-                    tp_total=0,
-                    tp_annotated=0,
-                    tp_total_statements=0,
-                    per_tp=[],
-                ).to_dict()
-            )
-        per_site: list[dict[str, Any]] = []
-        per_tp: list[dict[str, Any]] = []
-        total_statements = 0
-        tp_total_statements = 0
-        for site_dir in sorted(target.iterdir()):
-            if not site_dir.is_dir():
-                continue
-            statements_path = site_dir / "policy_statements.jsonl"
-            count = count_jsonl_records(statements_path)
-            total_statements += count
-            site_status = read_annotation_status(site_dir) or {}
-            completed = has_completed_annotation_output(site_dir)
-            per_site.append(
-                AnnotationSiteRecord(
-                    site=site_dir.name,
-                    count=count,
-                    has_statements=count > 0,
-                    completed=completed,
-                    status=str(site_status.get("status") or ("completed" if completed else "pending")),
-                    updated_at=site_status.get("updated_at"),
-                    finished_at=site_status.get("finished_at"),
-                    reason=site_status.get("reason"),
-                    error=site_status.get("error"),
-                    model=site_status.get("model"),
-                    tokens_in=site_status.get("tokens_in"),
-                    tokens_out=site_status.get("tokens_out"),
-                ).to_dict()
-            )
-            tp_root = site_dir / "third_party"
-            if tp_root.exists():
-                for tp_dir in sorted(tp_root.iterdir()):
-                    if not tp_dir.is_dir():
-                        continue
-                    tp_path = tp_dir / "policy_statements.jsonl"
-                    tp_count = count_jsonl_records(tp_path)
-                    tp_total_statements += tp_count
-                    tp_status = read_annotation_status(tp_dir) or {}
-                    tp_completed = has_completed_annotation_output(tp_dir)
-                    per_tp.append(
-                        {
-                            "site": site_dir.name,
-                            "tp": tp_dir.name,
-                            "count": tp_count,
-                            "has_statements": tp_count > 0,
-                            "completed": tp_completed,
-                            "status": str(tp_status.get("status") or ("completed" if tp_completed else "pending")),
-                            "updated_at": tp_status.get("updated_at"),
-                            "finished_at": tp_status.get("finished_at"),
-                            "reason": tp_status.get("reason"),
-                            "error": tp_status.get("error"),
-                            "model": tp_status.get("model"),
-                            "tokens_in": tp_status.get("tokens_in"),
-                            "tokens_out": tp_status.get("tokens_out"),
-                        }
-                    )
-        annotated_sites = sum(1 for row in per_site if row["completed"])
-        tp_annotated = sum(1 for row in per_tp if row["completed"])
-        return web.json_response(
-            AnnotationStatsResponse(
-                total_sites=len(per_site),
-                annotated_sites=annotated_sites,
-                total_statements=total_statements,
-                per_site=per_site,
-                tp_total=len(per_tp),
-                tp_annotated=tp_annotated,
-                tp_total_statements=tp_total_statements,
-                per_tp=per_tp,
-            ).to_dict()
-        )
 
     async def handle_start_run(self, request: web.Request) -> web.Response:
         payload = await request.json()
@@ -1195,20 +955,8 @@ class HpcService:
         app = web.Application()
         app.add_routes(
             control_plane_routes(self)
+            + artifact_routes(self)
             + [
-                web.get("/api/summary", self.handle_read_summary),
-                web.get("/api/state", self.handle_read_state),
-                web.get("/api/explorer", self.handle_read_explorer),
-                web.get("/api/results", self.handle_read_results),
-                web.get("/api/run-manifest", self.handle_read_run_manifest),
-                web.get("/api/audit-state", self.handle_read_audit_state),
-                web.get("/api/folder-size", self.handle_folder_size),
-                web.get("/api/list-runs", self.handle_list_runs),
-                web.get("/api/annotation-stats", self.handle_annotation_stats),
-                web.get("/api/count-ok-artifacts", self.handle_count_ok_artifacts),
-                web.get("/api/read-tp-cache", self.handle_read_tp_cache),
-                web.get("/api/crux-cache-stats", self.handle_crux_cache_stats),
-                web.post("/api/artifact-text", self.handle_read_artifact_text),
                 web.post("/api/write-audit-state", self.handle_write_audit_state),
                 web.post("/api/clear-results", self.handle_clear_results),
                 web.post("/api/delete-output", self.handle_delete_output),

@@ -4,6 +4,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+def _compact(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if value is not None}
+
+
 def _string(value: Any) -> str | None:
     if value is None:
         return None
@@ -203,3 +207,72 @@ class PathsResponse:
         payload = asdict(self)
         payload["data"] = self.data.to_dict()
         return payload
+
+
+@dataclass(slots=True)
+class JsonPathResponse:
+    ok: bool
+    data: Any | None = None
+    path: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class FolderSizeResponse:
+    ok: bool
+    bytes: int | None = None
+    path: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class RunListResponse:
+    ok: bool
+    root: str | None = None
+    runs: list[dict[str, Any]] | None = None
+    path: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class ArtifactCountResponse:
+    ok: bool
+    count: int
+    sites: list[str]
+    path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class ThirdPartyCacheStatsResponse:
+    ok: bool
+    total: int
+    fetched: int
+    failed: int
+    by_status: dict[str, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CruxCacheStatsResponse:
+    ok: bool
+    count: int
+    present: int
+    absent: int
+    path: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
