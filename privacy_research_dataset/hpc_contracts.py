@@ -114,6 +114,7 @@ class AnnotationSiteRecord:
     model: str | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+    phase: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

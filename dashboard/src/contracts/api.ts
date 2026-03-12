@@ -268,6 +268,7 @@ export type AnnotationSiteRecord = {
   model?: string
   tokens_in?: number
   tokens_out?: number
+  phase?: string
 }
 
 export type AnnotationThirdPartyRecord = {
@@ -284,6 +285,7 @@ export type AnnotationThirdPartyRecord = {
   model?: string
   tokens_in?: number
   tokens_out?: number
+  phase?: string
 }
 
 export type AnnotationStats = {
@@ -385,6 +387,16 @@ export type AnnotationRunState = {
   tokensOut: number
 }
 
+export type BridgeDiagnostics = {
+  service_port: number
+  health_ok: boolean
+  health_raw: string
+  local_target: string | null
+  remote_node: string | null
+  ssh_status: number
+  local_tunnels: string[]
+}
+
 export type BridgeScriptResult = {
   ok: boolean
   code?: number
@@ -396,6 +408,7 @@ export type BridgeScriptResult = {
   health_ok?: boolean
   signal?: string | null
   killed?: boolean
+  diagnostics?: BridgeDiagnostics
 }
 
 export type ActiveSiteInfo = {

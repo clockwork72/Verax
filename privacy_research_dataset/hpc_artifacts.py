@@ -147,6 +147,7 @@ def build_annotation_stats_response(service: ArtifactService, artifacts_dir: str
                 model=site_status.get("model"),
                 tokens_in=site_status.get("tokens_in"),
                 tokens_out=site_status.get("tokens_out"),
+                phase=site_status.get("phase"),
             ).to_dict()
         )
         tp_root = site_dir / "third_party"
@@ -174,6 +175,7 @@ def build_annotation_stats_response(service: ArtifactService, artifacts_dir: str
                         "model": tp_status.get("model"),
                         "tokens_in": tp_status.get("tokens_in"),
                         "tokens_out": tp_status.get("tokens_out"),
+                        "phase": tp_status.get("phase"),
                     }
                 )
     annotated_sites = sum(1 for row in per_site if row["completed"])

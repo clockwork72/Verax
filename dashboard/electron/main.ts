@@ -644,7 +644,19 @@ ipcMain.handle('scraper:check-tunnel', async () => {
 })
 
 ipcMain.handle('scraper:diagnose-bridge', async () => {
-  return await runLocalScript('check_bridge.sh', [], { timeoutMs: 120000, interactiveSshPrompt: true })
+  const result = await runLocalScript('check_bridge.sh', ['--json'], { timeoutMs: 120000, interactiveSshPrompt: true })
+  let diagnostics: Record<string, unknown> | undefined
+  if (result.stdout) {
+    try {
+      const parsed = JSON.parse(result.stdout.trim())
+      if (parsed && typeof parsed === 'object') {
+        diagnostics = parsed
+      }
+    } catch {
+      // stdout is not JSON (e.g. error path before JSON output); leave diagnostics undefined
+    }
+  }
+  return diagnostics ? { ...result, diagnostics } : result
 })
 
 ipcMain.handle('scraper:repair-bridge', async () => {

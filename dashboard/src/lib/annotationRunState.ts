@@ -50,7 +50,7 @@ export function annotationRunStateFromStats(stats: AnnotationStats | null | unde
     sites[row.site] = {
       site: row.site,
       status: row.status,
-      phase: row.status,
+      phase: row.phase ?? row.status,
       message: row.reason || row.error || undefined,
       statements: row.count ?? 0,
       tokensIn: row.tokens_in ?? 0,
