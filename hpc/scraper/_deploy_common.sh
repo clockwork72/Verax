@@ -36,7 +36,7 @@ retire_other_orchestrators() {
   if [ -z "${other_jobs}" ]; then
     return 0
   fi
-  echo "Stopping older ${JOB_NAME} job(s): ${other_jobs//$'\n'/ }"
+  echo "Stopping older ${JOB_NAME} job(s): ${other_jobs//$'\n'/ }" >&2
   ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'scancel ${other_jobs//$'\n'/ }'"
 }
 
@@ -49,7 +49,7 @@ detect_and_export_model_node() {
     if [ -n "${MODEL_NODE}" ]; then
       SCRAPER_LLM_BASE_URL="${SCRAPER_LLM_BASE_URL:-http://${MODEL_NODE}:8901/v1}"
       SCRAPER_LLM_HEALTH_URL="${SCRAPER_LLM_HEALTH_URL:-http://${MODEL_NODE}:8901/health}"
-      echo "Detected annotation model endpoint on ${MODEL_NODE}:8901"
+      echo "Detected annotation model endpoint on ${MODEL_NODE}:8901" >&2
     fi
   fi
   if [ -n "${SCRAPER_LLM_BASE_URL:-}" ]; then
