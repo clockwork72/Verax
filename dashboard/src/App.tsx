@@ -111,6 +111,7 @@ function App() {
   const [latestStreamEvent, setLatestStreamEvent] = useState<import('./vite-env').AnnotatorStreamEvent | null>(null)
   const annotateLogsRef = useRef<string[]>([])
   const stopRunPendingRef = useRef(false)
+  const prevTunnelStatusRef = useRef<string | null>(null)
   const defaultOutDir = `${runsRoot}/unified`
   const {
     workspaceData,
@@ -701,6 +702,20 @@ function App() {
     if (activeNav !== 'audit') return
     void loadAuditWorkspace()
   }, [activeNav, outDir, loadAuditWorkspace])
+
+  // Re-seed workspace and annotation state when the bridge transitions from
+  // offline/degraded to online. This ensures the UI reflects the remote state
+  // immediately after reconnect without waiting for the next polling cycle.
+  useEffect(() => {
+    const prev = prevTunnelStatusRef.current
+    prevTunnelStatusRef.current = tunnelStatus
+    if (prev !== null && prev !== 'online' && tunnelStatus === 'online' && hasRun && outDir) {
+      void syncLoadedRunState(outDir)
+      void readAnnotationStats(`${outDir}/artifacts`).then((res) => {
+        if (res) updateWorkspaceData({ annotationRunState: annotationRunStateFromStats(res) })
+      })
+    }
+  }, [tunnelStatus, hasRun, outDir, syncLoadedRunState, updateWorkspaceData])
 
   const pageTitle = {
     launcher: 'Scraper Launcher',
