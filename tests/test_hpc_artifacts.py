@@ -52,9 +52,43 @@ def test_build_annotation_stats_response_preserves_site_and_tp_state(tmp_path):
     assert payload["per_site"][0]["site"] == "docker.com"
     assert payload["per_site"][0]["status"] == "completed"
     assert payload["per_site"][0]["tokens_in"] == 12
+    # phase field should be forwarded from annotation_status.json (None for completed with no explicit phase)
+    assert "phase" in payload["per_site"][0]
     assert payload["per_tp"][0]["tp"] == "analytics.example"
     assert payload["per_tp"][0]["status"] == "failed"
     assert payload["per_tp"][0]["error"] == "bad json"
+    assert "phase" in payload["per_tp"][0]
+
+
+def test_build_annotation_stats_response_exposes_phase_for_in_progress_sites(tmp_path):
+    service = _FakeArtifactService(tmp_path)
+    artifacts_dir = tmp_path / "outputs" / "unified" / "artifacts"
+    site_dir = artifacts_dir / "openai.com"
+    site_dir.mkdir(parents=True)
+    (site_dir / "policy_statements.jsonl").write_text('{"statement":"a"}\n', encoding="utf-8")
+    write_annotation_status(site_dir, "extracting", site="openai.com", phase="extracting")
+
+    payload = build_annotation_stats_response(service, "outputs/unified/artifacts").to_dict()
+
+    site_row = payload["per_site"][0]
+    assert site_row["status"] == "extracting"
+    assert site_row["phase"] == "extracting"
+
+
+def test_build_annotation_stats_response_phase_distinguishes_failure_location(tmp_path):
+    service = _FakeArtifactService(tmp_path)
+    artifacts_dir = tmp_path / "outputs" / "unified" / "artifacts"
+    site_dir = artifacts_dir / "example.com"
+    site_dir.mkdir(parents=True)
+    (site_dir / "policy_statements.jsonl").write_text('{"statement":"a"}\n', encoding="utf-8")
+    write_annotation_status(site_dir, "failed", site="example.com", phase="preprocessing", error="timeout")
+
+    payload = build_annotation_stats_response(service, "outputs/unified/artifacts").to_dict()
+
+    site_row = payload["per_site"][0]
+    assert site_row["status"] == "failed"
+    assert site_row["phase"] == "preprocessing"
+    assert site_row["error"] == "timeout"
 
 
 def test_build_run_list_response_sorts_latest_runs_and_filters_noise(tmp_path):
