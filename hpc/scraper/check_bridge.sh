@@ -12,6 +12,8 @@ SSH_OPTS=(
   -o ControlPersist=10m
   -o "ControlPath=${SSH_SOCKET}"
 )
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LOCAL_REV="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 JSON_MODE=0
 
 if [ "${1:-}" = "--json" ]; then
@@ -48,6 +50,14 @@ set -e
 if [ "${JSON_MODE}" -eq 1 ]; then
   python3 - <<PY
 import json
+local_rev = ${LOCAL_REV@Q} or None
+health_data = {}
+try:
+    health_data = json.loads(${HEALTH_RAW@Q})
+except Exception:
+    pass
+remote_rev = health_data.get("source_rev") or None
+rev_match = (local_rev == remote_rev) if (local_rev and remote_rev) else None
 print(json.dumps({
     "service_port": ${SERVICE_PORT},
     "health_ok": bool(${HEALTH_OK}),
@@ -56,6 +66,9 @@ print(json.dumps({
     "remote_node": ${REMOTE_NODE@Q} or None,
     "ssh_status": ${SSH_STATUS},
     "local_tunnels": ${LOCAL_TUNNELS@Q}.splitlines() if ${LOCAL_TUNNELS@Q} else [],
+    "local_rev": local_rev,
+    "remote_rev": remote_rev,
+    "rev_match": rev_match,
 }))
 PY
   if [ "${HEALTH_OK}" -eq 1 ]; then

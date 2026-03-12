@@ -395,6 +395,9 @@ export type BridgeDiagnostics = {
   remote_node: string | null
   ssh_status: number
   local_tunnels: string[]
+  local_rev?: string | null
+  remote_rev?: string | null
+  rev_match?: boolean | null
 }
 
 export type BridgeScriptResult = {

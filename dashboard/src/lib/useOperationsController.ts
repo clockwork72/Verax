@@ -54,7 +54,10 @@ export function formatBridgeScriptOutput(title: string, result: BridgeScriptResu
         `  Remote node:   ${d.remote_node ?? '(unavailable)'}`,
         `  SSH status:    ${d.ssh_status === 0 ? 'ok' : `error (${d.ssh_status})`}`,
         d.local_tunnels.length ? `  Tunnels:       ${d.local_tunnels.length} active` : `  Tunnels:       (none)`,
-      ]
+        d.rev_match != null
+          ? `  Rev match:     ${d.rev_match ? 'yes' : `NO (local=${d.local_rev ?? '?'}, remote=${d.remote_rev ?? '?'})`}`
+          : null,
+      ].filter(Boolean)
     : []
   return [
     title,
