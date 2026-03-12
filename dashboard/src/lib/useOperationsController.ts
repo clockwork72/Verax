@@ -43,6 +43,19 @@ export function validateDeleteOutDirTarget(targetDir: string, runsRoot: string):
 }
 
 export function formatBridgeScriptOutput(title: string, result: BridgeScriptResult): string {
+  const d = result.diagnostics
+  const diagnosticsSection = d
+    ? [
+        '',
+        'DIAGNOSTICS:',
+        `  Health OK:     ${d.health_ok}`,
+        `  Service port:  ${d.service_port}`,
+        `  Local target:  ${d.local_target ?? '(none)'}`,
+        `  Remote node:   ${d.remote_node ?? '(unavailable)'}`,
+        `  SSH status:    ${d.ssh_status === 0 ? 'ok' : `error (${d.ssh_status})`}`,
+        d.local_tunnels.length ? `  Tunnels:       ${d.local_tunnels.length} active` : `  Tunnels:       (none)`,
+      ]
+    : []
   return [
     title,
     '',
@@ -52,6 +65,7 @@ export function formatBridgeScriptOutput(title: string, result: BridgeScriptResu
     typeof result.killed === 'boolean' ? `Killed: ${result.killed}` : null,
     result.hint ? `Hint: ${result.hint}` : null,
     result.error ? `Error: ${result.error}` : null,
+    ...diagnosticsSection,
     '',
     'STDOUT:',
     result.stdout?.trim() || '(empty)',
