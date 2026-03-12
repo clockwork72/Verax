@@ -8,6 +8,7 @@ import type {
   RunState,
   RunSummary,
 } from '../contracts/api'
+import type { ExplorerSite, ExplorerThirdParty } from '../data/explorer'
 import { annotationRunStateFromStats, emptyAnnotationRunState } from './annotationRunState'
 import { normalizePipelineEvent } from './pipelineEvents'
 
@@ -35,7 +36,7 @@ export type WorkspaceSnapshot = {
   totalSites: number
   processedSites: number
   missingOutputDir: boolean
-  explorer?: any[]
+  explorer?: ExplorerSite[]
   results?: any[]
   auditState?: AuditWorkspaceState
   runManifest?: RunManifest | null
@@ -54,9 +55,60 @@ function sanitizeResults(records: unknown): any[] {
   return records.filter((record) => record && (record.site_etld1 || record.input || record.site))
 }
 
-function sanitizeExplorer(records: unknown): any[] {
+function normalizeExplorerThirdParty(raw: unknown): ExplorerThirdParty | null {
+  const record = asObject(raw)
+  const name = asString(record?.name)
+  if (!record || !name) return null
+  return {
+    name,
+    policyUrl: typeof record.policyUrl === 'string'
+      ? record.policyUrl
+      : typeof record.policy_url === 'string'
+        ? record.policy_url
+        : null,
+    extractionMethod: typeof record.extractionMethod === 'string'
+      ? record.extractionMethod
+      : typeof record.extraction_method === 'string'
+        ? record.extraction_method
+        : null,
+    entity: typeof record.entity === 'string' ? record.entity : null,
+    categories: asStringArray(record.categories),
+    prevalence: typeof record.prevalence === 'number' ? record.prevalence : null,
+  }
+}
+
+function sanitizeExplorer(records: unknown): ExplorerSite[] {
   if (!Array.isArray(records)) return []
-  return records.filter((record) => record && record.site)
+  const normalized: ExplorerSite[] = []
+  for (const record of records) {
+    const row = asObject(record)
+    const site = asString(row?.site)
+    if (!row || !site) continue
+    const thirdPartySource = Array.isArray(row.thirdParties)
+      ? row.thirdParties
+      : Array.isArray(row.third_parties)
+        ? row.third_parties
+        : []
+    normalized.push({
+      site,
+      rank: typeof row.rank === 'number' ? row.rank : null,
+      status: typeof row.status === 'string' ? row.status : 'exception',
+      policyUrl: typeof row.policyUrl === 'string'
+        ? row.policyUrl
+        : typeof row.policy_url === 'string'
+          ? row.policy_url
+          : null,
+      extractionMethod: typeof row.extractionMethod === 'string'
+        ? row.extractionMethod
+        : typeof row.extraction_method === 'string'
+          ? row.extraction_method
+          : null,
+      thirdParties: thirdPartySource
+        .map(normalizeExplorerThirdParty)
+        .filter((tp): tp is ExplorerThirdParty => Boolean(tp)),
+    })
+  }
+  return normalized
 }
 
 function asObject(raw: unknown): Record<string, unknown> | null {

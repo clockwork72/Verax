@@ -126,7 +126,24 @@ describe('scraperClient', () => {
     expect(snapshot.missingOutputDir).toBe(false)
     expect(snapshot.progress).toBe(40)
     expect(snapshot.folderBytes).toBe(2048)
-    expect(snapshot.explorer).toEqual([{ site: 'docker.com' }, { site: 'openai.com' }])
+    expect(snapshot.explorer).toEqual([
+      {
+        site: 'docker.com',
+        rank: null,
+        status: 'exception',
+        policyUrl: null,
+        extractionMethod: null,
+        thirdParties: [],
+      },
+      {
+        site: 'openai.com',
+        rank: null,
+        status: 'exception',
+        policyUrl: null,
+        extractionMethod: null,
+        thirdParties: [],
+      },
+    ])
     expect(snapshot.results).toEqual([{ site_etld1: 'docker.com' }, { input: 'openai.com' }])
     expect(snapshot.auditState).toEqual({
       verifiedSites: ['docker.com'],

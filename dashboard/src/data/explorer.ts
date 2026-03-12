@@ -1,3 +1,5 @@
+import type { ScraperSiteStatus } from '../contracts/api'
+
 export type ExplorerThirdParty = {
   name: string
   policyUrl: string | null
@@ -10,7 +12,7 @@ export type ExplorerThirdParty = {
 export type ExplorerSite = {
   site: string
   rank?: number | null
-  status: 'ok' | 'policy_not_found' | 'home_fetch_failed' | 'non_browsable'
+  status: ScraperSiteStatus
   policyUrl: string | null
   extractionMethod?: string | null
   thirdParties: ExplorerThirdParty[]

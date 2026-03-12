@@ -114,8 +114,7 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
     const minThirdPartyCount = Number(minThirdParties)
     return slice.filter((site) => {
       if (statusFilter !== 'all' && site.status !== statusFilter) return false
-      const siteThirdParties =
-        (site as any).thirdParties?.length ?? (site as any).third_parties?.length ?? 0
+      const siteThirdParties = site.thirdParties.length
       if (Number.isFinite(minThirdPartyCount) && minThirdParties !== '' && siteThirdParties < minThirdPartyCount) {
         return false
       }
@@ -124,14 +123,9 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
     })
   }, [progress, query, statusFilter, sites, minThirdParties])
 
-  const selectedPolicyUrl =
-    (selectedSite as any)?.policyUrl ?? (selectedSite as any)?.policy_url ?? selectedSite?.policyUrl ?? null
-  const selectedPolicyMethod =
-    (selectedSite as any)?.extractionMethod ?? (selectedSite as any)?.extraction_method ?? selectedSite?.extractionMethod ?? null
-  const selectedThirdParties: ExplorerThirdParty[] = ((selectedSite as any)?.thirdParties ??
-    (selectedSite as any)?.third_parties ??
-    selectedSite?.thirdParties ??
-    []) as ExplorerThirdParty[]
+  const selectedPolicyUrl = selectedSite?.policyUrl ?? null
+  const selectedPolicyMethod = selectedSite?.extractionMethod ?? null
+  const selectedThirdParties: ExplorerThirdParty[] = selectedSite?.thirdParties ?? []
 
   const openPolicyWindow = async () => {
     if (!currentEntry?.url) return
@@ -194,7 +188,7 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
             )}
             {view === 'thirdParties' && selectedSite && (
               <span className="theme-chip rounded-full px-3 py-1">
-                {selectedSite.site} • Rank {selectedSite.rank ?? (selectedSite as any).rank ?? '—'}
+                {selectedSite.site} • Rank {selectedSite.rank ?? '—'}
               </span>
             )}
           </div>
@@ -248,15 +242,14 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
                 >
                   <p className="text-sm font-semibold">{site.site}</p>
                   <p className="text-xs text-[var(--muted-text)]">
-                    Status: {site.status} • Rank {site.rank ?? (site as any).rank ?? '—'}
+                    Status: {site.status} • Rank {site.rank ?? '—'}
                   </p>
                   <p className="mt-2 text-xs text-[var(--muted-text)]">
-                    {(site as any).thirdParties?.length ?? (site as any).third_parties?.length ?? 0} third-party
-                    services
+                    {site.thirdParties.length} third-party services
                   </p>
                   {showExtractionMethod && (
                     <p className="mt-1 text-xs text-[var(--muted-text)]">
-                      Policy extraction: {formatExtractionMethod((site as any).extractionMethod ?? (site as any).extraction_method)}
+                      Policy extraction: {formatExtractionMethod(site.extractionMethod)}
                     </p>
                   )}
                 </button>
@@ -540,7 +533,7 @@ type ThirdPartyCardProps = {
 }
 
 function ThirdPartyCard({ service, onOpen, showExtractionMethod }: ThirdPartyCardProps) {
-  const policyUrl = (service as any).policyUrl ?? (service as any).policy_url ?? service.policyUrl
+  const policyUrl = service.policyUrl
   return (
     <button
       className="rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4 text-left transition hover:border-[var(--color-danger)]"
@@ -554,7 +547,7 @@ function ThirdPartyCard({ service, onOpen, showExtractionMethod }: ThirdPartyCar
             entity: service.entity,
             categories: normalizeCategories(service.categories),
             prevalence: service.prevalence,
-            extractionMethod: (service as any).extractionMethod ?? (service as any).extraction_method ?? null,
+            extractionMethod: service.extractionMethod ?? null,
           },
         })
       }}
@@ -573,7 +566,7 @@ function ThirdPartyCard({ service, onOpen, showExtractionMethod }: ThirdPartyCar
       <p className="mt-2 text-xs text-[var(--muted-text)]">{policyUrl ? 'Open policy' : 'No policy URL'}</p>
       {showExtractionMethod && (
         <p className="mt-1 text-xs text-[var(--muted-text)]">
-          Extraction: {formatExtractionMethod((service as any).extractionMethod ?? (service as any).extraction_method)}
+          Extraction: {formatExtractionMethod(service.extractionMethod)}
         </p>
       )}
     </button>

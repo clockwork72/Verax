@@ -37,6 +37,7 @@ import {
 import { useBridgeStatus } from './lib/useBridgeStatus'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
+import type { ExplorerSite } from './data/explorer'
 
 function formatDuration(ms: number) {
   if (!Number.isFinite(ms) || ms <= 0) return '0s'
@@ -90,7 +91,7 @@ function App() {
   const [scraperActivity, setScraperActivity] = useState(emptyScraperSiteActivityState())
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<RunSummary | null>(null)
-  const [explorerData, setExplorerData] = useState<any[] | null>(null)
+  const [explorerData, setExplorerData] = useState<ExplorerSite[] | null>(null)
   const [resultsData, setResultsData] = useState<any[] | null>(null)
   const [stateData, setStateData] = useState<RunState | null>(null)
   const [clearing, setClearing] = useState(false)
