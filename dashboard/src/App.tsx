@@ -10,6 +10,7 @@ import { ConsistencyCheckerView } from './components/consistency/ConsistencyChec
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
+import type { ResultRecord } from './contracts/api'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats } from './lib/annotationRunState'
 import { useOperationsController } from './lib/useOperationsController'
 import {
@@ -60,7 +61,7 @@ function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
 
-function resultSiteKey(record: any): string {
+function resultSiteKey(record: ResultRecord): string {
   const candidate = record?.site_etld1 || record?.input || record?.site || ''
   return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
 }

@@ -41,6 +41,72 @@ export type HpcBridgeStatus = {
   local_source_rev?: string
 }
 
+export type HealthResponse = {
+  ok: boolean
+  service_ready: boolean
+  database_ready: boolean
+  scraper_connected: boolean
+  dashboard_locked: boolean
+  active_run: boolean
+  annotator_running: boolean
+  node: string
+  port: number
+  db_port: number
+  started_at: string
+  remote_root: string
+  repo_root: string
+  current_out_dir: string
+  source_rev?: string | null
+}
+
+export type PollResponse = {
+  ok: boolean
+  cursor: number
+  items: PipelineEvent[]
+  running: boolean
+  annotateRunning: boolean
+  currentOutDir: string
+}
+
+export type StatusResponse = {
+  ok: boolean
+  running: boolean
+  annotateRunning: boolean
+  currentOutDir: string
+  dbDsn: string
+  dbReady: boolean
+}
+
+export type PathsPayload = {
+  outDir: string
+  resultsJsonl: string
+  summaryJson: string
+  stateJson: string
+  explorerJsonl: string
+  artifactsDir: string
+  artifactsOkDir: string
+  cruxCacheJson: string
+}
+
+export type PathsResponse = {
+  ok: boolean
+  data: PathsPayload
+}
+
+export type JsonPathResponse<T> = {
+  ok: boolean
+  data?: T
+  path?: string
+  error?: string
+}
+
+export type FolderSizeResponse = {
+  ok: boolean
+  bytes?: number
+  path?: string
+  error?: string
+}
+
 export type RunSummaryStatusCounts = Record<string, number>
 
 export type RunSummaryCategory = {
@@ -126,6 +192,48 @@ export type RunRecord = {
   started_at?: string
 }
 
+export type RunListResponse = {
+  ok: boolean
+  root?: string
+  runs?: RunRecord[]
+  path?: string
+  error?: string
+}
+
+export type AuditStatePayload = {
+  verifiedSites: string[]
+  urlOverrides: Record<string, string>
+  updatedAt?: string
+}
+
+export type FirstPartyPolicyRecord = {
+  url?: string | null
+  extraction_method?: string | null
+  text_len?: number | null
+}
+
+export type ThirdPartyResultRecord = {
+  third_party_etld1?: string
+  entity?: string | null
+  categories?: string[]
+  policy_url?: string | null
+  [key: string]: unknown
+}
+
+export type ResultRecord = {
+  rank?: number | null
+  input?: string
+  site?: string
+  site_etld1?: string
+  status?: string
+  final_url?: string
+  first_party_policy?: FirstPartyPolicyRecord | null
+  third_parties?: ThirdPartyResultRecord[]
+  error_message?: string | null
+  non_browsable_reason?: string | null
+  [key: string]: unknown
+}
+
 export type ThirdPartyCacheStats = {
   ok: boolean
   error?: string
@@ -188,6 +296,59 @@ export type AnnotationStats = {
   tp_annotated: number
   tp_total_statements: number
   per_tp: AnnotationThirdPartyRecord[]
+}
+
+export type ArtifactCountResponse = {
+  ok: boolean
+  count: number
+  sites: string[]
+  path: string
+}
+
+export type CruxCacheStatsResponse = {
+  ok: boolean
+  count: number
+  present: number
+  absent: number
+  path: string
+  error?: string
+}
+
+export type WriteAuditStateResponse = {
+  ok: boolean
+  data?: AuditStatePayload
+  path?: string
+  error?: string
+}
+
+export type ClearResultsResponse = {
+  ok: boolean
+  removed: string[]
+  missing?: string[]
+  errors: string[]
+  error?: string
+}
+
+export type DeleteOutputResponse = {
+  ok: boolean
+  path?: string
+  removed?: string[]
+  error?: string
+}
+
+export type StartRunResponse = {
+  ok: boolean
+  paths?: Pick<PathsPayload, 'outDir' | 'resultsJsonl' | 'summaryJson' | 'stateJson' | 'explorerJsonl' | 'artifactsDir' | 'artifactsOkDir'>
+  error?: string
+}
+
+export type SiteActionResponse = {
+  ok: boolean
+  site?: string
+  paths?: { outDir: string }
+  artifactsDir?: string
+  status?: 'stopping' | 'stopped'
+  error?: string
 }
 
 export type AnnotationProgressPayload = {

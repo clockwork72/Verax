@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react'
 import type {
   AnnotationRunState,
   AnnotationStats,
+  ResultRecord,
   RunManifest,
   RunRecord,
   RunState,
@@ -17,7 +18,7 @@ export type WorkspaceDataState = {
   progress: number
   summaryData: RunSummary | null
   explorerData: ExplorerSite[] | null
-  resultsData: any[] | null
+  resultsData: ResultRecord[] | null
   stateData: RunState | null
   runRecords: RunRecord[]
   runManifest: RunManifest | null

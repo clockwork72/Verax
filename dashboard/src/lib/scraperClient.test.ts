@@ -86,7 +86,7 @@ describe('scraperClient', () => {
       }),
       readResults: async () => ({
         ok: true,
-        data: [{ site_etld1: 'docker.com' }, null, { input: 'openai.com' }, { bad: true }],
+        data: [{ site_etld1: 'docker.com' }, { input: 'openai.com' }, { bad: true }],
       }),
       readAuditState: async () => ({
         ok: true,

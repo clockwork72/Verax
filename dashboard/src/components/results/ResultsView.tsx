@@ -2,6 +2,7 @@ import { baseResults } from '../../data/results'
 import type {
   AnnotationSiteRecord,
   AnnotationStats,
+  ResultRecord,
   RunSummary,
   RunSummaryCategory,
   RunSummaryEntity,
@@ -15,7 +16,7 @@ type ResultsViewProps = {
   topN: string
   metrics: ResultsMetrics
   summary?: RunSummary | null
-  sites?: any[]
+  sites?: ResultRecord[]
   useCrux?: boolean
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
   annotationStats?: AnnotationStats | null

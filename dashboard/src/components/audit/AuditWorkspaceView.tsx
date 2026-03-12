@@ -1,38 +1,12 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
-import type { ActiveSiteInfo } from '../../contracts/api'
+import type { ActiveSiteInfo, ResultRecord } from '../../contracts/api'
 import { readArtifactText } from '../../lib/artifactClient'
-
-type FirstPartyPolicy = {
-  url?: string | null
-  extraction_method?: string | null
-  text_len?: number | null
-}
-
-type ThirdPartyRecord = {
-  third_party_etld1?: string
-  entity?: string | null
-  categories?: string[]
-  policy_url?: string | null
-}
-
-type AuditResultRecord = {
-  rank?: number | null
-  input?: string
-  site?: string
-  site_etld1?: string
-  status?: string
-  final_url?: string
-  first_party_policy?: FirstPartyPolicy | null
-  third_parties?: ThirdPartyRecord[]
-  error_message?: string | null
-  non_browsable_reason?: string | null
-}
 
 type ActionResult = { ok: boolean; error?: string }
 
 type AuditWorkspaceViewProps = {
   outDir: string
-  records: AuditResultRecord[]
+  records: ResultRecord[]
   verifiedSites: string[]
   urlOverrides: Record<string, string>
   running: boolean
@@ -50,12 +24,12 @@ function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
 
-function siteKey(record: AuditResultRecord): string {
+function siteKey(record: ResultRecord): string {
   const candidate = record.site_etld1 || record.site || record.input || ''
   return String(candidate).trim()
 }
 
-function rankForSort(record: AuditResultRecord): number {
+function rankForSort(record: ResultRecord): number {
   const rank = Number(record.rank)
   return Number.isFinite(rank) && rank > 0 ? rank : Number.MAX_SAFE_INTEGER
 }

@@ -3,18 +3,31 @@
 import type {
   ActiveSiteInfo,
   AnnotationStats,
+  ArtifactCountResponse,
   BridgeScriptResult,
+  ClearResultsResponse,
   CompletedSiteInfo,
+  CruxCacheStatsResponse,
+  DeleteOutputResponse,
+  FolderSizeResponse,
   HpcBridgeStatus,
+  JsonPathResponse,
+  PathsPayload,
+  PathsResponse,
   PipelineEvent,
+  ResultRecord,
   RunManifest,
+  RunListResponse,
   RunRecord,
   RunState,
   RunSummary,
   ScraperExitEvent,
   ScraperMessageEvent,
   ScraperRuntimeEvent,
+  SiteActionResponse,
+  StartRunResponse,
   ThirdPartyCacheStats,
+  WriteAuditStateResponse,
 } from './contracts/api'
 
 type ScraperStartOptions = {
@@ -57,39 +70,39 @@ type AnnotateSiteOptions = {
 declare global {
   interface Window {
     scraper?: {
-      startRun: (options: ScraperStartOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string> }>
-      stopRun: () => Promise<{ ok: boolean; error?: string; status?: 'stopping' | 'stopped' }>
-      getPaths: (outDir?: string) => Promise<Record<string, string>>
-      readSummary: (path?: string) => Promise<{ ok: boolean; data?: RunSummary; error?: string; path?: string }>
-      readState: (path?: string) => Promise<{ ok: boolean; data?: RunState; error?: string; path?: string }>
-      readExplorer: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
-      readResults: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
-      readAuditState: (outDir?: string) => Promise<{ ok: boolean; data?: { verifiedSites: string[]; urlOverrides: Record<string, string> }; error?: string; path?: string }>
-      readRunManifest: (outDir?: string) => Promise<{ ok: boolean; data?: RunManifest; error?: string; path?: string }>
-      writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => Promise<{ ok: boolean; data?: { verifiedSites: string[]; urlOverrides: Record<string, string> }; error?: string; path?: string }>
-      readArtifactText: (options?: { outDir?: string; relativePath?: string }) => Promise<{ ok: boolean; data?: string; error?: string; path?: string }>
-      clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) => Promise<{ ok: boolean; error?: string; removed?: string[]; errors?: string[] }>
-      deleteOutput: (outDir?: string) => Promise<{ ok: boolean; error?: string; path?: string }>
-      deleteAllOutputs: () => Promise<{ ok: boolean; error?: string; removed?: string[]; path?: string }>
-      getFolderSize: (outDir?: string) => Promise<{ ok: boolean; error?: string; bytes?: number; path?: string }>
-      listRuns: (baseOutDir?: string) => Promise<{ ok: boolean; error?: string; root?: string; runs?: RunRecord[] }>
+      startRun: (options: ScraperStartOptions) => Promise<StartRunResponse>
+      stopRun: () => Promise<SiteActionResponse>
+      getPaths: (outDir?: string) => Promise<PathsPayload | PathsResponse>
+      readSummary: (path?: string) => Promise<JsonPathResponse<RunSummary>>
+      readState: (path?: string) => Promise<JsonPathResponse<RunState>>
+      readExplorer: (path?: string, limit?: number) => Promise<JsonPathResponse<unknown[]>>
+      readResults: (path?: string, limit?: number) => Promise<JsonPathResponse<ResultRecord[]>>
+      readAuditState: (outDir?: string) => Promise<JsonPathResponse<{ verifiedSites: string[]; urlOverrides: Record<string, string> }>>
+      readRunManifest: (outDir?: string) => Promise<JsonPathResponse<RunManifest>>
+      writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => Promise<WriteAuditStateResponse>
+      readArtifactText: (options?: { outDir?: string; relativePath?: string }) => Promise<JsonPathResponse<string>>
+      clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) => Promise<ClearResultsResponse>
+      deleteOutput: (outDir?: string) => Promise<DeleteOutputResponse>
+      deleteAllOutputs: () => Promise<DeleteOutputResponse>
+      getFolderSize: (outDir?: string) => Promise<FolderSizeResponse>
+      listRuns: (baseOutDir?: string) => Promise<RunListResponse>
       openLogWindow: (content: string, title?: string) => Promise<{ ok: boolean; error?: string }>
       openPolicyWindow: (url: string) => Promise<{ ok: boolean; error?: string }>
       onEvent: (callback: (event: ScraperRuntimeEvent) => void) => void
       onLog: (callback: (event: ScraperMessageEvent) => void) => void
       onError: (callback: (event: ScraperMessageEvent) => void) => void
       onExit: (callback: (event: ScraperExitEvent) => void) => void
-      rerunSite: (options: ScraperRerunSiteOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string>; site?: string }>
-      startAnnotate: (options: { artifactsDir?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
+      rerunSite: (options: ScraperRerunSiteOptions) => Promise<SiteActionResponse>
+      startAnnotate: (options: { artifactsDir?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<SiteActionResponse>
       checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string; data?: HpcBridgeStatus }>
-      stopAnnotate: () => Promise<{ ok: boolean; error?: string }>
-      annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
+      stopAnnotate: () => Promise<SiteActionResponse>
+      annotateSite: (options: AnnotateSiteOptions) => Promise<SiteActionResponse>
       annotationStats: (artifactsDir?: string) => Promise<AnnotationStats>
-      countOkArtifacts: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; sites?: string[]; path?: string }>
+      countOkArtifacts: (outDir?: string) => Promise<ArtifactCountResponse>
       readTpCache: (outDir?: string) => Promise<ThirdPartyCacheStats>
-      cruxCacheStats: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; present?: number; absent?: number; path?: string }>
-      onAnnotatorLog: (callback: (event: any) => void) => void
-      onAnnotatorExit: (callback: (event: any) => void) => void
+      cruxCacheStats: (outDir?: string) => Promise<CruxCacheStatsResponse>
+      onAnnotatorLog: (callback: (event: { message?: string | null }) => void) => void
+      onAnnotatorExit: (callback: (event: { code?: number | null; signal?: string | null; stop_requested?: boolean }) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
       onPipelineEvent: (callback: (event: PipelineEvent) => void) => void
       diagnoseBridge: () => Promise<BridgeScriptResult>

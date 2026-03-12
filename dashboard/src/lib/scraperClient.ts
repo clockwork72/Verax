@@ -3,6 +3,7 @@ import type {
   AnnotationStats,
   HpcBridgeStatus,
   PipelineEvent,
+  ResultRecord,
   RunManifest,
   RunRecord,
   RunState,
@@ -37,7 +38,7 @@ export type WorkspaceSnapshot = {
   processedSites: number
   missingOutputDir: boolean
   explorer?: ExplorerSite[]
-  results?: any[]
+  results?: ResultRecord[]
   auditState?: AuditWorkspaceState
   runManifest?: RunManifest | null
   folderBytes?: number | null
@@ -50,9 +51,13 @@ const EMPTY_AUDIT_STATE: AuditWorkspaceState = {
   urlOverrides: {},
 }
 
-function sanitizeResults(records: unknown): any[] {
+function sanitizeResults(records: unknown): ResultRecord[] {
   if (!Array.isArray(records)) return []
-  return records.filter((record) => record && (record.site_etld1 || record.input || record.site))
+  return records.filter((record): record is ResultRecord => {
+    if (!record || typeof record !== 'object') return false
+    const result = record as ResultRecord
+    return Boolean(result.site_etld1 || result.input || result.site)
+  })
 }
 
 function normalizeExplorerThirdParty(raw: unknown): ExplorerThirdParty | null {
