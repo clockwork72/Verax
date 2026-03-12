@@ -194,6 +194,15 @@ function normalizeRunSummary(raw: unknown): RunSummary | null {
       radar_mapped: asNumber(asObject(summary.mapping)?.radar_mapped),
       trackerdb_mapped: asNumber(asObject(summary.mapping)?.trackerdb_mapped),
       unmapped: asNumber(asObject(summary.mapping)?.unmapped),
+      unique_radar_mapped: typeof asObject(summary.mapping)?.unique_radar_mapped === 'number'
+        ? asObject(summary.mapping)?.unique_radar_mapped as number
+        : undefined,
+      unique_trackerdb_mapped: typeof asObject(summary.mapping)?.unique_trackerdb_mapped === 'number'
+        ? asObject(summary.mapping)?.unique_trackerdb_mapped as number
+        : undefined,
+      unique_unmapped: typeof asObject(summary.mapping)?.unique_unmapped === 'number'
+        ? asObject(summary.mapping)?.unique_unmapped as number
+        : undefined,
     },
     categories: Array.isArray(summary.categories)
       ? summary.categories

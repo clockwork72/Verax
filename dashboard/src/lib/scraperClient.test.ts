@@ -49,6 +49,9 @@ const baseSummary = {
     radar_mapped: 0,
     trackerdb_mapped: 0,
     unmapped: 0,
+    unique_radar_mapped: 0,
+    unique_trackerdb_mapped: 0,
+    unique_unmapped: 0,
   },
   categories: [],
   entities: [],
@@ -146,7 +149,20 @@ describe('scraperClient', () => {
 
   it('builds a cleaned workspace snapshot from the scraper bridge', async () => {
     installScraperMock({
-      readSummary: async () => ({ ok: true, data: { ...baseSummary, processed_sites: 4, total_sites: 10 } }),
+      readSummary: async () => ({
+        ok: true,
+        data: {
+          ...baseSummary,
+          processed_sites: 4,
+          total_sites: 10,
+          mapping: {
+            ...baseSummary.mapping,
+            unique_radar_mapped: 2,
+            unique_trackerdb_mapped: 1,
+            unique_unmapped: 3,
+          },
+        },
+      }),
       readState: async () => ({ ok: true, data: { ...baseState, processed_sites: 4, total_sites: 10 } }),
       readExplorer: async () => ({
         ok: true,
@@ -194,6 +210,11 @@ describe('scraperClient', () => {
     expect(snapshot.missingOutputDir).toBe(false)
     expect(snapshot.progress).toBe(40)
     expect(snapshot.folderBytes).toBe(2048)
+    expect(snapshot.summary?.mapping).toEqual(expect.objectContaining({
+      unique_radar_mapped: 2,
+      unique_trackerdb_mapped: 1,
+      unique_unmapped: 3,
+    }))
     expect(snapshot.explorer).toEqual([
       {
         site: 'docker.com',

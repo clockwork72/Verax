@@ -14,6 +14,16 @@ type UseWorkspaceControllerArgs = {
   setTopN: (value: string) => void
 }
 
+export function resolveSnapshotTargetTotal(snapshot: WorkspaceSnapshot): number | null {
+  const candidate = (
+    snapshot.summary?.total_sites
+    ?? snapshot.state?.total_sites
+    ?? snapshot.runManifest?.expectedTotalSites
+    ?? snapshot.runManifest?.topN
+  )
+  return typeof candidate === 'number' && candidate > 0 ? candidate : null
+}
+
 export function useWorkspaceController({
   outDir,
   runsRoot,
@@ -39,6 +49,7 @@ export function useWorkspaceController({
   const syncLoadedRunState = useCallback(async (targetDir = outDir) => {
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
+      includeFolderSize: true,
       includeResults: true,
       includeManifest: true,
     })
@@ -46,13 +57,18 @@ export function useWorkspaceController({
       await handleMissingOutputDir(targetDir)
       return
     }
+    const loadedTargetTotal = resolveSnapshotTargetTotal(snapshot)
+    if (loadedTargetTotal !== null) {
+      setTopN(String(loadedTargetTotal))
+    }
     applyWorkspaceSnapshot(snapshot)
-  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir])
+  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, setTopN])
 
   const loadAuditWorkspace = useCallback(async (dirOverride?: string) => {
     const targetDir = dirOverride || outDir
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
+      includeFolderSize: true,
       includeResults: true,
       includeAudit: true,
     })
@@ -81,8 +97,8 @@ export function useWorkspaceController({
     if (dirOverride) {
       setOutDir(dirOverride)
     }
-    const loadedTargetTotal = snapshot.summary?.total_sites ?? snapshot.state?.total_sites
-    if (typeof loadedTargetTotal === 'number' && loadedTargetTotal > 0) {
+    const loadedTargetTotal = resolveSnapshotTargetTotal(snapshot)
+    if (loadedTargetTotal !== null) {
       setTopN(String(loadedTargetTotal))
     }
     applyWorkspaceSnapshot(snapshot)
