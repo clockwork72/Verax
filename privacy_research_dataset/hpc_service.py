@@ -80,6 +80,7 @@ class HpcService:
         args, manifest, paths = build_scraper_args(repo_root=self.repo_root, options=options)
         self.current_out_dir = os.path.relpath(paths.out_dir, self.repo_root)
         self.last_paths = paths
+        self.bus.set_log_path(paths.out_dir / "events.jsonl")
         return args, manifest, paths
 
     def build_annotator_args(self, options: dict[str, Any]) -> tuple[list[str], Path]:

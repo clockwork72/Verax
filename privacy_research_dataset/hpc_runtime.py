@@ -33,25 +33,61 @@ class Paths:
 
 
 class EventBuffer:
+    # Number of events replayed from the persistent log on a fresh connect (after=0)
+    REPLAY_LIMIT = 500
+
     def __init__(self, max_items: int = 4000) -> None:
         self._max_items = max_items
         self._items: deque[dict[str, Any]] = deque()
         self._cursor = 0
+        self._log_path: Path | None = None
+
+    def set_log_path(self, path: Path) -> None:
+        """Attach a persistent JSONL log. All future push() calls will append to it."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_path = path
 
     def push(self, channel: str, payload: dict[str, Any]) -> None:
         self._cursor += 1
         event = PipelineEventEnvelope.from_payload(channel, utc_now(), payload).to_dict()
-        self._items.append(
-            {
-                "id": self._cursor,
-                **event,
-            }
-        )
+        item: dict[str, Any] = {"id": self._cursor, **event}
+        self._items.append(item)
         while len(self._items) > self._max_items:
             self._items.popleft()
+        if self._log_path is not None:
+            with self._log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     def poll(self, after: int) -> tuple[int, list[dict[str, Any]]]:
+        if after == 0 and self._log_path is not None and self._log_path.exists():
+            # On fresh-connect or reconnect, seed from the persistent log so the
+            # dashboard can reconstruct recent event history without full replay.
+            file_events = self._load_recent_events(self.REPLAY_LIMIT)
+            in_memory_ids = {item["id"] for item in self._items}
+            combined = [e for e in file_events if e["id"] not in in_memory_ids]
+            combined.extend(self._items)
+            combined.sort(key=lambda e: e["id"])
+            return self._cursor, combined
         return self._cursor, [item for item in self._items if item["id"] > after]
+
+    def _load_recent_events(self, n: int) -> list[dict[str, Any]]:
+        assert self._log_path is not None
+        lines: list[str] = []
+        try:
+            with self._log_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    stripped = line.strip()
+                    if stripped:
+                        lines.append(stripped)
+        except Exception:
+            return []
+        result: list[dict[str, Any]] = []
+        for line in lines[-n:]:
+            try:
+                result.append(json.loads(line))
+            except Exception:
+                pass
+        return result
 
 
 class ProcessHandle:
