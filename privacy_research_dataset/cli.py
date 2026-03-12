@@ -603,15 +603,80 @@ def _load_input_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
         lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
         sites = [{"rank": None, "site": ln} for ln in lines]
     else:
-        tranco = get_tranco_sites(args.tranco_top, args.tranco_date, args.tranco_cache_dir)
+        tranco = get_tranco_sites(
+            args.tranco_top,
+            args.tranco_date,
+            args.tranco_cache_dir,
+            start_rank_exclusive=max(0, int(getattr(args, "resume_after_rank", None) or 0)),
+        )
         sites = [{"rank": s.rank, "site": s.domain} for s in tranco]
-        resume_after_rank = getattr(args, "resume_after_rank", None)
-        if isinstance(resume_after_rank, int) and resume_after_rank > 0:
-            sites = [rec for rec in sites if int(rec.get("rank") or 0) > resume_after_rank]
 
     if args.max_sites:
         sites = sites[: args.max_sites]
     return sites
+
+
+def _uses_tranco_source(args: argparse.Namespace) -> bool:
+    return not getattr(args, "site", None) and not getattr(args, "input", None)
+
+
+async def _resolve_exact_tranco_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
+    desired_site_count = max(0, int(getattr(args, "tranco_top", 0) or 0))
+    if getattr(args, "max_sites", None):
+        desired_site_count = min(desired_site_count, max(0, int(args.max_sites)))
+    if desired_site_count <= 0:
+        return []
+
+    resolved: list[dict[str, Any]] = []
+    seen_sites: set[str] = set()
+    previous_candidates: list[dict[str, Any]] = []
+    requested_candidates = desired_site_count
+
+    while len(resolved) < desired_site_count:
+        tranco = get_tranco_sites(
+            requested_candidates,
+            args.tranco_date,
+            args.tranco_cache_dir,
+            start_rank_exclusive=max(0, int(getattr(args, "resume_after_rank", None) or 0)),
+        )
+        candidates = [{"rank": s.rank, "site": s.domain} for s in tranco]
+        if len(candidates) <= len(previous_candidates):
+            break
+
+        batch = candidates[len(previous_candidates):]
+        previous_candidates = candidates
+
+        if args.crux_filter:
+            batch = await _crux_filter_sites(args, batch)
+        if args.prefilter_websites:
+            batch = await _prefilter_sites(args, batch)
+
+        for rec in batch:
+            site = str(rec.get("site") or "").strip().lower()
+            if not site or site in seen_sites:
+                continue
+            seen_sites.add(site)
+            resolved.append(rec)
+            if len(resolved) >= desired_site_count:
+                break
+
+        missing = desired_site_count - len(resolved)
+        if missing <= 0:
+            break
+        requested_candidates += max(50, missing * 2)
+
+    if len(resolved) < desired_site_count:
+        warn(
+            f"Tranco selection resolved only {len(resolved)} site(s) for requested target {desired_site_count}. "
+            "The available filtered candidate set was exhausted."
+        )
+    return resolved[:desired_site_count]
+
+
+async def _resolve_input_sites(args: argparse.Namespace) -> tuple[list[dict[str, Any]], bool]:
+    if _uses_tranco_source(args) and (args.crux_filter or args.prefilter_websites):
+        return await _resolve_exact_tranco_sites(args), True
+    return _load_input_sites(args), False
 
 
 def _load_exclude_exact(path: str | None) -> set[str]:
@@ -1153,7 +1218,7 @@ async def _run(args: argparse.Namespace) -> None:
         if tracker_radar
         else "none"
     )
-    sites = _load_input_sites(args)
+    sites, filters_applied_during_resolution = await _resolve_input_sites(args)
     target_total_sites = len(sites)
     if isinstance(getattr(args, "expected_total_sites", None), int) and args.expected_total_sites > 0:
         target_total_sites = max(target_total_sites, args.expected_total_sites)
@@ -1217,7 +1282,7 @@ async def _run(args: argparse.Namespace) -> None:
         out_path=getattr(args, "resource_monitor_out", None),
         with_tracemalloc=bool(getattr(args, "resource_tracemalloc", False)),
     ):
-        if args.crux_filter:
+        if args.crux_filter and not filters_applied_during_resolution:
             current_stage = "crux_filter"
             try:
                 sites = await _crux_filter_sites(args, sites)
@@ -1232,7 +1297,7 @@ async def _run(args: argparse.Namespace) -> None:
             except Exception as e:
                 warn(f"CrUX filter failed unexpectedly; continuing without it. Error: {e}")
 
-        if args.prefilter_websites:
+        if args.prefilter_websites and not filters_applied_during_resolution:
             current_stage = "prefilter"
             try:
                 sites = await _prefilter_sites(args, sites)

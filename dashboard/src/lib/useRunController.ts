@@ -20,6 +20,7 @@ export type RunDatasetState = {
   manifestMode?: string
   pendingManifestSites: string[]
   totalSites: number
+  processedSites: number
   uniqueSiteCount: number
   lastSuccessfulRank: number | null
   manifestTopN: number | null
@@ -201,6 +202,7 @@ export function buildStartRunPlan({
   const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
   const runId = createRunId()
   const freshOutDir = resumeMode ? `${runsRoot}/unified` : `${runsRoot}/output_${runId}`
+  const remainingSiteCount = Math.max(0, datasetState.totalSites - datasetState.processedSites)
   let runOutDir = freshOutDir
   let startOptions: StartRunOptions = {
     trackerRadarIndex,
@@ -223,7 +225,7 @@ export function buildStartRunPlan({
     } else {
       startOptions = {
         ...startOptions,
-        topN: datasetState.manifestTopN || datasetState.totalSites,
+        topN: remainingSiteCount || datasetState.manifestTopN || datasetState.totalSites,
         trancoDate: datasetState.manifestTrancoDate,
         outDir: runOutDir,
         artifactsDir: `${runOutDir}/artifacts`,
@@ -239,7 +241,7 @@ export function buildStartRunPlan({
     runOutDir = outDir
     startOptions = {
       ...startOptions,
-      topN: requestedTargetTotal,
+      topN: Math.max(0, requestedTargetTotal - currentTargetTotal),
       trancoDate: datasetState.manifestTrancoDate,
       outDir: runOutDir,
       artifactsDir: `${runOutDir}/artifacts`,
@@ -257,6 +259,7 @@ export function buildStartRunPlan({
       outDir: freshOutDir,
       artifactsDir: `${freshOutDir}/artifacts`,
       runId: resumeMode ? undefined : runId,
+      expectedTotalSites: Number(topN),
       cruxFilter: useCrux,
       cruxApiKey: useCrux ? cruxApiKey : undefined,
     }

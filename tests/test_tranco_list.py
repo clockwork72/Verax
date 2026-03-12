@@ -44,3 +44,16 @@ def test_get_tranco_sites_normalizes_to_unique_registrable_domains(monkeypatch):
         (6, "gamma.co.uk"),
         (7, "www.gov.uk"),
     ]
+
+
+def test_get_tranco_sites_can_resume_after_a_prior_rank(monkeypatch):
+    fake_module = ModuleType("tranco")
+    fake_module.Tranco = _FakeTranco
+    monkeypatch.setitem(sys.modules, "tranco", fake_module)
+
+    sites = get_tranco_sites(2, date="2026-01-01", cache_dir=".tranco_cache", start_rank_exclusive=4)
+
+    assert [(site.rank, site.domain) for site in sites] == [
+        (6, "gamma.co.uk"),
+        (7, "www.gov.uk"),
+    ]

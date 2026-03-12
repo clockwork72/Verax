@@ -14,7 +14,14 @@ def test_load_input_sites_resumes_after_rank(monkeypatch):
         SimpleNamespace(rank=3, domain="three.example"),
         SimpleNamespace(rank=4, domain="four.example"),
     ]
-    monkeypatch.setattr("privacy_research_dataset.cli.get_tranco_sites", lambda *args: tranco_sites)
+    seen: dict[str, object] = {}
+
+    def fake_get_tranco_sites(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return tranco_sites[2:]
+
+    monkeypatch.setattr("privacy_research_dataset.cli.get_tranco_sites", fake_get_tranco_sites)
 
     args = Namespace(
         site=None,
@@ -28,7 +35,8 @@ def test_load_input_sites_resumes_after_rank(monkeypatch):
 
     sites = _load_input_sites(args)
 
-    assert [rec["rank"] for rec in sites] == [3, 4]
+    assert seen["args"] == (4, None, ".tranco_cache")
+    assert seen["kwargs"] == {"start_rank_exclusive": 2}
     assert [rec["site"] for rec in sites] == ["three.example", "four.example"]
 
 

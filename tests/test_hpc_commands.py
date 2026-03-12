@@ -63,6 +63,24 @@ def test_build_scraper_args_preserves_manifest_and_resume_flags(tmp_path):
     assert manifest["cruxFilter"] is True
 
 
+def test_build_scraper_args_keeps_manifest_target_total_for_extend_runs(tmp_path):
+    argv, manifest, _paths = build_scraper_args(
+        repo_root=tmp_path,
+        options={
+            "outDir": "outputs/unified",
+            "topN": 200,
+            "resumeAfterRank": 1500,
+            "expectedTotalSites": 1200,
+        },
+    )
+
+    assert "--tranco-top" in argv and "200" in argv
+    assert "--resume-after-rank" in argv and "1500" in argv
+    assert "--expected-total-sites" in argv and "1200" in argv
+    assert manifest["topN"] == 1200
+    assert manifest["expectedTotalSites"] == 1200
+
+
 def test_build_annotator_args_caps_low_tpm_models_and_logs_hint(tmp_path):
     bus = _FakeBus()
     last_paths = build_default_paths(tmp_path, "outputs/unified")

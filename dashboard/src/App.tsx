@@ -485,6 +485,7 @@ function App() {
             hasRun={hasRun}
             progress={progress}
             topN={topN}
+            lastTrancoRank={datasetState.lastSuccessfulRank}
             metrics={resultsMetrics}
             summary={summaryData}
             sites={explorerData || undefined}

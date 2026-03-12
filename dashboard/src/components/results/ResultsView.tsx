@@ -19,6 +19,7 @@ type ResultsViewProps = {
   hasRun: boolean
   progress: number
   topN: string
+  lastTrancoRank?: number | null
   metrics: ResultsMetrics
   summary?: RunSummary | null
   sites?: ResultRecord[]
@@ -75,6 +76,7 @@ export function ResultsView({
   hasRun,
   progress,
   topN,
+  lastTrancoRank = null,
   metrics,
   summary,
   useCrux,
@@ -198,7 +200,10 @@ export function ResultsView({
         <span className="text-[11px] text-[var(--muted-text)]">
           {progress < 100 ? `${progress.toFixed(0)}% complete` : 'Completed'}
         </span>
-        <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Tranco Top {topN}</span>
+        <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Target {topN} sites</span>
+        {lastTrancoRank
+          ? <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Last Tranco rank #{lastTrancoRank}</span>
+          : null}
         {useCrux && <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">CrUX filter</span>}
         <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Mapping: {mappingLabel}</span>
         <StatusPill variant={progress >= 100 ? 'ok' : 'running'} label={progress >= 100 ? 'done' : 'in progress'} />

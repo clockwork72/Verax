@@ -193,12 +193,16 @@ def build_scraper_args(
     if options.get("excludeSameEntity"):
         args.append("--exclude-same-entity")
     now = utc_now()
+    manifest_top_n = options.get("expectedTotalSites")
+    if manifest_top_n is None:
+        manifest_top_n = options.get("topN")
+
     manifest = {
         "version": 1,
         "status": "running",
         "mode": "append_sites" if sites else "tranco",
         "runId": options.get("runId"),
-        "topN": options.get("topN"),
+        "topN": manifest_top_n,
         "trancoDate": options.get("trancoDate"),
         "resumeAfterRank": options.get("resumeAfterRank"),
         "expectedTotalSites": options.get("expectedTotalSites"),

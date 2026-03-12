@@ -26,7 +26,13 @@ def _is_excluded(domain: str) -> bool:
     return False
 
 
-def get_tranco_sites(top_n: int, date: str | None, cache_dir: str) -> list[RankedSite]:
+def get_tranco_sites(
+    top_n: int,
+    date: str | None,
+    cache_dir: str,
+    *,
+    start_rank_exclusive: int = 0,
+) -> list[RankedSite]:
     """Return a website-centric Tranco snapshot using unique registrable domains.
 
     The upstream Tranco list can contain subdomains and infrastructure hosts.
@@ -44,18 +50,26 @@ def get_tranco_sites(top_n: int, date: str | None, cache_dir: str) -> list[Ranke
     if top_n <= 0:
         return []
 
-    fetch_n = max(top_n, min(max(top_n * 3, 1000), 50_000))
-    raw_domains = lst.top(fetch_n)
-    seen: set[str] = set()
-    sites: list[RankedSite] = []
+    max_fetch_n = 1_000_000
+    fetch_n = max(start_rank_exclusive + top_n, min(max((start_rank_exclusive + top_n) * 3, 1000), 50_000))
 
-    for rank, raw_domain in enumerate(raw_domains, start=1):
-        normalized = (etld1(raw_domain) or raw_domain).strip().lower().rstrip(".")
-        if not normalized or normalized in seen or _is_excluded(normalized):
-            continue
-        seen.add(normalized)
-        sites.append(RankedSite(rank=rank, domain=normalized))
-        if len(sites) >= top_n:
-            break
+    while True:
+        raw_domains = lst.top(fetch_n)
+        seen: set[str] = set()
+        sites: list[RankedSite] = []
 
-    return sites
+        for rank, raw_domain in enumerate(raw_domains, start=1):
+            normalized = (etld1(raw_domain) or raw_domain).strip().lower().rstrip(".")
+            if not normalized or normalized in seen or _is_excluded(normalized):
+                continue
+            seen.add(normalized)
+            if rank <= start_rank_exclusive:
+                continue
+            sites.append(RankedSite(rank=rank, domain=normalized))
+            if len(sites) >= top_n:
+                return sites
+
+        if fetch_n >= max_fetch_n or len(raw_domains) < fetch_n:
+            return sites
+
+        fetch_n = min(max_fetch_n, max(fetch_n + 1000, int(fetch_n * 1.5)))
