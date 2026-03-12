@@ -2,17 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SSH_HOST="${SCRAPER_SSH_HOST:-toubkal}"
 REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper}"
 REMOTE_REPO="${SCRAPER_REPO_ROOT:-${REMOTE_ROOT}/repo}"
 REMOTE_OUTPUTS_ROOT="${SCRAPER_OUTPUTS_ROOT:-${REMOTE_REPO}/outputs}"
 LOCAL_OUTPUTS_ROOT="${SCRAPER_LOCAL_OUTPUTS_ROOT:-${ROOT_DIR}/outputs/hpc}"
-SSH_SOCKET="${SCRAPER_SSH_SOCKET:-/tmp/scraper-ssh-${USER}.sock}"
-SSH_OPTS=(
-  -o ControlMaster=auto
-  -o ControlPersist=10m
-  -o "ControlPath=${SSH_SOCKET}"
-)
+# shellcheck source=_ssh_common.sh
+source "${ROOT_DIR}/hpc/scraper/_ssh_common.sh"
 CREATED_SSH_MASTER=0
 
 cleanup() {

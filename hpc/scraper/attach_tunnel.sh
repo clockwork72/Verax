@@ -34,10 +34,14 @@ extract_target() {
 
 current_target() {
   if [ -f "${FORWARD_STATE}" ]; then
-    head -n 1 "${FORWARD_STATE}" | tr -d '[:space:]'
+    awk 'NF { value=$0 } END { gsub(/[[:space:]]+/, "", value); print value }' "${FORWARD_STATE}"
     return 0
   fi
   list_local_tunnels | extract_target | head -n 1 || true
+}
+
+local_port_listening() {
+  ss -ltn "( sport = :${SERVICE_PORT} )" 2>/dev/null | grep -q LISTEN
 }
 
 cancel_forward() {
@@ -91,7 +95,17 @@ if [ -n "${CURRENT_TARGET}" ] && [ "${CURRENT_TARGET}" != "${NODE}" ]; then
 fi
 
 echo "Opening local tunnel on 127.0.0.1:${SERVICE_PORT} -> ${NODE}:${SERVICE_PORT} via ${SSH_HOST}"
-ssh "${SSH_OPTS[@]}" -O forward -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
+if ! ssh "${SSH_OPTS[@]}" -O forward -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"; then
+  if local_port_listening; then
+    echo "Resetting SSH master to clear stale port ${SERVICE_PORT} forward"
+    ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
+    rm -f "${FORWARD_STATE}"
+    ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+    ssh "${SSH_OPTS[@]}" -O forward -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
+  else
+    exit 1
+  fi
+fi
 printf '%s\n' "${NODE}" > "${FORWARD_STATE}"
 
 for _ in $(seq 1 10); do
