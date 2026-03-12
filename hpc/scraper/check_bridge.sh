@@ -47,7 +47,7 @@ else
 fi
 
 set +e
-REMOTE_NODE="$(ssh "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%T|%j|%N\" | awk -F\"|\" '\''\$1 == \"RUNNING\" && \$2 == \"${JOB_NAME}\" && \$3 != \"(null)\" { print \$3; exit }'\'''" 2>/dev/null)"
+REMOTE_NODE="$(ssh "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''" 2>/dev/null)"
 SSH_STATUS=$?
 set -e
 

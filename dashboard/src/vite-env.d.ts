@@ -93,7 +93,7 @@ declare global {
   interface Window {
     scraper?: {
       startRun: (options: ScraperStartOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string> }>
-      stopRun: () => Promise<{ ok: boolean; error?: string }>
+      stopRun: () => Promise<{ ok: boolean; error?: string; status?: 'stopping' | 'stopped' }>
       getPaths: (outDir?: string) => Promise<Record<string, string>>
       readSummary: (path?: string) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
       readState: (path?: string) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
@@ -105,6 +105,7 @@ declare global {
       readArtifactText: (options?: { outDir?: string; relativePath?: string }) => Promise<{ ok: boolean; data?: string; error?: string; path?: string }>
       clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) => Promise<{ ok: boolean; error?: string; removed?: string[]; errors?: string[] }>
       deleteOutput: (outDir?: string) => Promise<{ ok: boolean; error?: string; path?: string }>
+      deleteAllOutputs: () => Promise<{ ok: boolean; error?: string; removed?: string[]; path?: string }>
       getFolderSize: (outDir?: string) => Promise<{ ok: boolean; error?: string; bytes?: number; path?: string }>
       listRuns: (baseOutDir?: string) => Promise<{ ok: boolean; error?: string; root?: string; runs?: any[] }>
       openLogWindow: (content: string, title?: string) => Promise<{ ok: boolean; error?: string }>
@@ -127,6 +128,7 @@ declare global {
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
       diagnoseBridge: () => Promise<BridgeScriptResult>
       repairBridge: () => Promise<BridgeScriptResult>
+      refreshRemote: () => Promise<BridgeScriptResult>
     }
   }
 }

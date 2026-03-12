@@ -3,7 +3,6 @@
 #SBATCH --output=/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/logs/orchestrator_%j.out
 #SBATCH --error=/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/logs/orchestrator_%j.err
 #SBATCH --partition=compute
-#SBATCH --qos=compute
 #SBATCH --account=vr_outsec-vh2sz1t4fks-default-cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

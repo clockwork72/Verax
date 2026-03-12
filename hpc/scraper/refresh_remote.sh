@@ -30,15 +30,13 @@ discover_remote_model_node() {
   '"
 }
 
-cleanup() {
-  ssh "${SSH_OPTS[@]}" -O exit "${SSH_HOST}" >/dev/null 2>&1 || true
-}
+if ssh "${SSH_OPTS[@]}" -O check "${SSH_HOST}" >/dev/null 2>&1; then
+  :
+else
+  ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
+fi
 
-trap cleanup EXIT
-
-ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
 "${ROOT_DIR}/hpc/scraper/push_code.sh"
-
 ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'SCRAPER_REMOTE_ROOT=${REMOTE_ROOT} SCRAPER_REPO_ROOT=${REMOTE_REPO} ${REMOTE_REPO}/hpc/scraper/install_remote.sh'"
 
 if [ -z "${SCRAPER_LLM_BASE_URL:-}" ] || [ -z "${SCRAPER_LLM_HEALTH_URL:-}" ]; then
@@ -71,12 +69,10 @@ for _ in $(seq 1 60); do
 done
 
 if [ -z "${NODE}" ] || [ "${NODE}" = "(null)" ]; then
-  echo "Unable to resolve compute node for job ${JOB_ID}"
+  echo "Unable to resolve compute node for job ${JOB_ID}" >&2
   exit 1
 fi
 
 echo "Service node: ${NODE}"
-echo "Reattach later with: ${ROOT_DIR}/hpc/scraper/attach_tunnel.sh ${NODE}"
-echo "Opening local tunnel on port ${SERVICE_PORT}"
-exec ssh "${SSH_OPTS[@]}" -t -L "${SERVICE_PORT}:localhost:${SERVICE_PORT}" "${SSH_HOST}" \
-  ssh -N -L "${SERVICE_PORT}:localhost:${SERVICE_PORT}" "${NODE}"
+"${ROOT_DIR}/hpc/scraper/attach_tunnel.sh" "${NODE}"
+echo "Remote refresh complete."

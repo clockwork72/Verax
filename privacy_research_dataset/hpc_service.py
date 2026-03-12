@@ -210,20 +210,45 @@ class ProcessHandle:
         self.run_manifest: dict[str, Any] | None = None
         self.completed = False
         self.last_error: str | None = None
+        self.stop_requested = False
 
     @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
-    async def stop(self) -> None:
+    @property
+    def stopping(self) -> bool:
+        return self.stop_requested and self.running
+
+    def _log(self, message: str) -> None:
+        channel = "scraper:log" if self.label == "scraper" else "annotator:log"
+        self.bus.push(channel, {"message": message})
+
+    async def stop(self) -> bool:
         if not self.proc or self.proc.returncode is not None:
-            return
-        self.proc.terminate()
+            return False
+        if self.stop_requested:
+            return True
+        self.stop_requested = True
+        self._log("Stop requested. Sending SIGTERM to the process group...")
         try:
-            await asyncio.wait_for(self.proc.wait(), timeout=10)
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            self.proc.terminate()
+        try:
+            await asyncio.wait_for(self.proc.wait(), timeout=15)
         except asyncio.TimeoutError:
-            self.proc.kill()
+            self._log("Process did not exit after SIGTERM. Sending SIGKILL...")
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                self.proc.kill()
             await self.proc.wait()
+        return True
 
     async def start(
         self,
@@ -242,6 +267,7 @@ class ProcessHandle:
                 *argv,
                 cwd=str(cwd),
                 env={**os.environ, **env, "PYTHONUNBUFFERED": "1"},
+                start_new_session=True,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -252,6 +278,7 @@ class ProcessHandle:
 
         self.completed = False
         self.last_error = None
+        self.stop_requested = False
         self.run_manifest_path = run_manifest_path
         self.run_manifest = run_manifest
         if self.run_manifest_path and self.run_manifest:
@@ -308,10 +335,18 @@ class ProcessHandle:
     async def _wait_for_exit(self) -> None:
         assert self.proc is not None
         code = await self.proc.wait()
+        signal_name = None
+        if code < 0:
+            with suppress(Exception):
+                signal_name = signal.Signals(-code).name
         if self.label == "scraper":
-            self.bus.push("scraper:exit", {"code": code, "signal": None})
+            if self.stop_requested:
+                self.bus.push("scraper:log", {"message": "Scraper stop completed."})
+            self.bus.push("scraper:exit", {"code": code, "signal": signal_name, "stop_requested": self.stop_requested})
         else:
-            self.bus.push("annotator:exit", {"code": code, "signal": None})
+            if self.stop_requested:
+                self.bus.push("annotator:log", {"message": "Annotator stop completed."})
+            self.bus.push("annotator:exit", {"code": code, "signal": signal_name, "stop_requested": self.stop_requested})
         if self.run_manifest_path and self.run_manifest:
             next_manifest = {
                 **self.run_manifest,
@@ -321,6 +356,7 @@ class ProcessHandle:
             if self.completed and code == 0:
                 next_manifest["completedAt"] = next_manifest["updatedAt"]
             self.run_manifest_path.write_text(json.dumps(next_manifest, indent=2), encoding="utf-8")
+        self.stop_requested = False
         self.proc = None
 
 
@@ -531,11 +567,16 @@ class HpcService:
         self.last_paths = self.default_paths(None)
 
     def runtime_env(self) -> dict[str, str]:
-        return {
+        env = {
             "DATABASE_URL": self.postgres.dsn,
             "PRIVACY_DATASET_HPC_REMOTE": "1",
             "PLAYWRIGHT_BROWSERS_PATH": str(self.playwright_browsers_path),
         }
+        if os.getenv("PRIVACY_LLM_BASE_URL"):
+            env["PRIVACY_LLM_BASE_URL"] = str(os.getenv("PRIVACY_LLM_BASE_URL"))
+        if os.getenv("PRIVACY_LLM_HEALTH_URL"):
+            env["PRIVACY_LLM_HEALTH_URL"] = str(os.getenv("PRIVACY_LLM_HEALTH_URL"))
+        return env
 
     def default_paths(self, out_dir: str | None) -> Paths:
         relative = out_dir or "outputs/unified"
@@ -861,11 +902,33 @@ class HpcService:
         if self.scraper.running:
             return web.json_response({"ok": False, "error": "scraper_running"})
         payload = await request.json()
-        target = self.default_paths(payload.get("outDir")).out_dir
+        out_dir = str(payload.get("outDir") or "").strip()
+        if not out_dir:
+            return web.json_response({"ok": False, "error": "missing_out_dir"})
+        target = (self.repo_root / out_dir).resolve()
+        outputs_root = self.outputs_root.resolve()
+        if target == outputs_root or not str(target).startswith(str(outputs_root) + os.sep):
+            return web.json_response({"ok": False, "error": "path_outside_outputs", "path": str(target)})
         if not target.exists():
             return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
+        if not target.is_dir():
+            return web.json_response({"ok": False, "error": "not_a_directory", "path": str(target)})
         shutil.rmtree(target)
         return web.json_response({"ok": True, "path": str(target)})
+
+    async def handle_delete_all_outputs(self, _request: web.Request) -> web.Response:
+        if self.scraper.running:
+            return web.json_response({"ok": False, "error": "scraper_running"})
+        removed: list[str] = []
+        for entry in self.outputs_root.iterdir():
+            if not entry.exists():
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            removed.append(str(entry))
+        return web.json_response({"ok": True, "removed": removed, "path": str(self.outputs_root)})
 
     async def handle_folder_size(self, request: web.Request) -> web.Response:
         target = self.default_paths(request.query.get("outDir")).out_dir
@@ -1078,10 +1141,12 @@ class HpcService:
         return web.json_response({"ok": True, "paths": {"outDir": str(paths.out_dir)}, "site": site})
 
     async def handle_stop_run(self, _request: web.Request) -> web.Response:
+        if self.scraper.stopping:
+            return web.json_response({"ok": True, "status": "stopping"})
         if not self.scraper.running:
             return web.json_response({"ok": False, "error": "not_running"})
         await self.scraper.stop()
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, "status": "stopped"})
 
     async def handle_start_annotate(self, request: web.Request) -> web.Response:
         if self.annotator.running:
@@ -1163,6 +1228,7 @@ class HpcService:
                 web.post("/api/write-audit-state", self.handle_write_audit_state),
                 web.post("/api/clear-results", self.handle_clear_results),
                 web.post("/api/delete-output", self.handle_delete_output),
+                web.post("/api/delete-all-outputs", self.handle_delete_all_outputs),
                 web.post("/api/start-run", self.handle_start_run),
                 web.post("/api/rerun-site", self.handle_rerun_site),
                 web.post("/api/stop-run", self.handle_stop_run),

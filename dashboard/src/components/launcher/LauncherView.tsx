@@ -74,9 +74,12 @@ type LauncherViewProps = {
   onStart: () => void
   primaryActionLabel?: string
   primaryActionHint?: string
+  primaryActionDisabled?: boolean
   onStop?: () => void
+  stopRunPending?: boolean
   hasRun: boolean
   running: boolean
+  scraperActive?: boolean
   progress: number
   resultsReady: boolean
   onViewResults: () => void
@@ -104,10 +107,12 @@ type LauncherViewProps = {
   bridgeCheckedAt?: string
   bridgeHealthyAt?: string
   bridgeFailures?: number
-  bridgeActionBusy?: 'diagnose' | 'repair' | null
+  bridgeActionBusy?: 'diagnose' | 'repair' | 'refresh' | null
   bridgeActionMessage?: string
   onDiagnoseBridge?: () => void
   onRepairBridge?: () => void
+  onRefreshRemote?: () => void
+  remoteCodeOutdated?: boolean
   workspaceReady?: boolean
   llmModel?: string
   latestStreamEvent?: AnnotatorStreamEvent | null
@@ -120,10 +125,6 @@ type LauncherViewProps = {
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
   topNLocked?: boolean
-  appendTargetsEnabled?: boolean
-  appendTargetsText?: string
-  onAppendTargetsChange?: (value: string) => void
-  appendTargetsSummary?: { entered: number; newSites: number; duplicates: number }
 }
 
 export function LauncherView({
@@ -132,9 +133,12 @@ export function LauncherView({
   onStart,
   primaryActionLabel = 'Start run',
   primaryActionHint = 'Choose how many sites to crawl. Press Enter to start.',
+  primaryActionDisabled = false,
   onStop,
+  stopRunPending = false,
   hasRun,
   running,
+  scraperActive = running,
   progress,
   resultsReady,
   onViewResults,
@@ -165,6 +169,8 @@ export function LauncherView({
   bridgeActionMessage,
   onDiagnoseBridge,
   onRepairBridge,
+  onRefreshRemote,
+  remoteCodeOutdated = false,
   workspaceReady = false,
   llmModel = 'openai/local',
   latestStreamEvent = null,
@@ -176,10 +182,6 @@ export function LauncherView({
   resumeMode = false,
   onToggleResumeMode,
   topNLocked = false,
-  appendTargetsEnabled = false,
-  appendTargetsText = '',
-  onAppendTargetsChange,
-  appendTargetsSummary,
 }: LauncherViewProps) {
   const logRef = useRef<HTMLDivElement | null>(null)
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
@@ -260,9 +262,20 @@ export function LauncherView({
               <button
                 className="focusable rounded-full bg-[var(--color-primary)] px-4 py-2 text-xs font-semibold text-white"
                 onClick={onStart}
-                disabled={running || !bridgeReady}
+                disabled={primaryActionDisabled || scraperActive || !bridgeReady}
               >
                 {primaryActionLabel}
+              </button>
+              <button
+                className={`focusable rounded-full border px-4 py-2 text-xs font-semibold ${
+                  scraperActive || stopRunPending
+                    ? 'border-[var(--color-danger)] text-white'
+                    : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                }`}
+                onClick={onStop}
+                disabled={!scraperActive && !stopRunPending}
+              >
+                {stopRunPending ? 'Stopping...' : 'Stop run'}
               </button>
             </div>
           </div>
@@ -329,6 +342,17 @@ export function LauncherView({
               >
                 {bridgeActionBusy === 'repair' ? 'Repairing...' : 'Repair bridge'}
               </button>
+              <button
+                className={`focusable rounded-full px-3 py-1 text-[11px] ${
+                  remoteCodeOutdated
+                    ? 'border border-amber-500/50 text-amber-300'
+                    : 'border border-[var(--border-soft)] text-[var(--muted-text)]'
+                }`}
+                onClick={onRefreshRemote}
+                disabled={bridgeActionBusy !== null}
+              >
+                {bridgeActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh remote'}
+              </button>
               {bridgeNode && <span>Node {bridgeNode}</span>}
               {bridgeCurrentOutDir && <span>Remote out {bridgeCurrentOutDir}</span>}
               <span>Checked {bridgeCheckedAt}</span>
@@ -342,14 +366,14 @@ export function LauncherView({
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-text)]">
             <button
               className={`focusable rounded-full border px-4 py-2 text-xs ${
-                running ? 'border-[var(--color-danger)] text-white' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                scraperActive || stopRunPending ? 'border-[var(--color-danger)] text-white' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
               }`}
               onClick={onStop}
-              disabled={!running}
+              disabled={!scraperActive && !stopRunPending}
             >
-              Stop run
+              {stopRunPending ? 'Stopping...' : 'Stop run'}
             </button>
-            {running && <span>Stopping will keep partial results.</span>}
+            {(scraperActive || stopRunPending) && <span>Stopping will keep partial results.</span>}
             {!bridgeReady && <span>Launcher stays locked until the SSH tunnel, orchestrator API, and database are all healthy.</span>}
           </div>
 
@@ -367,7 +391,7 @@ export function LauncherView({
               disabled={topNLocked || !bridgeReady}
             />
             <span className="text-xs text-[var(--muted-text)]">
-              {topNLocked ? 'Target locked to loaded dataset' : 'sites from Tranco list'}
+              {topNLocked ? 'Target locked to loaded dataset' : resumeMode ? 'target total sites' : 'sites from Tranco list'}
             </span>
 
             {/* Read-only pipeline settings chips — configure in Settings */}
@@ -376,6 +400,11 @@ export function LauncherView({
             }`} title="Configure in Settings">
               CrUX {useCrux ? 'on' : 'off'}
             </span>
+            {useCrux && !cruxApiKey?.trim() && (
+              <span className="inline-flex items-center rounded-full border border-amber-500/50 px-3 py-1 text-xs text-amber-300">
+                CrUX key required
+              </span>
+            )}
             <span className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]" title="Configure in Settings">
               {mappingMode === 'mixed' ? 'Mixed mapping' : mappingMode === 'trackerdb' ? 'TrackerDB' : 'Tracker Radar'}
             </span>
@@ -397,31 +426,6 @@ export function LauncherView({
               Resume mode {resumeMode ? 'on' : 'off'}
             </button>
           </div>
-
-          {appendTargetsEnabled && (
-            <div className="rounded-2xl border border-[var(--border-soft)] bg-black/10 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">Append targets</p>
-                  <p className="text-xs text-[var(--muted-text)]">
-                    Add one website per line to extend the loaded dataset without reprocessing existing sites.
-                  </p>
-                </div>
-                {appendTargetsSummary && (
-                  <div className="text-right text-xs text-[var(--muted-text)]">
-                    <div>{appendTargetsSummary.newSites} new</div>
-                    <div>{appendTargetsSummary.duplicates} duplicate</div>
-                  </div>
-                )}
-              </div>
-              <textarea
-                value={appendTargetsText}
-                onChange={(event) => onAppendTargetsChange?.(event.target.value)}
-                className="focusable mt-3 min-h-[120px] w-full rounded-2xl border border-[var(--border-soft)] bg-black/20 px-4 py-3 text-sm text-white"
-                placeholder={'example.com\nsubdomain.example.org'}
-              />
-            </div>
-          )}
         </div>
       </section>
 
@@ -574,7 +578,7 @@ export function LauncherView({
           )}
 
           {/* Idle state */}
-          {running && Object.keys(activeSites).length === 0 && (
+          {scraperActive && Object.keys(activeSites).length === 0 && (
             <div className="mt-5 text-xs text-[var(--muted-text)]">Initializing — waiting for first site…</div>
           )}
         </div>
@@ -654,6 +658,15 @@ export function LauncherView({
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  {remoteCodeOutdated && (
+                    <button
+                      className="focusable rounded-full border border-amber-500/50 px-4 py-2 text-xs font-semibold text-amber-300"
+                      onClick={onRefreshRemote}
+                      disabled={bridgeActionBusy !== null}
+                    >
+                      {bridgeActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh remote'}
+                    </button>
+                  )}
                   <button
                     className={`focusable rounded-full border px-4 py-2 text-xs font-semibold ${
                       annotateRunning

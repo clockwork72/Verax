@@ -42,20 +42,6 @@ function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
 
-function parseTargetSites(value: string): string[] {
-  const seen = new Set<string>()
-  const sites: string[] = []
-  for (const raw of value.split(/[\r\n,]+/)) {
-    const trimmed = raw.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const key = normalizeSiteKey(trimmed)
-    if (seen.has(key)) continue
-    seen.add(key)
-    sites.push(trimmed)
-  }
-  return sites
-}
-
 function resultSiteKey(record: any): string {
   const candidate = record?.site_etld1 || record?.input || record?.site || ''
   return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
@@ -133,7 +119,6 @@ function App() {
   const [runRecords, setRunRecords] = useState<any[]>([])
   const [runManifest, setRunManifest] = useState<any | null>(null)
   const [folderBytes, setFolderBytes] = useState<number | null>(null)
-  const [appendTargetsText, setAppendTargetsText] = useState('')
   const [auditVerifiedSites, setAuditVerifiedSites] = useState<string[]>([])
   const [auditUrlOverrides, setAuditUrlOverrides] = useState<Record<string, string>>({})
   const [auditBusySite, setAuditBusySite] = useState<string | null>(null)
@@ -144,8 +129,9 @@ function App() {
   const [bridgeFailures, setBridgeFailures] = useState(0)
   const [bridgeCheckedAt, setBridgeCheckedAt] = useState<number | null>(null)
   const [bridgeHealthyAt, setBridgeHealthyAt] = useState<number | null>(null)
-  const [bridgeActionBusy, setBridgeActionBusy] = useState<'diagnose' | 'repair' | null>(null)
+  const [bridgeActionBusy, setBridgeActionBusy] = useState<'diagnose' | 'repair' | 'refresh' | null>(null)
   const [bridgeActionMessage, setBridgeActionMessage] = useState<string | null>(null)
+  const [stopRunPending, setStopRunPending] = useState(false)
   const [llmModel] = useState('openai/local')
   const [annotateRunning, setAnnotateRunning] = useState(false)
   const [annotateLogs, setAnnotateLogs] = useState<string[]>([])
@@ -156,6 +142,50 @@ function App() {
   const [latestStreamEvent, setLatestStreamEvent] = useState<import('./vite-env').AnnotatorStreamEvent | null>(null)
   const annotateLogsRef = useRef<string[]>([])
   const llmModelRef = useRef(llmModel)
+  const stopRunPendingRef = useRef(false)
+  const defaultOutDir = `${runsRoot}/unified`
+
+  const resetLoadedOutputState = useCallback((nextOutDir?: string) => {
+    setSummaryData(null)
+    setExplorerData(null)
+    setResultsData(null)
+    setStateData(null)
+    setRunManifest(null)
+    setFolderBytes(null)
+    setAnnotationStats(null)
+    setAuditVerifiedSites([])
+    setAuditUrlOverrides({})
+    setAuditBusySite(null)
+    setAuditAnnotatingSite(null)
+    setActiveSites({})
+    setRecentCompleted([])
+    setHasRun(false)
+    setRunning(false)
+    setStopRunPending(false)
+    setProgress(0)
+    setLogs([])
+    setRunStartedAt(null)
+    setEtaText('')
+    if (nextOutDir) {
+      setOutDir(nextOutDir)
+    }
+  }, [])
+
+  const handleMissingOutputDir = useCallback(async (missingDir: string) => {
+    const fallbackDir = defaultOutDir
+    resetLoadedOutputState(missingDir === fallbackDir ? undefined : fallbackDir)
+    if (outDir === missingDir) {
+      setErrorMessage(`Output folder "${missingDir}" no longer exists. Hidden stale data and reset to ${fallbackDir}.`)
+    }
+    if (window.scraper) {
+      const res = await window.scraper.listRuns(runsRoot)
+      if (res?.ok && Array.isArray(res.runs)) {
+        setRunRecords(res.runs)
+      } else {
+        setRunRecords([])
+      }
+    }
+  }, [defaultOutDir, outDir, resetLoadedOutputState, runsRoot])
 
   const refreshBridgeStatus = useCallback(async () => {
     if (!window.scraper?.checkTunnel) return
@@ -287,6 +317,7 @@ function App() {
     }
   }, [summaryData, stateData, resultsData, runManifest])
   const bridgeReady = !dashboardLocked
+  const scraperActive = running || stopRunPending || Boolean(backendStatus?.active_run || backendStatus?.running)
   const workspaceReady = bridgeReady && (running || hasRun || datasetState.hasDataset)
   const bridgeHeadline = tunnelStatus === 'checking'
     ? 'Probing local tunnel'
@@ -350,16 +381,30 @@ function App() {
     if (!disabledNavs[activeNav]) return
     setActiveNav('launcher')
   }, [activeNav, disabledNavs])
-  const appendTargets = useMemo(() => parseTargetSites(appendTargetsText), [appendTargetsText])
-  const appendTargetsSummary = useMemo(() => {
-    const newSites = appendTargets.filter((site) => !datasetState.siteKeys.has(normalizeSiteKey(site)))
-    return {
-      entered: appendTargets.length,
-      newSites,
-      duplicateCount: appendTargets.length - newSites.length,
+  const currentTargetTotal = useMemo(
+    () => datasetState.manifestTopN || datasetState.totalSites || datasetState.uniqueSiteCount,
+    [datasetState]
+  )
+  const requestedTargetTotal = Number(topN || 0)
+  const canExtendByTarget = useMemo(
+    () => resumeMode && datasetState.isComplete && (datasetState.manifestMode === 'tranco' || datasetState.lastSuccessfulRank !== null),
+    [datasetState, resumeMode]
+  )
+  const extensionDelta = useMemo(() => {
+    if (!canExtendByTarget) return 0
+    if (!Number.isFinite(requestedTargetTotal) || requestedTargetTotal <= 0) return 0
+    return Math.max(0, requestedTargetTotal - currentTargetTotal)
+  }, [canExtendByTarget, currentTargetTotal, requestedTargetTotal])
+  const launchStartingProgress = useMemo(() => {
+    if (datasetState.isIncomplete) {
+      return datasetState.progressPct
     }
-  }, [appendTargets, datasetState])
-  const launcherMode = useMemo<'start' | 'continue' | 'append'>(() => {
+    if (extensionDelta > 0 && requestedTargetTotal > 0) {
+      return Math.min(100, (datasetState.processedSites / requestedTargetTotal) * 100)
+    }
+    return 0
+  }, [datasetState, extensionDelta, requestedTargetTotal])
+  const launcherMode = useMemo<'start' | 'continue' | 'extend'>(() => {
     if (datasetState.isIncomplete) {
       if (datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0) {
         return 'continue'
@@ -368,25 +413,76 @@ function App() {
         return 'continue'
       }
     }
-    if (datasetState.isComplete && appendTargetsSummary.newSites.length > 0) {
-      return 'append'
+    if (canExtendByTarget) {
+      return 'extend'
     }
     return 'start'
-  }, [datasetState, appendTargetsSummary])
+  }, [canExtendByTarget, datasetState])
   const launcherActionLabel = launcherMode === 'continue'
     ? 'Continue'
-    : launcherMode === 'append'
-      ? 'Append websites'
+    : launcherMode === 'extend'
+      ? 'Extend run'
       : 'Start run'
+  const runRequiresCruxKey = useMemo(() => {
+    if (launcherMode === 'continue' && datasetState.isIncomplete) {
+      if (datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0) {
+        return false
+      }
+      return Boolean(datasetState.manifestCruxFilter ?? useCrux)
+    }
+    if (launcherMode === 'extend') {
+      return Boolean(datasetState.manifestCruxFilter ?? useCrux)
+    }
+    return Boolean(useCrux)
+  }, [datasetState, launcherMode, useCrux])
+  const cruxKeyMissing = runRequiresCruxKey && !cruxApiKey.trim()
   const launcherActionHint = launcherMode === 'continue'
     ? datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0
       ? `Resume ${datasetState.pendingManifestSites.length} pending append target(s) in ${outDir}.`
       : `Resume ${outDir} after ${datasetState.lastSuccessfulSite || `rank #${datasetState.lastSuccessfulRank ?? 0}`} to reach ${datasetState.totalSites} sites.`
-    : launcherMode === 'append'
-      ? `Append ${appendTargetsSummary.newSites.length} new website(s) to ${outDir}.`
-      : dashboardLocked
+    : cruxKeyMissing
+      ? 'Enter a CrUX API key in Settings before starting a scrape.'
+    : launcherMode === 'extend'
+      ? extensionDelta > 0
+        ? `Extend ${outDir} from ${currentTargetTotal} to ${requestedTargetTotal} total sites by scraping the remaining ${extensionDelta}.`
+        : `This dataset already has ${currentTargetTotal} sites. Enter a higher total to continue scraping from the next rank.`
+    : dashboardLocked
         ? 'Cluster bridge offline. Start the orchestrator and SSH tunnel with hpc/scraper/launch_remote.sh.'
         : 'Choose how many sites to crawl. Press Enter to start.'
+  const syncLoadedRunState = useCallback(async (targetDir = outDir) => {
+    if (!window.scraper) return
+    const summary = await window.scraper.readSummary(`${targetDir}/results.summary.json`)
+    setSummaryData(summary?.ok ? summary.data : null)
+    const state = await window.scraper.readState(`${targetDir}/run_state.json`)
+    setStateData(state?.ok ? state.data : null)
+    let resultsRes: any = null
+    if (window.scraper.readResults) {
+      resultsRes = await window.scraper.readResults(`${targetDir}/results.jsonl`)
+      if (resultsRes?.ok && Array.isArray(resultsRes.data)) {
+        const cleanedResults = resultsRes.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
+        setResultsData(cleanedResults)
+      } else {
+        setResultsData([])
+      }
+    }
+    if (window.scraper.readRunManifest) {
+      const manifest = await window.scraper.readRunManifest(targetDir)
+      setRunManifest(manifest?.ok ? manifest.data : null)
+    }
+    const loadedProcessed = Number(summary?.data?.processed_sites ?? state?.data?.processed_sites ?? 0)
+    const loadedTotal = Number(summary?.data?.total_sites ?? state?.data?.total_sites ?? 0)
+    const hasAnyResults = Boolean(
+      summary?.ok
+      || state?.ok
+      || (resultsRes?.ok && Array.isArray(resultsRes.data) && resultsRes.data.length)
+    )
+    setHasRun(hasAnyResults)
+    setProgress(
+      loadedTotal > 0
+        ? Math.min(100, (loadedProcessed / Math.max(1, loadedTotal)) * 100)
+        : hasAnyResults ? 100 : 0
+    )
+  }, [outDir])
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -394,7 +490,7 @@ function App() {
       if (event?.type === 'run_started') {
         setHasRun(true)
         setRunning(true)
-        setProgress((current) => (launcherMode === 'continue' ? current : 0))
+        setProgress(launchStartingProgress)
         setErrorMessage(null)
         setRunStartedAt(Date.now())
         setEtaText('')
@@ -438,14 +534,13 @@ function App() {
         setLogs((prev) => [...prev, `Finished ${event.site} (${event.status})`].slice(-50))
       }
       if (event?.type === 'run_completed') {
+        setStopRunPending(false)
         setRunning(false)
         setProgress(100)
         setEtaText('0s')
         setActiveSites({})
         setAuditBusySite(null)
-        if (window.scraper?.readRunManifest) {
-          window.scraper.readRunManifest(outDir).then((res: any) => setRunManifest(res?.ok ? res.data : null))
-        }
+        void syncLoadedRunState(outDir)
         refreshRuns()
       }
     })
@@ -460,17 +555,24 @@ function App() {
         setLogs((prev) => [...prev, `ERROR: ${evt.message}`].slice(-50))
       }
       setRunning(false)
+      setStopRunPending(false)
       setAuditBusySite(null)
+      void syncLoadedRunState(outDir)
     })
     scraper.onExit((evt) => {
-      if (evt?.code && Number(evt.code) !== 0) {
-        setErrorMessage(`Scraper exited with code ${evt.code}`)
+      const code = Number(evt?.code ?? 0)
+      const signal = evt?.signal ? String(evt.signal) : null
+      const requested = Boolean(evt?.stop_requested) || stopRunPendingRef.current
+      if (code !== 0 && !requested) {
+        setErrorMessage(`Scraper exited with code ${code}${signal ? ` (${signal})` : ''}`)
+      } else if (requested) {
+        setLogs((prev) => [...prev, `Scraper stopped${signal ? ` (${signal})` : ''}`].slice(-50))
+        setErrorMessage(null)
       }
       setRunning(false)
+      setStopRunPending(false)
       setAuditBusySite(null)
-      if (window.scraper?.readRunManifest) {
-        window.scraper.readRunManifest(outDir).then((res: any) => setRunManifest(res?.ok ? res.data : null))
-      }
+      void syncLoadedRunState(outDir)
     })
 
     if (scraper.onAnnotatorLog) {
@@ -498,10 +600,26 @@ function App() {
     }
 
     if (scraper.onAnnotatorExit) {
-      scraper.onAnnotatorExit(() => {
+      scraper.onAnnotatorExit((evt) => {
         setLatestStreamEvent(null)
         setAnnotateRunning(false)
         setAuditAnnotatingSite(null)
+        const code = Number(evt?.code ?? 0)
+        const signal = evt?.signal ? String(evt.signal) : null
+        setAnnotateLogs((prev) => {
+          const next = [...prev]
+          if (code === 0) {
+            if (next.length === 0) {
+              next.push('Annotator finished without emitting logs.')
+            } else if (next[next.length - 1] !== 'Annotator finished.') {
+              next.push('Annotator finished.')
+            }
+          } else {
+            next.push(`Annotator exited with code ${code}${signal ? ` (${signal})` : ''}.`)
+          }
+          annotateLogsRef.current = next.slice(-200)
+          return annotateLogsRef.current
+        })
         // refresh stats after annotator finishes
         if (scraper.annotationStats) {
           scraper.annotationStats(`${outDir}/artifacts`).then((res: any) => {
@@ -510,10 +628,11 @@ function App() {
         }
       })
     }
-  }, [launcherMode, outDir])
+  }, [launchStartingProgress, outDir, syncLoadedRunState])
 
   // Keep refs in sync so the IPC exit handler always sees current values
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
+  useEffect(() => { stopRunPendingRef.current = stopRunPending }, [stopRunPending])
 
   const createRunId = () => {
     try {
@@ -639,6 +758,11 @@ function App() {
 
   const annotateAuditSite = useCallback(async (site: string) => {
     if (remoteCodeOutdated) {
+      const message = remoteCodeLegacy
+        ? 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.'
+        : `Annotation blocked: remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Run hpc/scraper/launch_remote.sh and reconnect.`
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
       return {
         ok: false,
         error: remoteCodeLegacy
@@ -647,11 +771,13 @@ function App() {
       }
     }
     if (!window.scraper?.annotateSite) {
+      annotateLogsRef.current = ['Annotation API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotation API unavailable in the current Electron session.'])
       return { ok: false, error: 'annotateSite API unavailable' }
     }
     annotateLogsRef.current = []
     setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
-    setAnnotateLogs([])
+    setAnnotateLogs([`Starting annotation for ${site}...`])
     setAnnotateRunning(true)
     setAuditAnnotatingSite(site)
     const res = await window.scraper.annotateSite({
@@ -663,6 +789,9 @@ function App() {
     if (!res?.ok) {
       setAnnotateRunning(false)
       setAuditAnnotatingSite(null)
+      const message = `Failed to start annotation: ${res?.error || 'unknown error'}`
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
       return { ok: false, error: res?.error || 'Failed to start annotation.' }
     }
     return { ok: true }
@@ -670,18 +799,22 @@ function App() {
 
   const startAnnotate = useCallback(async (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => {
     if (remoteCodeOutdated) {
+      const message = remoteCodeLegacy
+        ? 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.'
+        : `Annotation blocked: remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Run hpc/scraper/launch_remote.sh and reconnect.`
       setAnnotateRunning(false)
-      setAnnotateLogs([
-        remoteCodeLegacy
-          ? 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.'
-          : `Annotation blocked: remote orchestrator revision ${backendStatus?.source_rev} does not match local revision ${backendStatus?.local_source_rev}. Run hpc/scraper/launch_remote.sh and reconnect.`,
-      ])
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
       return
     }
-    if (!window.scraper?.startAnnotate) return
+    if (!window.scraper?.startAnnotate) {
+      annotateLogsRef.current = ['Annotator start API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotator start API unavailable in the current Electron session.'])
+      return
+    }
     annotateLogsRef.current = []
     setAnnotateRunUsage({ tokensIn: 0, tokensOut: 0 })
-    setAnnotateLogs([])
+    setAnnotateLogs(['Starting annotator...'])
     setAnnotateRunning(true)
     const res = await window.scraper.startAnnotate({
       artifactsDir: `${outDir}/artifacts`,
@@ -690,10 +823,20 @@ function App() {
       force: opts.force ?? false,
     })
     if (!res?.ok) {
+      if (res?.error === 'annotator_already_running') {
+        const message = 'Annotator is already running on the remote orchestrator. Reattaching to the live job.'
+        annotateLogsRef.current = [message]
+        setAnnotateLogs([message])
+        setAnnotateRunning(true)
+        await refreshBridgeStatus()
+        return
+      }
       setAnnotateRunning(false)
-      setAnnotateLogs([`Failed to start annotator: ${res?.error ?? 'unknown error'}`])
+      const message = `Failed to start annotator: ${res?.error ?? 'unknown error'}`
+      annotateLogsRef.current = [message]
+      setAnnotateLogs([message])
     }
-  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus])
+  }, [outDir, llmModel, remoteCodeOutdated, remoteCodeLegacy, backendStatus, refreshBridgeStatus])
 
   const stopAnnotate = async () => {
     if (!window.scraper?.stopAnnotate) return
@@ -703,12 +846,20 @@ function App() {
   }
 
   const startRun = async () => {
-    if (running) return
+    if (scraperActive) return
     if (dashboardLocked) {
       setErrorMessage('Cluster bridge is offline. Start the remote orchestrator and port 8910 tunnel first.')
       return
     }
+    if (cruxKeyMissing) {
+      setErrorMessage('CrUX is enabled for this run. Enter a CrUX API key in Settings before starting the scraper.')
+      return
+    }
     if (launcherMode === 'start' && (!topN || Number(topN) <= 0)) return
+    if (launcherMode === 'extend' && extensionDelta <= 0) {
+      setErrorMessage(`Enter a target total higher than the current ${currentTargetTotal} sites to continue this dataset.`)
+      return
+    }
     const runId = createRunId()
     const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
     const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
@@ -747,20 +898,20 @@ function App() {
           cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
         }
       }
-    } else if (launcherMode === 'append') {
-      if (appendTargetsSummary.newSites.length === 0) {
-        setErrorMessage('No new target websites to append.')
-        return
-      }
+    } else if (launcherMode === 'extend') {
       runOutDir = outDir
       startOptions = {
         ...startOptions,
-        sites: appendTargetsSummary.newSites,
+        topN: requestedTargetTotal,
+        trancoDate: datasetState.manifestTrancoDate,
         outDir: runOutDir,
         artifactsDir: `${runOutDir}/artifacts`,
         runId,
-        expectedTotalSites: datasetState.uniqueSiteCount + appendTargetsSummary.newSites.length,
+        resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
+        expectedTotalSites: requestedTargetTotal,
         upsertBySite: true,
+        cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
+        cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
       }
     } else {
       runOutDir = freshOutDir
@@ -793,12 +944,9 @@ function App() {
       } else {
         setHasRun(true)
         setRunning(true)
-        setProgress(launcherMode === 'continue' ? datasetState.progressPct : 0)
+        setProgress(launchStartingProgress)
         setRunStartedAt(Date.now())
         setEtaText('')
-        if (launcherMode === 'append') {
-          setAppendTargetsText('')
-        }
         if (window.scraper.readRunManifest) {
           const manifestRes = await window.scraper.readRunManifest(runOutDir)
           setRunManifest(manifestRes?.ok ? manifestRes.data : null)
@@ -808,7 +956,7 @@ function App() {
     }
     setHasRun(true)
     setRunning(true)
-    setProgress(launcherMode === 'continue' ? datasetState.progressPct : 0)
+    setProgress(launchStartingProgress)
     setRunStartedAt(Date.now())
     setEtaText('')
   }
@@ -849,11 +997,18 @@ function App() {
 
   useEffect(() => {
     if (!window.scraper || !hasRun) return
+    const scraper = window.scraper
     const interval = setInterval(async () => {
       try {
-        const summary = await window.scraper?.readSummary(`${outDir}/results.summary.json`)
+        const size = await scraper.getFolderSize(outDir)
+        if (!size?.ok && size?.error === 'not_found') {
+          await handleMissingOutputDir(outDir)
+          return
+        }
+        const summary = await scraper.readSummary(`${outDir}/results.summary.json`)
         if (summary?.ok) setSummaryData(summary.data)
-        const state = await window.scraper?.readState(`${outDir}/run_state.json`)
+        else setSummaryData(null)
+        const state = await scraper.readState(`${outDir}/run_state.json`)
         if (state?.ok) {
           setStateData(state.data)
           if (state.data?.total_sites && state.data?.processed_sites && running) {
@@ -870,26 +1025,29 @@ function App() {
           || activeNav === 'annotations'
           || activeNav === 'consistency'
         if (needsExplorerData) {
-          const explorer = await window.scraper?.readExplorer(`${outDir}/explorer.jsonl`, 500)
+          const explorer = await scraper.readExplorer(`${outDir}/explorer.jsonl`, 500)
           if (explorer?.ok && Array.isArray(explorer.data)) {
             const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
             setExplorerData(cleaned)
+          } else {
+            setExplorerData([])
           }
         }
         if (activeNav === 'audit') {
-          if (window.scraper?.readResults) {
-            const results = await window.scraper.readResults(`${outDir}/results.jsonl`)
-            if (results?.ok && Array.isArray(results.data)) {
-              const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
-              setResultsData(cleanedResults)
-            }
+          const results = await scraper.readResults(`${outDir}/results.jsonl`)
+          if (results?.ok && Array.isArray(results.data)) {
+            const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
+            setResultsData(cleanedResults)
+          } else {
+            setResultsData([])
           }
-          if (window.scraper?.readAuditState) {
-            const auditState = await window.scraper.readAuditState(outDir)
-            if (auditState?.ok && auditState.data) {
-              setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
-              setAuditUrlOverrides(auditState.data.urlOverrides || {})
-            }
+          const auditState = await scraper.readAuditState(outDir)
+          if (auditState?.ok && auditState.data) {
+            setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
+            setAuditUrlOverrides(auditState.data.urlOverrides || {})
+          } else {
+            setAuditVerifiedSites([])
+            setAuditUrlOverrides({})
           }
         }
         // Refresh annotation stats during annotate run or when viewing annotations
@@ -901,7 +1059,7 @@ function App() {
       }
     }, 2000)
     return () => clearInterval(interval)
-  }, [hasRun, outDir, annotateRunning, activeNav, refreshAnnotationStats])
+  }, [hasRun, outDir, annotateRunning, activeNav, refreshAnnotationStats, handleMissingOutputDir])
 
   useEffect(() => {
     if (!window.scraper || activeNav !== 'database') return
@@ -911,6 +1069,9 @@ function App() {
       const size = await window.scraper?.getFolderSize(outDir)
       if (!cancelled && size?.ok && typeof size.bytes === 'number') {
         setFolderBytes(size.bytes)
+      } else if (!cancelled && size?.error === 'not_found') {
+        setFolderBytes(null)
+        await handleMissingOutputDir(outDir)
       }
     }
 
@@ -920,7 +1081,7 @@ function App() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [activeNav, outDir])
+  }, [activeNav, outDir, handleMissingOutputDir])
 
   // Auto-annotate: when a scrape run completes and autoAnnotate is enabled, start annotation.
   const prevRunningRef = useRef(false)
@@ -940,12 +1101,24 @@ function App() {
     } else {
       setRunRecords([])
     }
+    const size = await window.scraper.getFolderSize(outDir)
+    if (!size?.ok && size?.error === 'not_found') {
+      await handleMissingOutputDir(outDir)
+    }
   }
 
   useEffect(() => {
     if (activeNav !== 'database') return
-    refreshRuns()
-  }, [activeNav, runsRoot])
+    void refreshRuns()
+  }, [activeNav, runsRoot, outDir, handleMissingOutputDir])
+
+  useEffect(() => {
+    if (activeNav !== 'database') return
+    const interval = setInterval(() => {
+      void refreshRuns()
+    }, 15_000)
+    return () => clearInterval(interval)
+  }, [activeNav, outDir, handleMissingOutputDir, runsRoot])
 
   useEffect(() => {
     if (activeNav !== 'audit') return
@@ -954,19 +1127,7 @@ function App() {
 
   const clearResults = async (includeArtifacts?: boolean) => {
     if (!window.scraper) {
-      setSummaryData(null)
-      setExplorerData(null)
-      setResultsData(null)
-      setStateData(null)
-      setHasRun(false)
-      setProgress(0)
-      setLogs([])
-      setRunManifest(null)
-      setAppendTargetsText('')
-      setAuditVerifiedSites([])
-      setAuditUrlOverrides({})
-      setAuditBusySite(null)
-      setAuditAnnotatingSite(null)
+      resetLoadedOutputState()
       return
     }
     setClearing(true)
@@ -974,19 +1135,7 @@ function App() {
     if (!res.ok) {
       setErrorMessage(res.error || 'Failed to clear results')
     } else {
-      setSummaryData(null)
-      setExplorerData(null)
-      setResultsData(null)
-      setStateData(null)
-      setHasRun(false)
-      setProgress(0)
-      setLogs([])
-      setRunManifest(null)
-      setAppendTargetsText('')
-      setAuditVerifiedSites([])
-      setAuditUrlOverrides({})
-      setAuditBusySite(null)
-      setAuditAnnotatingSite(null)
+      resetLoadedOutputState()
     }
     setClearing(false)
   }
@@ -995,6 +1144,11 @@ function App() {
     if (!window.scraper) return
     const targetDir = dirOverride || outDir
     let results: any = null
+    const size = await window.scraper.getFolderSize(targetDir)
+    if (!size?.ok && size?.error === 'not_found') {
+      await handleMissingOutputDir(targetDir)
+      return
+    }
     if (dirOverride) {
       setOutDir(dirOverride)
     }
@@ -1040,9 +1194,10 @@ function App() {
       const manifest = await window.scraper.readRunManifest(targetDir)
       setRunManifest(manifest?.ok ? manifest.data : null)
     }
-    const size = await window.scraper.getFolderSize(targetDir)
     if (size?.ok && typeof size.bytes === 'number') {
       setFolderBytes(size.bytes)
+    } else {
+      setFolderBytes(null)
     }
     const hasAnyResults = Boolean(
       summary?.ok
@@ -1064,49 +1219,80 @@ function App() {
       setRunning(false)
       setProgress(0)
     }
-    setAppendTargetsText('')
     // Load annotation stats for the new outDir
     if (window.scraper?.annotationStats) {
       const annRes = await window.scraper.annotationStats(`${targetDir}/artifacts`)
       if (annRes?.ok) setAnnotationStats(annRes)
+      else setAnnotationStats(null)
     }
   }
 
   const deleteOutDir = async () => {
     if (!window.scraper) return
+    const targetDir = String(outDir || '').trim()
+    if (!targetDir) {
+      setErrorMessage('No output folder is selected.')
+      return
+    }
+    if (targetDir === runsRoot) {
+      setErrorMessage('Refusing to delete the outputs root. Load a specific run folder instead.')
+      return
+    }
+    if (!window.confirm(`Delete output folder "${targetDir}" and everything inside it?`)) {
+      return
+    }
     setClearing(true)
-    const res = await window.scraper.deleteOutput(outDir)
+    const res = await window.scraper.deleteOutput(targetDir)
     if (!res.ok) {
       setErrorMessage(res.error || 'Failed to delete output folder')
     } else {
-      setSummaryData(null)
-      setExplorerData(null)
-      setResultsData(null)
-      setStateData(null)
-      setHasRun(false)
-      setProgress(0)
-      setLogs([])
-      setFolderBytes(null)
-      setRunManifest(null)
-      setAppendTargetsText('')
-      setAuditVerifiedSites([])
-      setAuditUrlOverrides({})
-      setAuditBusySite(null)
-      setAuditAnnotatingSite(null)
+      setErrorMessage(null)
+      resetLoadedOutputState(defaultOutDir)
+      await refreshRuns()
+    }
+    setClearing(false)
+  }
+
+  const deleteAllOutputs = async () => {
+    if (!window.scraper?.deleteAllOutputs) return
+    if (!window.confirm(`Delete every folder inside "${runsRoot}"?`)) {
+      return
+    }
+    setClearing(true)
+    const res = await window.scraper.deleteAllOutputs()
+    if (!res.ok) {
+      setErrorMessage(res.error || 'Failed to delete all outputs')
+    } else {
+      setErrorMessage(null)
+      resetLoadedOutputState(defaultOutDir)
+      await refreshRuns()
     }
     setClearing(false)
   }
 
   const stopRun = async () => {
     if (!window.scraper) return
+    if (stopRunPending) return
+    if (!scraperActive) {
+      setErrorMessage('No active scraper run is currently attached to the dashboard.')
+      return
+    }
+    if (!window.confirm('Stop the current scrape run and keep partial results?')) return
+    setStopRunPending(true)
     setLogs((prev) => [...prev, 'Stop requested'].slice(-50))
     const res = await window.scraper.stopRun()
     if (!res.ok) {
+      setStopRunPending(false)
+      if (res.error === 'not_running') {
+        setErrorMessage(null)
+        setLogs((prev) => [...prev, 'Scraper already stopped'].slice(-50))
+        await refreshBridgeStatus()
+        return
+      }
       setErrorMessage(res.error || 'Failed to stop scraper')
       return
     }
-    setRunning(false)
-    setLogs((prev) => [...prev, 'Stop signal sent'].slice(-50))
+    setLogs((prev) => [...prev, res.status === 'stopping' ? 'Stop already in progress' : 'Stop signal sent'].slice(-50))
   }
 
   const openLogWindow = async () => {
@@ -1168,6 +1354,23 @@ function App() {
     await refreshBridgeStatus()
   }, [formatBridgeScriptOutput, refreshBridgeStatus])
 
+  const refreshRemote = useCallback(async () => {
+    if (!window.scraper?.refreshRemote || !window.scraper?.openLogWindow) return
+    setBridgeActionBusy('refresh')
+    setBridgeActionMessage('Refreshing remote orchestrator...')
+    const result = await window.scraper.refreshRemote()
+    if (!result.ok) {
+      await window.scraper.openLogWindow(formatBridgeScriptOutput('Remote refresh', result), 'Remote refresh')
+    }
+    setBridgeActionBusy(null)
+    setBridgeActionMessage(
+      result.ok
+        ? 'Remote orchestrator refreshed. Re-checking bridge health...'
+        : result.hint || 'Remote refresh failed. Review the remote refresh log.'
+    )
+    await refreshBridgeStatus()
+  }, [formatBridgeScriptOutput, refreshBridgeStatus])
+
   const pageTitle = {
     launcher: 'Scraper Launcher',
     audit: 'Audit Workspace',
@@ -1207,8 +1410,10 @@ function App() {
             onTopNChange={setTopN}
             onStart={startRun}
             onStop={stopRun}
+            stopRunPending={stopRunPending}
             hasRun={hasRun}
             running={running}
+            scraperActive={scraperActive}
             progress={progress}
             resultsReady={resultsMetrics.resultsReady}
             onViewResults={() => setActiveNav('results')}
@@ -1237,6 +1442,8 @@ function App() {
             bridgeActionMessage={bridgeActionMessage || undefined}
             onDiagnoseBridge={diagnoseBridge}
             onRepairBridge={repairBridge}
+            onRefreshRemote={refreshRemote}
+            remoteCodeOutdated={remoteCodeOutdated}
             workspaceReady={workspaceReady}
             llmModel={llmModel}
             latestStreamEvent={latestStreamEvent}
@@ -1251,15 +1458,8 @@ function App() {
             recentCompleted={recentCompleted}
             primaryActionLabel={launcherActionLabel}
             primaryActionHint={launcherActionHint}
-            topNLocked={launcherMode !== 'start'}
-            appendTargetsEnabled={datasetState.isComplete}
-            appendTargetsText={appendTargetsText}
-            onAppendTargetsChange={setAppendTargetsText}
-            appendTargetsSummary={{
-              entered: appendTargetsSummary.entered,
-              newSites: appendTargetsSummary.newSites.length,
-              duplicates: appendTargetsSummary.duplicateCount,
-            }}
+            primaryActionDisabled={cruxKeyMissing}
+            topNLocked={datasetState.isIncomplete}
           />
         )}
         {activeNav === 'audit' && (
@@ -1361,8 +1561,10 @@ function App() {
             onOutDirChange={setOutDir}
             onLoadOutDir={() => loadOutDir()}
             onDeleteOutDir={deleteOutDir}
+            onDeleteAllOutputs={deleteAllOutputs}
             folderBytes={folderBytes}
             annotationStats={annotationStats}
+            deleteEnabled={Boolean(outDir && outDir !== runsRoot && outDir.startsWith(`${runsRoot}/`))}
           />
         )}
         {activeNav === 'settings' && (
@@ -1395,6 +1597,8 @@ function App() {
             bridgeActionMessage={bridgeActionMessage || undefined}
             onDiagnoseBridge={diagnoseBridge}
             onRepairBridge={repairBridge}
+            onRefreshRemote={refreshRemote}
+            remoteCodeOutdated={remoteCodeOutdated}
           />
         )}
       </PageShell>

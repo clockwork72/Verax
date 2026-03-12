@@ -11,8 +11,10 @@ type DatabaseViewProps = {
   onOutDirChange: (value: string) => void
   onLoadOutDir: () => void
   onDeleteOutDir: () => void
+  onDeleteAllOutputs: () => void
   folderBytes?: number | null
   annotationStats?: any
+  deleteEnabled?: boolean
 }
 
 function formatBytes(bytes?: number | null) {
@@ -74,8 +76,10 @@ export function DatabaseView({
   onOutDirChange,
   onLoadOutDir,
   onDeleteOutDir,
+  onDeleteAllOutputs,
   folderBytes,
   annotationStats,
+  deleteEnabled = true,
 }: DatabaseViewProps) {
   const processed = summary?.processed_sites ?? state?.processed_sites ?? 0
   const total = summary?.total_sites ?? state?.total_sites ?? 0
@@ -177,9 +181,18 @@ export function DatabaseView({
             <button
               className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs"
               onClick={onDeleteOutDir}
-              disabled={clearing}
+              disabled={clearing || !deleteEnabled}
+              title={deleteEnabled ? `Delete ${outDir}` : 'Load a concrete run folder inside outputs/ first'}
             >
-              Delete output folder
+              Delete loaded folder
+            </button>
+            <button
+              className="focusable rounded-full border border-[var(--color-danger)] px-4 py-2 text-xs text-white"
+              onClick={onDeleteAllOutputs}
+              disabled={clearing}
+              title="Delete every folder inside outputs/"
+            >
+              Delete all outputs
             </button>
           </div>
         </div>

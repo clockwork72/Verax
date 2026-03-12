@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('scraper', {
   clearResults: (options?: { includeArtifacts?: boolean; outDir?: string }) =>
     ipcRenderer.invoke('scraper:clear-results', options),
   deleteOutput: (outDir?: string) => ipcRenderer.invoke('scraper:delete-output', outDir),
+  deleteAllOutputs: () => ipcRenderer.invoke('scraper:delete-all-outputs'),
   getFolderSize: (outDir?: string) => ipcRenderer.invoke('scraper:folder-size', outDir),
   listRuns: (baseOutDir?: string) => ipcRenderer.invoke('scraper:list-runs', baseOutDir),
   openLogWindow: (content: string, title?: string) => ipcRenderer.invoke('scraper:open-log-window', { content, title }),
@@ -80,4 +81,5 @@ contextBridge.exposeInMainWorld('scraper', {
   checkTunnel: () => ipcRenderer.invoke('scraper:check-tunnel'),
   diagnoseBridge: () => ipcRenderer.invoke('scraper:diagnose-bridge'),
   repairBridge: () => ipcRenderer.invoke('scraper:repair-bridge'),
+  refreshRemote: () => ipcRenderer.invoke('scraper:refresh-remote'),
 })

@@ -584,6 +584,13 @@ ipcMain.handle('scraper:delete-output', async (_event, outDir?: string) => {
   })
 })
 
+ipcMain.handle('scraper:delete-all-outputs', async () => {
+  return hpcRequest('/api/delete-all-outputs', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+})
+
 ipcMain.handle('scraper:start-annotate', async (_event, payload?: unknown) => {
   return hpcRequest('/api/start-annotate', {
     method: 'POST',
@@ -649,6 +656,10 @@ ipcMain.handle('scraper:repair-bridge', async () => {
     ...repair,
     health_ok: Boolean(health?.ok),
   }
+})
+
+ipcMain.handle('scraper:refresh-remote', async () => {
+  return await runLocalScript('refresh_remote.sh', [], { timeoutMs: 240000, interactiveSshPrompt: true })
 })
 
 ipcMain.handle('scraper:annotation-stats', async (_event, artifactsDir?: string) => {

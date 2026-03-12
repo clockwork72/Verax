@@ -219,10 +219,23 @@ def _process_document(
 ) -> DocumentJson:
     """Core document processing — verbatim port of PoliGrapher-LM's process_document()."""
     import pandoc.types as T  # type: ignore
+    block_node_types = tuple(
+        node_type
+        for node_type in (
+            T.Para,
+            T.Plain,
+            T.Table,
+            T.Header,
+            T.HorizontalRule,
+            T.CodeBlock,
+            getattr(T, "Figure", None),
+            T.BlockQuote,
+        )
+        if node_type is not None
+    )
 
     def dfs_to_block(elt, path) -> Generator[PandocElementPath, None, None]:
-        if isinstance(elt, (T.Para, T.Plain, T.Table, T.Header, T.HorizontalRule,
-                             T.CodeBlock, T.Figure, T.BlockQuote)):
+        if isinstance(elt, block_node_types):
             yield path
         elif isinstance(elt, T.BulletList):
             for i, child in enumerate(elt[0]):

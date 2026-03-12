@@ -29,10 +29,12 @@ type SettingsViewProps = {
   bridgeCheckedAt?: string
   bridgeHealthyAt?: string
   bridgeFailures?: number
-  bridgeActionBusy?: 'diagnose' | 'repair' | null
+  bridgeActionBusy?: 'diagnose' | 'repair' | 'refresh' | null
   bridgeActionMessage?: string
   onDiagnoseBridge?: () => void
   onRepairBridge?: () => void
+  onRefreshRemote?: () => void
+  remoteCodeOutdated?: boolean
 }
 
 function ToggleRow({
@@ -95,6 +97,8 @@ export function SettingsView({
   bridgeActionMessage,
   onDiagnoseBridge,
   onRepairBridge,
+  onRefreshRemote,
+  remoteCodeOutdated = false,
 }: SettingsViewProps) {
   const [cruxCache, setCruxCache] = useState<CruxCacheStats | null>(null)
 
@@ -301,6 +305,17 @@ export function SettingsView({
                     disabled={bridgeActionBusy !== null || tunnelStatus === 'checking' || tunnelStatus === 'online'}
                   >
                     {bridgeActionBusy === 'repair' ? 'Repairing...' : 'Repair bridge'}
+                  </button>
+                  <button
+                    className={`focusable rounded-full px-3 py-1 text-[11px] ${
+                      remoteCodeOutdated
+                        ? 'border border-amber-500/50 text-amber-300'
+                        : 'border border-[var(--border-soft)] text-[var(--muted-text)]'
+                    }`}
+                    onClick={onRefreshRemote}
+                    disabled={bridgeActionBusy !== null}
+                  >
+                    {bridgeActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh remote'}
                   </button>
                 </div>
               </div>

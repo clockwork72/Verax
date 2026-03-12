@@ -5,6 +5,12 @@ SSH_HOST="${SCRAPER_SSH_HOST:-toubkal}"
 SERVICE_PORT="${SCRAPER_SERVICE_PORT:-8910}"
 JOB_NAME="${SCRAPER_ORCH_JOB_NAME:-scraper-orch}"
 HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/health"
+SSH_SOCKET="${SCRAPER_SSH_SOCKET:-/tmp/scraper-ssh-${USER}.sock}"
+SSH_OPTS=(
+  -o ControlMaster=auto
+  -o ControlPersist=10m
+  -o "ControlPath=${SSH_SOCKET}"
+)
 
 usage() {
   cat <<'EOF'
@@ -20,7 +26,7 @@ EOF
 }
 
 resolve_node() {
-  ssh "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%T|%j|%N\" | awk -F\"|\" '\''\$1 == \"RUNNING\" && \$2 == \"${JOB_NAME}\" && \$3 != \"(null)\" { print \$3; exit }'\'''"
+  ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''"
 }
 
 list_local_tunnels() {
@@ -36,6 +42,12 @@ extract_target() {
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
+fi
+
+if ssh "${SSH_OPTS[@]}" -O check "${SSH_HOST}" >/dev/null 2>&1; then
+  :
+else
+  ssh "${SSH_OPTS[@]}" -MNf "${SSH_HOST}"
 fi
 
 NODE="${1:-}"
@@ -66,7 +78,7 @@ if [ "${#EXISTING_PIDS[@]}" -gt 0 ]; then
 fi
 
 echo "Opening local tunnel on 127.0.0.1:${SERVICE_PORT} -> ${NODE}:${SERVICE_PORT} via ${SSH_HOST}"
-ssh -fNT -o ExitOnForwardFailure=yes -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
+ssh "${SSH_OPTS[@]}" -fNT -o ExitOnForwardFailure=yes -L "${SERVICE_PORT}:${NODE}:${SERVICE_PORT}" "${SSH_HOST}"
 
 for _ in $(seq 1 10); do
   if curl -fsS --max-time 3 "${HEALTH_URL}" >/dev/null 2>&1; then
