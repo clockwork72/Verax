@@ -10,10 +10,8 @@ import { ConsistencyCheckerView } from './components/consistency/ConsistencyChec
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
-import type {
-  BridgeScriptResult,
-} from './contracts/api'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats } from './lib/annotationRunState'
+import { useOperationsController } from './lib/useOperationsController'
 import {
   applyScraperRuntimeEvent,
   emptyScraperSiteActivityState,
@@ -421,6 +419,32 @@ function App() {
     setAnnotateRunning,
     annotateLogsRef,
   })
+  const {
+    clearResults,
+    deleteOutDir,
+    deleteAllOutputs,
+    stopRun,
+    openLogWindow,
+    diagnoseBridge,
+    repairBridge,
+    refreshRemote,
+  } = useOperationsController({
+    defaultOutDir,
+    outDir,
+    runsRoot,
+    logs,
+    scraperActive,
+    stopRunPending,
+    refreshRuns,
+    refreshBridgeStatus,
+    resetLoadedOutputState,
+    appendScraperLog,
+    setClearing,
+    setErrorMessage,
+    setStopRunPending,
+    setBridgeActionBusy,
+    setBridgeActionMessage,
+  })
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -675,165 +699,6 @@ function App() {
     if (activeNav !== 'audit') return
     void loadAuditWorkspace()
   }, [activeNav, outDir, loadAuditWorkspace])
-
-  const clearResults = async (includeArtifacts?: boolean) => {
-    if (!window.scraper) {
-      resetLoadedOutputState()
-      return
-    }
-    setClearing(true)
-    const res = await window.scraper.clearResults({ includeArtifacts, outDir: outDir })
-    if (!res.ok) {
-      setErrorMessage(res.error || 'Failed to clear results')
-    } else {
-      resetLoadedOutputState()
-    }
-    setClearing(false)
-  }
-
-  const deleteOutDir = async () => {
-    if (!window.scraper) return
-    const targetDir = String(outDir || '').trim()
-    if (!targetDir) {
-      setErrorMessage('No output folder is selected.')
-      return
-    }
-    if (targetDir === runsRoot) {
-      setErrorMessage('Refusing to delete the outputs root. Load a specific run folder instead.')
-      return
-    }
-    if (!window.confirm(`Delete output folder "${targetDir}" and everything inside it?`)) {
-      return
-    }
-    setClearing(true)
-    const res = await window.scraper.deleteOutput(targetDir)
-    if (!res.ok) {
-      setErrorMessage(res.error || 'Failed to delete output folder')
-    } else {
-      setErrorMessage(null)
-      resetLoadedOutputState(defaultOutDir)
-      await refreshRuns()
-    }
-    setClearing(false)
-  }
-
-  const deleteAllOutputs = async () => {
-    if (!window.scraper?.deleteAllOutputs) return
-    if (!window.confirm(`Delete every folder inside "${runsRoot}"?`)) {
-      return
-    }
-    setClearing(true)
-    const res = await window.scraper.deleteAllOutputs()
-    if (!res.ok) {
-      setErrorMessage(res.error || 'Failed to delete all outputs')
-    } else {
-      setErrorMessage(null)
-      resetLoadedOutputState(defaultOutDir)
-      await refreshRuns()
-    }
-    setClearing(false)
-  }
-
-  const stopRun = async () => {
-    if (!window.scraper) return
-    if (stopRunPending) return
-    if (!scraperActive) {
-      setErrorMessage('No active scraper run is currently attached to the dashboard.')
-      return
-    }
-    if (!window.confirm('Stop the current scrape run and keep partial results?')) return
-    setStopRunPending(true)
-    appendScraperLog('Stop requested')
-    const res = await window.scraper.stopRun()
-    if (!res.ok) {
-      setStopRunPending(false)
-      if (res.error === 'not_running') {
-        setErrorMessage(null)
-        appendScraperLog('Scraper already stopped')
-        await refreshBridgeStatus()
-        return
-      }
-      setErrorMessage(res.error || 'Failed to stop scraper')
-      return
-    }
-    appendScraperLog(res.status === 'stopping' ? 'Stop already in progress' : 'Stop signal sent')
-  }
-
-  const openLogWindow = async () => {
-    if (!window.scraper) return
-    const content = logs.length ? logs.join('\n') : 'No logs yet.'
-    await window.scraper.openLogWindow(content, 'Run logs')
-  }
-
-  const formatBridgeScriptOutput = useCallback((title: string, result: BridgeScriptResult) => {
-    return [
-      title,
-      '',
-      result.command ? `Command: ${result.command}` : null,
-      typeof result.code === 'number' ? `Exit code: ${result.code}` : null,
-      result.signal ? `Signal: ${result.signal}` : null,
-      typeof result.killed === 'boolean' ? `Killed: ${result.killed}` : null,
-      result.hint ? `Hint: ${result.hint}` : null,
-      result.error ? `Error: ${result.error}` : null,
-      '',
-      'STDOUT:',
-      result.stdout?.trim() || '(empty)',
-      '',
-      'STDERR:',
-      result.stderr?.trim() || '(empty)',
-    ].filter(Boolean).join('\n')
-  }, [])
-
-  const diagnoseBridge = useCallback(async () => {
-    if (!window.scraper?.diagnoseBridge || !window.scraper?.openLogWindow) return
-    setBridgeActionBusy('diagnose')
-    setBridgeActionMessage('Running bridge diagnostics...')
-    const result = await window.scraper.diagnoseBridge()
-    await window.scraper.openLogWindow(formatBridgeScriptOutput('Bridge diagnostics', result), 'Bridge diagnostics')
-    setBridgeActionBusy(null)
-    setBridgeActionMessage(
-      result.ok
-        ? 'Bridge diagnostics completed.'
-        : result.hint || 'Bridge diagnostics found a problem. Review the diagnostics window.'
-    )
-    await refreshBridgeStatus()
-  }, [formatBridgeScriptOutput, refreshBridgeStatus])
-
-  const repairBridge = useCallback(async () => {
-    if (!window.scraper?.repairBridge || !window.scraper?.openLogWindow) return
-    setBridgeActionBusy('repair')
-    setBridgeActionMessage('Repairing bridge tunnel...')
-    const result = await window.scraper.repairBridge()
-    if (!result.ok || !result.health_ok) {
-      await window.scraper.openLogWindow(formatBridgeScriptOutput('Bridge repair', result), 'Bridge repair')
-    }
-    setBridgeActionBusy(null)
-    setBridgeActionMessage(
-      result.ok
-        ? result.health_ok
-          ? 'Bridge repaired and health probe is responding.'
-          : result.hint || 'Tunnel reopened, but the orchestrator is still not answering.'
-        : result.hint || 'Bridge repair failed. Review the bridge repair log.'
-    )
-    await refreshBridgeStatus()
-  }, [formatBridgeScriptOutput, refreshBridgeStatus])
-
-  const refreshRemote = useCallback(async () => {
-    if (!window.scraper?.refreshRemote || !window.scraper?.openLogWindow) return
-    setBridgeActionBusy('refresh')
-    setBridgeActionMessage('Refreshing remote orchestrator...')
-    const result = await window.scraper.refreshRemote()
-    if (!result.ok) {
-      await window.scraper.openLogWindow(formatBridgeScriptOutput('Remote refresh', result), 'Remote refresh')
-    }
-    setBridgeActionBusy(null)
-    setBridgeActionMessage(
-      result.ok
-        ? 'Remote orchestrator refreshed. Re-checking bridge health...'
-        : result.hint || 'Remote refresh failed. Review the remote refresh log.'
-    )
-    await refreshBridgeStatus()
-  }, [formatBridgeScriptOutput, refreshBridgeStatus])
 
   const pageTitle = {
     launcher: 'Scraper Launcher',
