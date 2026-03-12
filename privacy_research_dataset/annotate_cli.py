@@ -685,6 +685,25 @@ async def _run(args: argparse.Namespace) -> None:
                                 f"[reuse-miss] {_label(dup_dir)} — failed to copy outputs "
                                 f"from {label}; leaving unannotated."
                             )
+                            write_annotation_status(
+                                dup_dir,
+                                "failed",
+                                phase="reuse",
+                                model=args.llm_model,
+                                site=dup_dir.name,
+                                reason="reuse_copy_failed",
+                                error=f"failed to copy annotation outputs from {label}",
+                            )
+                            _emit_event(
+                                {
+                                    "type": "annotation.progress",
+                                    "site": dup_dir.name,
+                                    "status": "failed",
+                                    "phase": "reuse",
+                                    "message": f"{dup_dir.name}: reuse copy failed from {label}",
+                                    "error": f"failed to copy annotation outputs from {label}",
+                                }
+                            )
                 else:
                     warn(f"[skip] {label} — {result['status']}")
             except Exception as e:
