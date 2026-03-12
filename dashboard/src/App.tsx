@@ -138,6 +138,7 @@ function App() {
   const [, setAnnotateRunUsage] = useState({ tokensIn: 0, tokensOut: 0 })
   const [annotationStats, setAnnotationStats] = useState<any>(null)
   const [autoAnnotate, setAutoAnnotate] = useState(true)
+  const [autoAnnotatePending, setAutoAnnotatePending] = useState(false)
   const [annotationsTab, setAnnotationsTab] = useState<'overview' | 'viewer'>('overview')
   const [latestStreamEvent, setLatestStreamEvent] = useState<import('./vite-env').AnnotatorStreamEvent | null>(null)
   const annotateLogsRef = useRef<string[]>([])
@@ -166,6 +167,7 @@ function App() {
     setLogs([])
     setRunStartedAt(null)
     setEtaText('')
+    setAutoAnnotatePending(false)
     if (nextOutDir) {
       setOutDir(nextOutDir)
     }
@@ -490,6 +492,7 @@ function App() {
       if (event?.type === 'run_started') {
         setHasRun(true)
         setRunning(true)
+        setAutoAnnotatePending(false)
         setProgress(launchStartingProgress)
         setErrorMessage(null)
         setRunStartedAt(Date.now())
@@ -536,6 +539,7 @@ function App() {
       if (event?.type === 'run_completed') {
         setStopRunPending(false)
         setRunning(false)
+        setAutoAnnotatePending(autoAnnotate)
         setProgress(100)
         setEtaText('0s')
         setActiveSites({})
@@ -555,6 +559,7 @@ function App() {
         setLogs((prev) => [...prev, `ERROR: ${evt.message}`].slice(-50))
       }
       setRunning(false)
+      setAutoAnnotatePending(false)
       setStopRunPending(false)
       setAuditBusySite(null)
       void syncLoadedRunState(outDir)
@@ -570,6 +575,7 @@ function App() {
         setErrorMessage(null)
       }
       setRunning(false)
+      setAutoAnnotatePending(false)
       setStopRunPending(false)
       setAuditBusySite(null)
       void syncLoadedRunState(outDir)
@@ -628,7 +634,7 @@ function App() {
         }
       })
     }
-  }, [launchStartingProgress, outDir, syncLoadedRunState])
+  }, [autoAnnotate, launchStartingProgress, outDir, syncLoadedRunState])
 
   // Keep refs in sync so the IPC exit handler always sees current values
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
@@ -1083,15 +1089,11 @@ function App() {
     }
   }, [activeNav, outDir, handleMissingOutputDir])
 
-  // Auto-annotate: when a scrape run completes and autoAnnotate is enabled, start annotation.
-  const prevRunningRef = useRef(false)
   useEffect(() => {
-    const justCompleted = prevRunningRef.current === true && running === false
-    prevRunningRef.current = running
-    if (justCompleted && hasRun && autoAnnotate && !annotateRunning) {
-      startAnnotate({})
-    }
-  }, [running, hasRun, autoAnnotate, annotateRunning, startAnnotate])
+    if (!autoAnnotatePending || running || !hasRun || annotateRunning) return
+    setAutoAnnotatePending(false)
+    void startAnnotate({})
+  }, [autoAnnotatePending, running, hasRun, annotateRunning, startAnnotate])
 
   const refreshRuns = async (baseDir: string = runsRoot) => {
     if (!window.scraper) return

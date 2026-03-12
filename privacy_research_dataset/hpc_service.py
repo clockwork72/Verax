@@ -1025,26 +1025,34 @@ class HpcService:
             if not site_dir.is_dir():
                 continue
             statements_path = site_dir / "policy_statements.jsonl"
+            annotated_path = site_dir / "policy_statements_annotated.jsonl"
+            complete_marker = site_dir / "annotation_complete.json"
             count = 0
-            has_statements = statements_path.exists()
-            if has_statements:
+            completed = complete_marker.exists() or annotated_path.exists() or statements_path.exists()
+            has_statements = False
+            if statements_path.exists():
                 count = len([line for line in statements_path.read_text(encoding="utf-8").splitlines() if line.strip()])
                 total_statements += count
-            per_site.append({"site": site_dir.name, "count": count, "has_statements": has_statements})
+                has_statements = count > 0
+            per_site.append({"site": site_dir.name, "count": count, "has_statements": has_statements, "completed": completed})
             tp_root = site_dir / "third_party"
             if tp_root.exists():
                 for tp_dir in sorted(tp_root.iterdir()):
                     if not tp_dir.is_dir():
                         continue
                     tp_path = tp_dir / "policy_statements.jsonl"
+                    tp_annotated_path = tp_dir / "policy_statements_annotated.jsonl"
+                    tp_complete_marker = tp_dir / "annotation_complete.json"
                     tp_count = 0
-                    tp_has = tp_path.exists()
-                    if tp_has:
+                    tp_completed = tp_complete_marker.exists() or tp_annotated_path.exists() or tp_path.exists()
+                    tp_has = False
+                    if tp_path.exists():
                         tp_count = len([line for line in tp_path.read_text(encoding="utf-8").splitlines() if line.strip()])
                         tp_total_statements += tp_count
-                    per_tp.append({"site": site_dir.name, "tp": tp_dir.name, "count": tp_count, "has_statements": tp_has})
-        annotated_sites = sum(1 for row in per_site if row["has_statements"])
-        tp_annotated = sum(1 for row in per_tp if row["has_statements"])
+                        tp_has = tp_count > 0
+                    per_tp.append({"site": site_dir.name, "tp": tp_dir.name, "count": tp_count, "has_statements": tp_has, "completed": tp_completed})
+        annotated_sites = sum(1 for row in per_site if row["completed"])
+        tp_annotated = sum(1 for row in per_tp if row["completed"])
         return web.json_response(
             {
                 "ok": True,

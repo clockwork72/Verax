@@ -217,7 +217,10 @@ def _policy_source_url(policy_dir: Path) -> str | None:
 
 
 def _has_annotation_outputs(policy_dir: Path) -> bool:
-    return (policy_dir / "annotation_complete.json").exists() or (policy_dir / "policy_statements.jsonl").exists()
+    return (
+        (policy_dir / "annotation_complete.json").exists()
+        or (policy_dir / "policy_statements_annotated.jsonl").exists()
+    )
 
 
 def _copy_annotation_outputs(
