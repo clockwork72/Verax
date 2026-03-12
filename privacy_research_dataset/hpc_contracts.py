@@ -129,3 +129,77 @@ class AnnotationStatsResponse:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class HealthResponse:
+    ok: bool
+    service_ready: bool
+    database_ready: bool
+    scraper_connected: bool
+    dashboard_locked: bool
+    active_run: bool
+    annotator_running: bool
+    node: str
+    port: int
+    db_port: int
+    started_at: str
+    remote_root: str
+    repo_root: str
+    current_out_dir: str
+    source_rev: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PollResponse:
+    ok: bool
+    cursor: int
+    items: list[dict[str, Any]]
+    running: bool
+    annotateRunning: bool
+    currentOutDir: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class StatusResponse:
+    ok: bool
+    running: bool
+    annotateRunning: bool
+    currentOutDir: str
+    dbDsn: str
+    dbReady: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PathsPayload:
+    outDir: str
+    resultsJsonl: str
+    summaryJson: str
+    stateJson: str
+    explorerJsonl: str
+    artifactsDir: str
+    artifactsOkDir: str
+    cruxCacheJson: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class PathsResponse:
+    ok: bool
+    data: PathsPayload
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["data"] = self.data.to_dict()
+        return payload

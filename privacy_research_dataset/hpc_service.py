@@ -19,6 +19,7 @@ from typing import Any
 
 from aiohttp import web
 
+from .hpc_control_plane import control_plane_routes
 from .annotation_state import (
     count_jsonl_records,
     has_completed_annotation_output,
@@ -721,72 +722,6 @@ class HpcService:
             args.append("--force")
         return args, target
 
-    async def handle_health(self, _request: web.Request) -> web.Response:
-        return web.json_response(
-            {
-                "ok": True,
-                "service_ready": self.postgres.ready,
-                "database_ready": self.postgres.ready,
-                "scraper_connected": self.postgres.ready,
-                "dashboard_locked": not self.postgres.ready,
-                "active_run": self.scraper.running,
-                "annotator_running": self.annotator.running,
-                "node": self.hostname,
-                "port": self.args.port,
-                "db_port": self.args.db_port,
-                "started_at": self.started_at,
-                "remote_root": str(self.remote_root),
-                "repo_root": str(self.repo_root),
-                "current_out_dir": self.current_out_dir,
-                "source_rev": os.getenv("SCRAPER_SOURCE_REV"),
-            }
-        )
-
-    async def handle_poll(self, request: web.Request) -> web.Response:
-        after = int(request.query.get("cursor", "0") or "0")
-        cursor, items = self.bus.poll(after)
-        return web.json_response(
-            {
-                "ok": True,
-                "cursor": cursor,
-                "items": items,
-                "running": self.scraper.running,
-                "annotateRunning": self.annotator.running,
-                "currentOutDir": self.current_out_dir,
-            }
-        )
-
-    async def handle_status(self, _request: web.Request) -> web.Response:
-        return web.json_response(
-            {
-                "ok": True,
-                "running": self.scraper.running,
-                "annotateRunning": self.annotator.running,
-                "currentOutDir": self.current_out_dir,
-                "dbDsn": self.postgres.dsn,
-                "dbReady": self.postgres.ready,
-            }
-        )
-
-    async def handle_paths(self, request: web.Request) -> web.Response:
-        out_dir = request.query.get("outDir")
-        paths = self.default_paths(out_dir)
-        return web.json_response(
-            {
-                "ok": True,
-                "data": {
-                    "outDir": str(paths.out_dir),
-                    "resultsJsonl": str(paths.results_jsonl),
-                    "summaryJson": str(paths.summary_json),
-                    "stateJson": str(paths.state_json),
-                    "explorerJsonl": str(paths.explorer_jsonl),
-                    "artifactsDir": str(paths.artifacts_dir),
-                    "artifactsOkDir": str(paths.artifacts_ok_dir),
-                    "cruxCacheJson": str(paths.crux_cache_json),
-                },
-            }
-        )
-
     def safe_resolve(self, out_dir: str | None, relative_path: str) -> Path:
         root = self.default_paths(out_dir).out_dir
         full = (root / relative_path).resolve()
@@ -1259,11 +1194,8 @@ class HpcService:
     def app(self) -> web.Application:
         app = web.Application()
         app.add_routes(
-            [
-                web.get("/health", self.handle_health),
-                web.get("/api/poll", self.handle_poll),
-                web.get("/api/status", self.handle_status),
-                web.get("/api/paths", self.handle_paths),
+            control_plane_routes(self)
+            + [
                 web.get("/api/summary", self.handle_read_summary),
                 web.get("/api/state", self.handle_read_state),
                 web.get("/api/explorer", self.handle_read_explorer),
