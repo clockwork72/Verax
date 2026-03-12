@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import os
-import shutil
 import signal
 import socket
 import sys
@@ -21,6 +20,7 @@ from aiohttp import web
 
 from .hpc_artifacts import artifact_routes
 from .hpc_control_plane import control_plane_routes
+from .hpc_operations import operation_routes
 from .hpc_contracts import PipelineEventEnvelope
 
 
@@ -40,10 +40,6 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=True) + "\n")
-
-
-def normalize_site_key(value: str) -> str:
-    return value.strip().lower()
 
 
 def normalize_model_key(value: str | None) -> str:
@@ -719,255 +715,12 @@ class HpcService:
     async def read_json_file(self, path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
 
-    async def handle_write_audit_state(self, request: web.Request) -> web.Response:
-        payload = await request.json()
-        target = self.audit_state_path(payload.get("outDir"))
-        verified_raw = payload.get("verifiedSites") or []
-        verified_sites = [
-            normalize_site_key(str(value))
-            for value in verified_raw
-            if str(value).strip()
-        ]
-        overrides_raw = payload.get("urlOverrides") or {}
-        overrides: dict[str, str] = {}
-        for key, value in overrides_raw.items():
-            if str(value).strip():
-                overrides[normalize_site_key(str(key))] = str(value).strip()
-        data = {
-            "verifiedSites": sorted(set(verified_sites)),
-            "urlOverrides": overrides,
-            "updatedAt": utc_now(),
-        }
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        return web.json_response({"ok": True, "data": data, "path": str(target)})
-
-    async def handle_clear_results(self, request: web.Request) -> web.Response:
-        if self.scraper.running:
-            return web.json_response({"ok": False, "error": "scraper_running"})
-        payload = await request.json()
-        paths = self.default_paths(payload.get("outDir"))
-        targets = [
-            paths.results_jsonl,
-            paths.summary_json,
-            paths.state_json,
-            paths.explorer_jsonl,
-            self.audit_state_path(payload.get("outDir")),
-            self.manifest_path(payload.get("outDir")),
-        ]
-        removed: list[str] = []
-        missing: list[str] = []
-        errors: list[str] = []
-        for target in targets:
-            try:
-                if target.exists():
-                    target.unlink()
-                    removed.append(str(target))
-                else:
-                    missing.append(str(target))
-            except Exception as exc:
-                errors.append(f"{target}: {exc}")
-        if payload.get("includeArtifacts"):
-            with suppress(Exception):
-                if paths.artifacts_dir.exists():
-                    shutil.rmtree(paths.artifacts_dir)
-                    removed.append(str(paths.artifacts_dir))
-        return web.json_response({"ok": not errors, "removed": removed, "missing": missing, "errors": errors})
-
-    async def handle_delete_output(self, request: web.Request) -> web.Response:
-        if self.scraper.running:
-            return web.json_response({"ok": False, "error": "scraper_running"})
-        payload = await request.json()
-        out_dir = str(payload.get("outDir") or "").strip()
-        if not out_dir:
-            return web.json_response({"ok": False, "error": "missing_out_dir"})
-        target = (self.repo_root / out_dir).resolve()
-        outputs_root = self.outputs_root.resolve()
-        if target == outputs_root or not str(target).startswith(str(outputs_root) + os.sep):
-            return web.json_response({"ok": False, "error": "path_outside_outputs", "path": str(target)})
-        if not target.exists():
-            return web.json_response({"ok": False, "error": "not_found", "path": str(target)})
-        if not target.is_dir():
-            return web.json_response({"ok": False, "error": "not_a_directory", "path": str(target)})
-        shutil.rmtree(target)
-        return web.json_response({"ok": True, "path": str(target)})
-
-    async def handle_delete_all_outputs(self, _request: web.Request) -> web.Response:
-        if self.scraper.running:
-            return web.json_response({"ok": False, "error": "scraper_running"})
-        removed: list[str] = []
-        for entry in self.outputs_root.iterdir():
-            if not entry.exists():
-                continue
-            if entry.is_dir():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
-            removed.append(str(entry))
-        return web.json_response({"ok": True, "removed": removed, "path": str(self.outputs_root)})
-
-    async def handle_start_run(self, request: web.Request) -> web.Response:
-        payload = await request.json()
-        argv, manifest, paths = self.build_scraper_args(payload)
-        ok, error = await self.scraper.start(
-            argv=argv,
-            env=self.runtime_env(),
-            cwd=self.repo_root,
-            run_manifest_path=self.manifest_path(payload.get("outDir")),
-            run_manifest=manifest,
-        )
-        if not ok:
-            return web.json_response({"ok": False, "error": error or "failed_to_start"})
-        return web.json_response(
-            {
-                "ok": True,
-                "paths": {
-                    "outDir": str(paths.out_dir),
-                    "resultsJsonl": str(paths.results_jsonl),
-                    "summaryJson": str(paths.summary_json),
-                    "stateJson": str(paths.state_json),
-                    "explorerJsonl": str(paths.explorer_jsonl),
-                    "artifactsDir": str(paths.artifacts_dir),
-                    "artifactsOkDir": str(paths.artifacts_ok_dir),
-                },
-            }
-        )
-
-    async def handle_rerun_site(self, request: web.Request) -> web.Response:
-        payload = await request.json()
-        if self.scraper.running:
-            return web.json_response({"ok": False, "error": "scraper_already_running"})
-        if self.annotator.running:
-            return web.json_response({"ok": False, "error": "annotator_running"})
-        site = str(payload.get("site") or "").strip()
-        if not site:
-            return web.json_response({"ok": False, "error": "missing_site"})
-        paths = self.default_paths(payload.get("outDir"))
-        argv = [
-            "-m",
-            "privacy_research_dataset.cli",
-            "--site",
-            site,
-            "--out",
-            str(paths.results_jsonl),
-            "--artifacts-dir",
-            str(paths.artifacts_dir),
-            "--artifacts-ok-dir",
-            str(paths.artifacts_ok_dir),
-            "--emit-events",
-            "--state-file",
-            str(paths.state_json),
-            "--summary-out",
-            str(paths.summary_json),
-            "--explorer-out",
-            str(paths.explorer_jsonl),
-            "--force",
-            "--upsert-by-site",
-            "--concurrency",
-            "1",
-        ]
-        if payload.get("trackerRadarIndex"):
-            argv.extend(["--tracker-radar-index", str((self.repo_root / payload["trackerRadarIndex"]).resolve())])
-        if payload.get("trackerDbIndex"):
-            argv.extend(["--trackerdb-index", str((self.repo_root / payload["trackerDbIndex"]).resolve())])
-        if payload.get("runId"):
-            argv.extend(["--run-id", str(payload["runId"])])
-        if payload.get("excludeSameEntity"):
-            argv.append("--exclude-same-entity")
-        if payload.get("policyUrlOverride"):
-            argv.extend(["--policy-url-override", str(payload["policyUrlOverride"]).strip()])
-        if payload.get("llmModel"):
-            argv.extend(["--llm-model", str(payload["llmModel"]).strip()])
-        ok, error = await self.scraper.start(
-            argv=argv,
-            env=self.runtime_env(),
-            cwd=self.repo_root,
-        )
-        if not ok:
-            return web.json_response({"ok": False, "error": error or "failed_to_start"})
-        return web.json_response({"ok": True, "paths": {"outDir": str(paths.out_dir)}, "site": site})
-
-    async def handle_stop_run(self, _request: web.Request) -> web.Response:
-        if self.scraper.stopping:
-            return web.json_response({"ok": True, "status": "stopping"})
-        if not self.scraper.running:
-            return web.json_response({"ok": False, "error": "not_running"})
-        await self.scraper.stop()
-        return web.json_response({"ok": True, "status": "stopped"})
-
-    async def handle_start_annotate(self, request: web.Request) -> web.Response:
-        if self.annotator.running:
-            return web.json_response({"ok": False, "error": "annotator_already_running"})
-        payload = await request.json()
-        argv, artifacts_dir = self.build_annotator_args(payload)
-        ok, error = await self.annotator.start(
-            argv=argv,
-            env=self.runtime_env(),
-            cwd=self.repo_root,
-        )
-        if not ok:
-            return web.json_response({"ok": False, "error": error or "failed_to_start"})
-        return web.json_response({"ok": True, "artifactsDir": str(artifacts_dir)})
-
-    async def handle_annotate_site(self, request: web.Request) -> web.Response:
-        if self.annotator.running:
-            return web.json_response({"ok": False, "error": "annotator_already_running"})
-        if self.scraper.running:
-            return web.json_response({"ok": False, "error": "scraper_running"})
-        payload = await request.json()
-        site = str(payload.get("site") or "").strip()
-        if not site:
-            return web.json_response({"ok": False, "error": "missing_site"})
-        paths = self.default_paths(payload.get("outDir"))
-        argv = [
-            "-m",
-            "privacy_research_dataset.annotate_cli",
-            "--artifacts-dir",
-            str(paths.artifacts_dir),
-            "--target-dir",
-            site,
-            "--concurrency",
-            "1",
-        ]
-        if payload.get("llmModel"):
-            argv.extend(["--llm-model", str(payload["llmModel"]).strip()])
-        argv.extend(annotator_rate_limit_args(payload.get("llmModel")))
-        if payload.get("tokenLimit") is not None:
-            argv.extend(["--token-limit", str(payload["tokenLimit"])])
-        if payload.get("force", True):
-            argv.append("--force")
-        ok, error = await self.annotator.start(
-            argv=argv,
-            env=self.runtime_env(),
-            cwd=self.repo_root,
-        )
-        if not ok:
-            return web.json_response({"ok": False, "error": error or "failed_to_start"})
-        return web.json_response({"ok": True, "artifactsDir": str(paths.artifacts_dir), "site": site})
-
-    async def handle_stop_annotate(self, _request: web.Request) -> web.Response:
-        if not self.annotator.running:
-            return web.json_response({"ok": False, "error": "not_running"})
-        await self.annotator.stop()
-        return web.json_response({"ok": True})
-
     def app(self) -> web.Application:
         app = web.Application()
         app.add_routes(
             control_plane_routes(self)
             + artifact_routes(self)
-            + [
-                web.post("/api/write-audit-state", self.handle_write_audit_state),
-                web.post("/api/clear-results", self.handle_clear_results),
-                web.post("/api/delete-output", self.handle_delete_output),
-                web.post("/api/delete-all-outputs", self.handle_delete_all_outputs),
-                web.post("/api/start-run", self.handle_start_run),
-                web.post("/api/rerun-site", self.handle_rerun_site),
-                web.post("/api/stop-run", self.handle_stop_run),
-                web.post("/api/start-annotate", self.handle_start_annotate),
-                web.post("/api/annotate-site", self.handle_annotate_site),
-                web.post("/api/stop-annotate", self.handle_stop_annotate),
-            ]
+            + operation_routes(self)
         )
         return app
 

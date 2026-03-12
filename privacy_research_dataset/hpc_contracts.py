@@ -276,3 +276,90 @@ class CruxCacheStatsResponse:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class AuditStatePayload:
+    verifiedSites: list[str]
+    urlOverrides: dict[str, str]
+    updatedAt: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class WriteAuditStateResponse:
+    ok: bool
+    data: AuditStatePayload | None = None
+    path: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = _compact(asdict(self))
+        if self.data is not None:
+            payload["data"] = self.data.to_dict()
+        return payload
+
+
+@dataclass(slots=True)
+class ClearResultsResponse:
+    ok: bool
+    removed: list[str]
+    missing: list[str]
+    errors: list[str]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class DeleteOutputResponse:
+    ok: bool
+    path: str | None = None
+    removed: list[str] | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class PathsResultPayload:
+    outDir: str
+    resultsJsonl: str
+    summaryJson: str
+    stateJson: str
+    explorerJsonl: str
+    artifactsDir: str
+    artifactsOkDir: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class StartRunResponse:
+    ok: bool
+    paths: PathsResultPayload | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = _compact(asdict(self))
+        if self.paths is not None:
+            payload["paths"] = self.paths.to_dict()
+        return payload
+
+
+@dataclass(slots=True)
+class SiteActionResponse:
+    ok: bool
+    site: str | None = None
+    paths: dict[str, str] | None = None
+    artifactsDir: str | None = None
+    status: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
