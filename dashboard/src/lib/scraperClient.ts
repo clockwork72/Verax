@@ -3,6 +3,10 @@ import type {
   AnnotationStats,
   HpcBridgeStatus,
   PipelineEvent,
+  RunManifest,
+  RunRecord,
+  RunState,
+  RunSummary,
 } from '../contracts/api'
 import { annotationRunStateFromStats, emptyAnnotationRunState } from './annotationRunState'
 import { normalizePipelineEvent } from './pipelineEvents'
@@ -24,8 +28,8 @@ export type ReadWorkspaceSnapshotOptions = {
 }
 
 export type WorkspaceSnapshot = {
-  summary: any | null
-  state: any | null
+  summary: RunSummary | null
+  state: RunState | null
   hasAnyResults: boolean
   progress: number
   totalSites: number
@@ -34,7 +38,7 @@ export type WorkspaceSnapshot = {
   explorer?: any[]
   results?: any[]
   auditState?: AuditWorkspaceState
-  runManifest?: any | null
+  runManifest?: RunManifest | null
   folderBytes?: number | null
   annotationStats?: AnnotationStats | null
   annotationRunState?: AnnotationRunState
@@ -55,7 +59,146 @@ function sanitizeExplorer(records: unknown): any[] {
   return records.filter((record) => record && record.site)
 }
 
-function computeSnapshotProgress(summary: any | null, state: any | null, hasAnyResults: boolean) {
+function asObject(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0) : []
+}
+
+function asCountMap(value: unknown): Record<string, number> {
+  const source = asObject(value)
+  if (!source) return {}
+  return Object.fromEntries(
+    Object.entries(source)
+      .filter(([, count]) => typeof count === 'number' && Number.isFinite(count))
+      .map(([key, count]) => [key, count as number]),
+  )
+}
+
+function normalizeRunSummary(raw: unknown): RunSummary | null {
+  const summary = asObject(raw)
+  if (!summary) return null
+  return {
+    run_id: asString(summary.run_id),
+    total_sites: asNumber(summary.total_sites),
+    processed_sites: asNumber(summary.processed_sites),
+    success_rate: asNumber(summary.success_rate),
+    status_counts: asCountMap(summary.status_counts),
+    third_party: {
+      total: asNumber(asObject(summary.third_party)?.total),
+      unique: asNumber(asObject(summary.third_party)?.unique, 0),
+      mapped: asNumber(asObject(summary.third_party)?.mapped),
+      unique_mapped: asNumber(asObject(summary.third_party)?.unique_mapped, 0),
+      unique_with_policy: asNumber(asObject(summary.third_party)?.unique_with_policy, 0),
+      unmapped: asNumber(asObject(summary.third_party)?.unmapped),
+      no_policy_url: asNumber(asObject(summary.third_party)?.no_policy_url),
+    },
+    english_policy_count: asNumber(summary.english_policy_count, 0),
+    mapping: {
+      mode: (asObject(summary.mapping)?.mode as RunSummary['mapping']['mode']) ?? null,
+      radar_mapped: asNumber(asObject(summary.mapping)?.radar_mapped),
+      trackerdb_mapped: asNumber(asObject(summary.mapping)?.trackerdb_mapped),
+      unmapped: asNumber(asObject(summary.mapping)?.unmapped),
+    },
+    categories: Array.isArray(summary.categories)
+      ? summary.categories
+          .map((item) => asObject(item))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+          .map((item) => ({ name: String(item.name || ''), count: asNumber(item.count) }))
+          .filter((item) => item.name)
+      : [],
+    entities: Array.isArray(summary.entities)
+      ? summary.entities
+          .map((item) => asObject(item))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+          .map((item) => ({
+            name: String(item.name || ''),
+            count: typeof item.count === 'number' ? item.count : undefined,
+            prevalence_avg: typeof item.prevalence_avg === 'number' ? item.prevalence_avg : null,
+            prevalence_max: typeof item.prevalence_max === 'number' ? item.prevalence_max : null,
+            prevalence: typeof item.prevalence === 'number' ? item.prevalence : null,
+            domains: typeof item.domains === 'number' ? item.domains : null,
+            categories: asStringArray(item.categories),
+          }))
+          .filter((item) => item.name)
+      : [],
+    started_at: asString(summary.started_at),
+    updated_at: asString(summary.updated_at),
+  }
+}
+
+function normalizeRunState(raw: unknown): RunState | null {
+  const state = asObject(raw)
+  if (!state) return null
+  return {
+    run_id: asString(state.run_id),
+    mapping: {
+      mode: (asObject(state.mapping)?.mode as RunState['mapping']['mode']) ?? null,
+      radar_mapped: asNumber(asObject(state.mapping)?.radar_mapped),
+      trackerdb_mapped: asNumber(asObject(state.mapping)?.trackerdb_mapped),
+      unmapped: asNumber(asObject(state.mapping)?.unmapped),
+    },
+    total_sites: asNumber(state.total_sites),
+    processed_sites: asNumber(state.processed_sites),
+    status_counts: asCountMap(state.status_counts),
+    third_party: {
+      total: asNumber(asObject(state.third_party)?.total),
+      mapped: asNumber(asObject(state.third_party)?.mapped),
+      unmapped: asNumber(asObject(state.third_party)?.unmapped),
+      no_policy_url: asNumber(asObject(state.third_party)?.no_policy_url),
+    },
+    updated_at: asString(state.updated_at),
+  }
+}
+
+function normalizeRunManifest(raw: unknown): RunManifest | null {
+  const manifest = asObject(raw)
+  if (!manifest || typeof manifest.updatedAt !== 'string') return null
+  return {
+    version: manifest.version === 1 ? 1 : 1,
+    status: manifest.status === 'completed' || manifest.status === 'interrupted' ? manifest.status : 'running',
+    mode: manifest.mode === 'append_sites' ? 'append_sites' : 'tranco',
+    runId: asString(manifest.runId),
+    topN: typeof manifest.topN === 'number' ? manifest.topN : undefined,
+    trancoDate: asString(manifest.trancoDate),
+    resumeAfterRank: typeof manifest.resumeAfterRank === 'number' ? manifest.resumeAfterRank : undefined,
+    expectedTotalSites: typeof manifest.expectedTotalSites === 'number' ? manifest.expectedTotalSites : undefined,
+    requestedSites: asStringArray(manifest.requestedSites),
+    cruxFilter: typeof manifest.cruxFilter === 'boolean' ? manifest.cruxFilter : undefined,
+    updatedAt: manifest.updatedAt,
+    startedAt: asString(manifest.startedAt),
+    completedAt: asString(manifest.completedAt),
+  }
+}
+
+function normalizeRunRecord(raw: unknown): RunRecord | null {
+  const run = asObject(raw)
+  if (!run) return null
+  const outDir = asString(run.outDir)
+  const folder = asString(run.folder)
+  if (!outDir || !folder) return null
+  return {
+    runId: asString(run.runId) || folder,
+    folder,
+    outDir,
+    summary: normalizeRunSummary(run.summary),
+    state: normalizeRunState(run.state),
+    updated_at: asString(run.updated_at),
+    started_at: asString(run.started_at),
+  }
+}
+
+function computeSnapshotProgress(summary: RunSummary | null, state: RunState | null, hasAnyResults: boolean) {
   const processedSites = Number(summary?.processed_sites ?? state?.processed_sites ?? 0)
   const totalSites = Number(summary?.total_sites ?? state?.total_sites ?? 0)
   const progress = totalSites > 0
@@ -80,10 +223,12 @@ export async function readAnnotationStats(artifactsDir?: string): Promise<Annota
   return result?.ok ? result as AnnotationStats : null
 }
 
-export async function listRunRecords(baseOutDir?: string): Promise<any[]> {
+export async function listRunRecords(baseOutDir?: string): Promise<RunRecord[]> {
   if (!window.scraper?.listRuns) return []
   const result = await window.scraper.listRuns(baseOutDir)
-  return result?.ok && Array.isArray(result.runs) ? result.runs : []
+  return result?.ok && Array.isArray(result.runs)
+    ? result.runs.map(normalizeRunRecord).filter((run): run is RunRecord => Boolean(run))
+    : []
 }
 
 export async function readFolderSize(outDir?: string): Promise<{ ok: boolean; bytes?: number; error?: string }> {
@@ -138,8 +283,8 @@ export async function readWorkspaceSnapshot({
 
   const summaryResult = await window.scraper.readSummary(`${outDir}/results.summary.json`)
   const stateResult = await window.scraper.readState(`${outDir}/run_state.json`)
-  const summary = summaryResult?.ok ? summaryResult.data : null
-  const state = stateResult?.ok ? stateResult.data : null
+  const summary = summaryResult?.ok ? normalizeRunSummary(summaryResult.data) : null
+  const state = stateResult?.ok ? normalizeRunState(stateResult.data) : null
 
   const snapshot: WorkspaceSnapshot = {
     summary,
@@ -177,7 +322,7 @@ export async function readWorkspaceSnapshot({
 
   if (includeManifest && window.scraper.readRunManifest) {
     const manifestResult = await window.scraper.readRunManifest(outDir)
-    snapshot.runManifest = manifestResult?.ok ? manifestResult.data : null
+    snapshot.runManifest = manifestResult?.ok ? normalizeRunManifest(manifestResult.data) : null
   }
 
   if (includeAnnotation) {

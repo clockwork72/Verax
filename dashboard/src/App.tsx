@@ -15,6 +15,10 @@ import type {
   AnnotationStats,
   BridgeScriptResult,
   HpcBridgeStatus,
+  RunManifest,
+  RunRecord,
+  RunState,
+  RunSummary,
 } from './contracts/api'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats, emptyAnnotationRunState } from './lib/annotationRunState'
 import {
@@ -90,10 +94,10 @@ function App() {
   const [progress, setProgress] = useState(0)
   const [scraperActivity, setScraperActivity] = useState(emptyScraperSiteActivityState())
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [summaryData, setSummaryData] = useState<any | null>(null)
+  const [summaryData, setSummaryData] = useState<RunSummary | null>(null)
   const [explorerData, setExplorerData] = useState<any[] | null>(null)
   const [resultsData, setResultsData] = useState<any[] | null>(null)
-  const [stateData, setStateData] = useState<any | null>(null)
+  const [stateData, setStateData] = useState<RunState | null>(null)
   const [clearing, setClearing] = useState(false)
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
   const [etaText, setEtaText] = useState<string>('')
@@ -104,8 +108,8 @@ function App() {
   const [outDir, setOutDir] = useState('outputs/unified')
   const [runsRoot] = useState('outputs')
   const [resumeMode, setResumeMode] = useState(true)
-  const [runRecords, setRunRecords] = useState<any[]>([])
-  const [runManifest, setRunManifest] = useState<any | null>(null)
+  const [runRecords, setRunRecords] = useState<RunRecord[]>([])
+  const [runManifest, setRunManifest] = useState<RunManifest | null>(null)
   const [folderBytes, setFolderBytes] = useState<number | null>(null)
   const [auditVerifiedSites, setAuditVerifiedSites] = useState<string[]>([])
   const [auditUrlOverrides, setAuditUrlOverrides] = useState<Record<string, string>>({})
@@ -344,7 +348,7 @@ function App() {
       lastSuccessfulRank,
       lastSuccessfulSite,
       pendingManifestSites,
-      manifestMode: runManifest?.mode as 'tranco' | 'append_sites' | undefined,
+      manifestMode: runManifest?.mode,
       manifestTopN: Number(runManifest?.topN || 0) || null,
       manifestTrancoDate: typeof runManifest?.trancoDate === 'string' ? runManifest.trancoDate : undefined,
       manifestCruxFilter: typeof runManifest?.cruxFilter === 'boolean' ? runManifest.cruxFilter : undefined,
@@ -938,7 +942,7 @@ function App() {
         setEtaText('')
         if (window.scraper.readRunManifest) {
           const manifestRes = await window.scraper.readRunManifest(runOutDir)
-          setRunManifest(manifestRes?.ok ? manifestRes.data : null)
+          setRunManifest(manifestRes?.ok ? (manifestRes.data ?? null) : null)
         }
       }
       return

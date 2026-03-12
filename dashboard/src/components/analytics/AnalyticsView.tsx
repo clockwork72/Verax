@@ -1,13 +1,16 @@
-import type { AnnotationStats } from '../../contracts/api'
+import type { AnnotationStats, RunState, RunSummary, ThirdPartyCacheStats } from '../../contracts/api'
 
 type AnalyticsViewProps = {
-  summary?: any
-  state?: any
+  summary?: RunSummary | null
+  state?: RunState | null
   annotationStats?: AnnotationStats | null
-  tpCacheStats?: any
+  tpCacheStats?: ThirdPartyCacheStats | null
 }
 
 export function AnalyticsView({ summary, state, annotationStats, tpCacheStats }: AnalyticsViewProps) {
+  const tpCacheTotal = tpCacheStats?.total ?? 0
+  const tpCacheFetched = tpCacheStats?.fetched ?? 0
+  const tpCacheFailed = tpCacheStats?.failed ?? 0
   const processed = state?.processed_sites ?? summary?.processed_sites ?? 0
   const total = state?.total_sites ?? summary?.total_sites ?? 0
   const successRate = summary?.success_rate ?? 0
@@ -122,26 +125,26 @@ export function AnalyticsView({ summary, state, annotationStats, tpCacheStats }:
               </p>
             </div>
             <span className="theme-chip rounded-full px-3 py-1 text-xs">
-              {tpCacheStats.total ?? 0} cached URLs
+              {tpCacheTotal} cached URLs
             </span>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
               {
                 label: 'Cached URLs',
-                value: (tpCacheStats.total ?? 0).toLocaleString(),
+                value: tpCacheTotal.toLocaleString(),
               },
               {
                 label: 'Fetched (text)',
-                value: (tpCacheStats.fetched ?? 0).toLocaleString(),
+                value: tpCacheFetched.toLocaleString(),
               },
               {
                 label: 'Failed',
-                value: (tpCacheStats.failed ?? 0).toLocaleString(),
+                value: tpCacheFailed.toLocaleString(),
               },
               {
                 label: 'Requests saved',
-                value: (tpCacheStats.fetched ?? 0).toLocaleString(),
+                value: tpCacheFetched.toLocaleString(),
               },
             ].map((row) => (
               <div key={row.label} className="rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-3">
@@ -150,16 +153,16 @@ export function AnalyticsView({ summary, state, annotationStats, tpCacheStats }:
               </div>
             ))}
           </div>
-          {tpCacheStats.total > 0 && (
+          {tpCacheTotal > 0 && (
             <div className="mt-4">
               <div className="flex h-2 w-full overflow-hidden rounded-full bg-black/30">
                 <div
                   className="h-full bg-[var(--color-success)]"
-                  style={{ width: `${Math.min(100, ((tpCacheStats.fetched ?? 0) / Math.max(1, tpCacheStats.total)) * 100)}%` }}
+                  style={{ width: `${Math.min(100, (tpCacheFetched / Math.max(1, tpCacheTotal)) * 100)}%` }}
                 />
                 <div
                   className="h-full bg-[var(--color-danger)]"
-                  style={{ width: `${Math.min(100, ((tpCacheStats.failed ?? 0) / Math.max(1, tpCacheStats.total)) * 100)}%` }}
+                  style={{ width: `${Math.min(100, (tpCacheFailed / Math.max(1, tpCacheTotal)) * 100)}%` }}
                 />
               </div>
               <div className="mt-2 flex gap-4 text-xs text-[var(--muted-text)]">

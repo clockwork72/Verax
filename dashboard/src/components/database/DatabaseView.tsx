@@ -1,12 +1,12 @@
-import type { AnnotationSiteRecord, AnnotationStats } from '../../contracts/api'
+import type { AnnotationSiteRecord, AnnotationStats, RunRecord, RunState, RunSummary } from '../../contracts/api'
 
 type DatabaseViewProps = {
   runsRoot?: string
-  runs?: any[]
+  runs?: RunRecord[]
   onRefreshRuns?: () => void
   onSelectRun?: (outDir: string) => void
-  summary?: any
-  state?: any
+  summary?: RunSummary | null
+  state?: RunState | null
   onClear: (includeArtifacts?: boolean) => void
   clearing?: boolean
   outDir: string
@@ -53,15 +53,15 @@ function formatDurationMs(start?: string | null, end?: string | null) {
   return `${secs}s`
 }
 
-function resolveRunStats(run: any) {
-  const summary = run?.summary || {}
-  const state = run?.state || {}
-  const processed = summary.processed_sites ?? state.processed_sites ?? 0
-  const total = summary.total_sites ?? state.total_sites ?? 0
-  const statusCounts = summary.status_counts ?? state.status_counts ?? {}
+function resolveRunStats(run: RunRecord) {
+  const summary = run.summary
+  const state = run.state
+  const processed = summary?.processed_sites ?? state?.processed_sites ?? 0
+  const total = summary?.total_sites ?? state?.total_sites ?? 0
+  const statusCounts = summary?.status_counts ?? state?.status_counts ?? {}
   const ok = statusCounts.ok ?? 0
   const successRate =
-    summary.success_rate ?? (processed ? Math.round((Number(ok) / Math.max(1, processed)) * 100) : 0)
+    summary?.success_rate ?? (processed ? Math.round((Number(ok) / Math.max(1, processed)) * 100) : 0)
   return { processed, total, successRate }
 }
 
@@ -85,7 +85,7 @@ export function DatabaseView({
 }: DatabaseViewProps) {
   const processed = summary?.processed_sites ?? state?.processed_sites ?? 0
   const total = summary?.total_sites ?? state?.total_sites ?? 0
-  const thirdParty = summary?.third_party || {}
+  const thirdParty = summary?.third_party ?? { total: 0, mapped: 0, unmapped: 0, no_policy_url: 0 }
 
   return (
     <>

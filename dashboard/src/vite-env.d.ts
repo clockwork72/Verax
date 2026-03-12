@@ -7,9 +7,14 @@ import type {
   CompletedSiteInfo,
   HpcBridgeStatus,
   PipelineEvent,
+  RunManifest,
+  RunRecord,
+  RunState,
+  RunSummary,
   ScraperExitEvent,
   ScraperMessageEvent,
   ScraperRuntimeEvent,
+  ThirdPartyCacheStats,
 } from './contracts/api'
 
 type ScraperStartOptions = {
@@ -27,22 +32,6 @@ type ScraperStartOptions = {
   cruxFilter?: boolean
   cruxApiKey?: string
   excludeSameEntity?: boolean
-}
-
-type RunManifest = {
-  version: 1
-  status: 'running' | 'completed' | 'interrupted'
-  mode: 'tranco' | 'append_sites'
-  runId?: string
-  topN?: number
-  trancoDate?: string
-  resumeAfterRank?: number
-  expectedTotalSites?: number
-  requestedSites?: string[]
-  cruxFilter?: boolean
-  updatedAt: string
-  startedAt?: string
-  completedAt?: string
 }
 
 type ScraperRerunSiteOptions = {
@@ -71,8 +60,8 @@ declare global {
       startRun: (options: ScraperStartOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string> }>
       stopRun: () => Promise<{ ok: boolean; error?: string; status?: 'stopping' | 'stopped' }>
       getPaths: (outDir?: string) => Promise<Record<string, string>>
-      readSummary: (path?: string) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
-      readState: (path?: string) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
+      readSummary: (path?: string) => Promise<{ ok: boolean; data?: RunSummary; error?: string; path?: string }>
+      readState: (path?: string) => Promise<{ ok: boolean; data?: RunState; error?: string; path?: string }>
       readExplorer: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
       readResults: (path?: string, limit?: number) => Promise<{ ok: boolean; data?: any; error?: string; path?: string }>
       readAuditState: (outDir?: string) => Promise<{ ok: boolean; data?: { verifiedSites: string[]; urlOverrides: Record<string, string> }; error?: string; path?: string }>
@@ -83,7 +72,7 @@ declare global {
       deleteOutput: (outDir?: string) => Promise<{ ok: boolean; error?: string; path?: string }>
       deleteAllOutputs: () => Promise<{ ok: boolean; error?: string; removed?: string[]; path?: string }>
       getFolderSize: (outDir?: string) => Promise<{ ok: boolean; error?: string; bytes?: number; path?: string }>
-      listRuns: (baseOutDir?: string) => Promise<{ ok: boolean; error?: string; root?: string; runs?: any[] }>
+      listRuns: (baseOutDir?: string) => Promise<{ ok: boolean; error?: string; root?: string; runs?: RunRecord[] }>
       openLogWindow: (content: string, title?: string) => Promise<{ ok: boolean; error?: string }>
       openPolicyWindow: (url: string) => Promise<{ ok: boolean; error?: string }>
       onEvent: (callback: (event: ScraperRuntimeEvent) => void) => void
@@ -97,7 +86,7 @@ declare global {
       annotateSite: (options: AnnotateSiteOptions) => Promise<{ ok: boolean; error?: string; artifactsDir?: string; site?: string }>
       annotationStats: (artifactsDir?: string) => Promise<AnnotationStats>
       countOkArtifacts: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; sites?: string[]; path?: string }>
-      readTpCache: (outDir?: string) => Promise<{ ok: boolean; error?: string; total?: number; fetched?: number; failed?: number; by_status?: Record<string, number> }>
+      readTpCache: (outDir?: string) => Promise<ThirdPartyCacheStats>
       cruxCacheStats: (outDir?: string) => Promise<{ ok: boolean; error?: string; count?: number; present?: number; absent?: number; path?: string }>
       onAnnotatorLog: (callback: (event: any) => void) => void
       onAnnotatorExit: (callback: (event: any) => void) => void

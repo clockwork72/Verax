@@ -1,5 +1,11 @@
 import { baseResults } from '../../data/results'
-import type { AnnotationSiteRecord, AnnotationStats } from '../../contracts/api'
+import type {
+  AnnotationSiteRecord,
+  AnnotationStats,
+  RunSummary,
+  RunSummaryCategory,
+  RunSummaryEntity,
+} from '../../contracts/api'
 import { ResultsMetrics } from '../../utils/results'
 import { CATEGORY_ORDER } from '../../utils/trackerCategories'
 
@@ -8,7 +14,7 @@ type ResultsViewProps = {
   progress: number
   topN: string
   metrics: ResultsMetrics
-  summary?: any
+  summary?: RunSummary | null
   sites?: any[]
   useCrux?: boolean
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
@@ -25,6 +31,8 @@ export function ResultsView({
   mappingMode,
   annotationStats,
 }: ResultsViewProps) {
+  const fallbackThirdParty = { total: 0, mapped: 0, unmapped: 0, no_policy_url: 0, unique: 0, unique_mapped: 0, unique_with_policy: 0 }
+  const fallbackMapping = { mode: null, radar_mapped: 0, trackerdb_mapped: 0, unmapped: 0 } as const
   if (!hasRun) {
     return (
       <section className="card rounded-2xl p-6">
@@ -45,7 +53,7 @@ export function ResultsView({
   const statusHomeFailed = statusCounts.home_fetch_failed ?? (hasSummary ? 0 : metrics.statusHomeFailed)
   const statusTotal = Math.max(1, statusOk + statusPolicyNotFound + statusNonBrowsable + statusHomeFailed)
 
-  const thirdParty = summary?.third_party || {}
+  const thirdParty = summary?.third_party ?? fallbackThirdParty
   const thirdPartyDetected =
     thirdParty.unique ?? thirdParty.total ?? (hasSummary ? 0 : Math.max(0, metrics.radarMapped + metrics.radarUnmapped))
   const uniqueMapped = thirdParty.unique_mapped ?? (hasSummary ? 0 : metrics.radarMapped)
@@ -54,7 +62,7 @@ export function ResultsView({
   const radarNoPolicy = thirdParty.no_policy_url ?? (hasSummary ? 0 : metrics.radarNoPolicy)
   const englishPolicyCount = summary?.english_policy_count ?? null
 
-  const rawCategories: { name: string; count: number }[] =
+  const rawCategories: RunSummaryCategory[] =
     summary?.categories || (hasSummary ? [] : baseResults.categories)
   // Merge counts for categories that share a consolidated label, then sort
   // by canonical order followed by any unknown categories by count desc.
@@ -74,13 +82,13 @@ export function ResultsView({
         return b.count - a.count
       })
   })()
-  const summaryEntities = summary?.entities || (hasSummary ? [] : baseResults.entities)
-  const categoryMax = summaryCategories.reduce((max: number, cat: any) => Math.max(max, cat.count || 0), 1)
-  const entityMax = summaryEntities.reduce((max: number, entity: any) => {
+  const summaryEntities: RunSummaryEntity[] = summary?.entities || (hasSummary ? [] : baseResults.entities)
+  const categoryMax = summaryCategories.reduce((max: number, cat: RunSummaryCategory) => Math.max(max, cat.count || 0), 1)
+  const entityMax = summaryEntities.reduce((max: number, entity: RunSummaryEntity) => {
     const prev = entity.prevalence_max ?? entity.prevalence_avg ?? entity.prevalence ?? 0
     return Math.max(max, prev)
   }, 0.0001)
-  const mapping = summary?.mapping || {}
+  const mapping = summary?.mapping ?? fallbackMapping
   const mappingLabel =
     mapping.mode === 'trackerdb'
       ? 'TrackerDB'
@@ -109,6 +117,7 @@ export function ResultsView({
   const unmappedPct = Math.max(0, 100 - radarPct - trackerdbPct)
   const targetSites =
     typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || metrics.totalSitesProcessed
+  const processedForCoverage = summary?.processed_sites ?? 0
 
   const InfoTip = ({ text }: { text: string }) => (
     <span className="relative ml-2 inline-flex items-center group">
@@ -374,7 +383,7 @@ export function ResultsView({
               Counts represent unique third-party services (deduplicated), not total occurrences.
             </p>
             <div className="mt-3 space-y-3 text-xs">
-              {summaryCategories.map((cat: any) => {
+              {summaryCategories.map((cat: RunSummaryCategory) => {
                 const count = cat.count ?? 0
                 return (
                   <div key={cat.name} className="flex items-center gap-4">
@@ -431,8 +440,8 @@ export function ResultsView({
               },
               {
                 label: 'Coverage',
-                value: (summary?.processed_sites ?? 0) > 0
-                  ? `${Math.round(((annotationStats.annotated_sites ?? 0) / summary.processed_sites) * 100)}%`
+                value: processedForCoverage > 0
+                  ? `${Math.round(((annotationStats.annotated_sites ?? 0) / processedForCoverage) * 100)}%`
                   : '—',
                 info: 'Percentage of crawled sites that have been annotated.',
               },
@@ -483,7 +492,7 @@ export function ResultsView({
           <h3 className="text-lg font-semibold">Entity prevalence distribution</h3>
         </div>
         <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {summaryEntities.map((entity: any) => {
+          {summaryEntities.map((entity: RunSummaryEntity) => {
             const prevalence =
               entity.prevalence_max ?? entity.prevalence_avg ?? entity.prevalence ?? entity.prevalence_avg ?? 0
             const countLabel = entity.count ? `${entity.count} occurrences` : '—'

@@ -10,6 +10,14 @@ export type AnnotationSiteStatus =
   | 'stopped'
   | 'reused'
 
+export type ScraperSiteStatus =
+  | 'ok'
+  | 'policy_not_found'
+  | 'home_fetch_failed'
+  | 'non_browsable'
+  | 'exception'
+  | string
+
 export type HpcBridgeStatus = {
   service_ready?: boolean
   database_ready?: boolean
@@ -31,6 +39,100 @@ export type HpcBridgeStatus = {
   tunnel_state?: 'stale' | 'offline'
   source_rev?: string
   local_source_rev?: string
+}
+
+export type RunSummaryStatusCounts = Record<string, number>
+
+export type RunSummaryCategory = {
+  name: string
+  count: number
+}
+
+export type RunSummaryEntity = {
+  name: string
+  count?: number
+  prevalence_avg?: number | null
+  prevalence_max?: number | null
+  prevalence?: number | null
+  domains?: number | null
+  categories: string[]
+}
+
+export type RunMappingSummary = {
+  mode?: 'radar' | 'trackerdb' | 'mixed' | null
+  radar_mapped: number
+  trackerdb_mapped: number
+  unmapped: number
+}
+
+export type RunThirdPartySummary = {
+  total: number
+  unique?: number
+  mapped: number
+  unique_mapped?: number
+  unique_with_policy?: number
+  unmapped: number
+  no_policy_url: number
+}
+
+export type RunSummary = {
+  run_id?: string
+  total_sites: number
+  processed_sites: number
+  success_rate: number
+  status_counts: RunSummaryStatusCounts
+  third_party: RunThirdPartySummary
+  english_policy_count?: number
+  mapping: RunMappingSummary
+  categories: RunSummaryCategory[]
+  entities: RunSummaryEntity[]
+  started_at?: string
+  updated_at?: string
+}
+
+export type RunState = {
+  run_id?: string
+  mapping: RunMappingSummary
+  total_sites: number
+  processed_sites: number
+  status_counts: RunSummaryStatusCounts
+  third_party: Pick<RunThirdPartySummary, 'total' | 'mapped' | 'unmapped' | 'no_policy_url'>
+  updated_at?: string
+}
+
+export type RunManifest = {
+  version: 1
+  status: 'running' | 'completed' | 'interrupted'
+  mode: 'tranco' | 'append_sites'
+  runId?: string
+  topN?: number
+  trancoDate?: string
+  resumeAfterRank?: number
+  expectedTotalSites?: number
+  requestedSites?: string[]
+  cruxFilter?: boolean
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+}
+
+export type RunRecord = {
+  runId: string
+  folder: string
+  outDir: string
+  summary: RunSummary | null
+  state: RunState | null
+  updated_at?: string
+  started_at?: string
+}
+
+export type ThirdPartyCacheStats = {
+  ok: boolean
+  error?: string
+  total?: number
+  fetched?: number
+  failed?: number
+  by_status?: Record<string, number>
 }
 
 export type PipelineEvent = {
