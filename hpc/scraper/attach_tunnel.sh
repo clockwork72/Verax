@@ -1,17 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-SSH_HOST="${SCRAPER_SSH_HOST:-toubkal}"
-SERVICE_PORT="${SCRAPER_SERVICE_PORT:-8910}"
-JOB_NAME="${SCRAPER_ORCH_JOB_NAME:-scraper-orch}"
+# shellcheck source=_ssh_common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ssh_common.sh"
 HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/health"
-SSH_SOCKET="${SCRAPER_SSH_SOCKET:-/tmp/scraper-ssh-${USER}.sock}"
-FORWARD_STATE="${SCRAPER_SSH_FORWARD_STATE:-/tmp/scraper-ssh-forward-${USER}-${SERVICE_PORT}.target}"
-SSH_OPTS=(
-  -o ControlMaster=auto
-  -o ControlPersist=10m
-  -o "ControlPath=${SSH_SOCKET}"
-)
 
 usage() {
   cat <<'EOF'

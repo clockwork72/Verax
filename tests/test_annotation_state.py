@@ -25,6 +25,21 @@ def test_has_completed_annotation_output_uses_nonempty_legacy_file(tmp_path):
     assert has_completed_annotation_output(site_dir) is True
 
 
+def test_has_completed_annotation_output_rejects_corrupted_jsonl(tmp_path):
+    site_dir = tmp_path / "corrupt.com"
+    site_dir.mkdir()
+
+    # A partial write that is not valid JSON should not count as completed
+    (site_dir / "policy_statements_annotated.jsonl").write_text("not valid json\n", encoding="utf-8")
+    assert has_completed_annotation_output(site_dir) is False
+
+    # A mix: one corrupt line then one valid — should return True (valid record exists)
+    (site_dir / "policy_statements_annotated.jsonl").write_text(
+        'not valid json\n{"statement": "ok"}\n', encoding="utf-8"
+    )
+    assert has_completed_annotation_output(site_dir) is True
+
+
 def test_mark_stale_annotation_states_converts_in_progress_to_stopped(tmp_path):
     site_dir = tmp_path / "docker.com"
     site_dir.mkdir()

@@ -86,12 +86,27 @@ def mark_stale_annotation_states(policy_dirs: Iterable[Path]) -> int:
 
 
 def has_nonempty_annotated_jsonl(policy_dir: Path) -> bool:
+    """Return True only if the annotated JSONL contains at least one valid JSON record.
+
+    A line that fails JSON parsing is not counted as a completed annotation record.
+    This prevents a corrupted or partial write from causing a site to be
+    permanently skipped as if fully annotated.
+    """
     annotated_path = annotated_jsonl_path(policy_dir)
     if not annotated_path.exists():
         return False
     try:
         with annotated_path.open("r", encoding="utf-8") as fh:
-            return any(line.strip() for line in fh)
+            for line in fh:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    json.loads(stripped)
+                    return True
+                except json.JSONDecodeError:
+                    continue
+        return False
     except Exception:
         return False
 
