@@ -12,7 +12,14 @@ import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
 import type { AnnotationRunState, AnnotationStats, BridgeScriptResult, HpcBridgeStatus } from './contracts/api'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats, emptyAnnotationRunState } from './lib/annotationRunState'
-import { readAnnotationStats, readBridgeStatus } from './lib/scraperClient'
+import {
+  listRunRecords,
+  readAnnotationStats,
+  readBridgeStatus,
+  readFolderSize,
+  readWorkspaceSnapshot,
+  type WorkspaceSnapshot,
+} from './lib/scraperClient'
 import { NavId, Theme } from './types'
 import { computeResults } from './utils/results'
 
@@ -143,20 +150,61 @@ function App() {
     }
   }, [])
 
+  const applyWorkspaceSnapshot = useCallback((
+    snapshot: WorkspaceSnapshot,
+    options?: {
+      preserveRunning?: boolean
+      mergeHasRun?: boolean
+      mergeProgress?: boolean
+    },
+  ) => {
+    const preserveRunning = Boolean(options?.preserveRunning)
+    const mergeHasRun = Boolean(options?.mergeHasRun)
+    const mergeProgress = Boolean(options?.mergeProgress)
+    setSummaryData(snapshot.summary)
+    setStateData(snapshot.state)
+    if (snapshot.explorer !== undefined) {
+      setExplorerData(snapshot.explorer)
+    }
+    if (snapshot.results !== undefined) {
+      setResultsData(snapshot.results)
+    }
+    if (snapshot.auditState !== undefined) {
+      setAuditVerifiedSites(snapshot.auditState.verifiedSites)
+      setAuditUrlOverrides(snapshot.auditState.urlOverrides)
+    }
+    if (snapshot.runManifest !== undefined) {
+      setRunManifest(snapshot.runManifest)
+    }
+    if (snapshot.folderBytes !== undefined) {
+      setFolderBytes(snapshot.folderBytes)
+    }
+    if (snapshot.annotationStats !== undefined) {
+      setAnnotationStats(snapshot.annotationStats ?? null)
+      setAnnotationRunState(snapshot.annotationRunState ?? emptyAnnotationRunState())
+    }
+    if (mergeHasRun) {
+      setHasRun((prev) => prev || snapshot.hasAnyResults)
+    } else {
+      setHasRun(snapshot.hasAnyResults)
+    }
+    if (mergeProgress) {
+      setProgress((prev) => Math.max(prev, snapshot.progress))
+    } else {
+      setProgress(snapshot.progress)
+    }
+    if (!preserveRunning) {
+      setRunning(false)
+    }
+  }, [])
+
   const handleMissingOutputDir = useCallback(async (missingDir: string) => {
     const fallbackDir = defaultOutDir
     resetLoadedOutputState(missingDir === fallbackDir ? undefined : fallbackDir)
     if (outDir === missingDir) {
       setErrorMessage(`Output folder "${missingDir}" no longer exists. Hidden stale data and reset to ${fallbackDir}.`)
     }
-    if (window.scraper) {
-      const res = await window.scraper.listRuns(runsRoot)
-      if (res?.ok && Array.isArray(res.runs)) {
-        setRunRecords(res.runs)
-      } else {
-        setRunRecords([])
-      }
-    }
+    setRunRecords(await listRunRecords(runsRoot))
   }, [defaultOutDir, outDir, resetLoadedOutputState, runsRoot])
 
   const refreshBridgeStatus = useCallback(async () => {
@@ -421,39 +469,17 @@ function App() {
         ? 'Cluster bridge offline. Start the orchestrator and SSH tunnel with hpc/scraper/launch_remote.sh.'
         : 'Choose how many sites to crawl. Press Enter to start.'
   const syncLoadedRunState = useCallback(async (targetDir = outDir) => {
-    if (!window.scraper) return
-    const summary = await window.scraper.readSummary(`${targetDir}/results.summary.json`)
-    setSummaryData(summary?.ok ? summary.data : null)
-    const state = await window.scraper.readState(`${targetDir}/run_state.json`)
-    setStateData(state?.ok ? state.data : null)
-    let resultsRes: any = null
-    if (window.scraper.readResults) {
-      resultsRes = await window.scraper.readResults(`${targetDir}/results.jsonl`)
-      if (resultsRes?.ok && Array.isArray(resultsRes.data)) {
-        const cleanedResults = resultsRes.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
-        setResultsData(cleanedResults)
-      } else {
-        setResultsData([])
-      }
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: targetDir,
+      includeResults: true,
+      includeManifest: true,
+    })
+    if (snapshot.missingOutputDir) {
+      await handleMissingOutputDir(targetDir)
+      return
     }
-    if (window.scraper.readRunManifest) {
-      const manifest = await window.scraper.readRunManifest(targetDir)
-      setRunManifest(manifest?.ok ? manifest.data : null)
-    }
-    const loadedProcessed = Number(summary?.data?.processed_sites ?? state?.data?.processed_sites ?? 0)
-    const loadedTotal = Number(summary?.data?.total_sites ?? state?.data?.total_sites ?? 0)
-    const hasAnyResults = Boolean(
-      summary?.ok
-      || state?.ok
-      || (resultsRes?.ok && Array.isArray(resultsRes.data) && resultsRes.data.length)
-    )
-    setHasRun(hasAnyResults)
-    setProgress(
-      loadedTotal > 0
-        ? Math.min(100, (loadedProcessed / Math.max(1, loadedTotal)) * 100)
-        : hasAnyResults ? 100 : 0
-    )
-  }, [outDir])
+    applyWorkspaceSnapshot(snapshot)
+  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir])
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
@@ -617,38 +643,19 @@ function App() {
     }
   }
 
-  const refreshAnnotationStats = useCallback(async () => {
-    const artifactsDir = `${outDir}/artifacts`
-    const res = await readAnnotationStats(artifactsDir)
-    if (res?.ok) {
-      setAnnotationStats(res)
-      setAnnotationRunState(annotationRunStateFromStats(res))
-    }
-  }, [outDir])
-
   const loadAuditWorkspace = useCallback(async (dirOverride?: string) => {
-    if (!window.scraper) return
     const targetDir = dirOverride || outDir
-    if (window.scraper.readResults) {
-      const results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
-      if (results?.ok && Array.isArray(results.data)) {
-        const cleaned = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
-        setResultsData(cleaned)
-      } else if (!results?.ok && results?.error === 'not_found') {
-        setResultsData([])
-      }
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: targetDir,
+      includeResults: true,
+      includeAudit: true,
+    })
+    if (snapshot.missingOutputDir) {
+      await handleMissingOutputDir(targetDir)
+      return
     }
-    if (window.scraper.readAuditState) {
-      const state = await window.scraper.readAuditState(targetDir)
-      if (state?.ok && state.data) {
-        setAuditVerifiedSites(Array.isArray(state.data.verifiedSites) ? state.data.verifiedSites : [])
-        setAuditUrlOverrides(state.data.urlOverrides || {})
-      } else {
-        setAuditVerifiedSites([])
-        setAuditUrlOverrides({})
-      }
-    }
-  }, [outDir])
+    applyWorkspaceSnapshot(snapshot, { preserveRunning: true, mergeHasRun: true, mergeProgress: running })
+  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, running])
 
   const persistAuditState = useCallback(async (
     nextVerifiedSites: string[],
@@ -974,79 +981,49 @@ function App() {
 
   useEffect(() => {
     if (!window.scraper || !hasRun) return
-    const scraper = window.scraper
     const interval = setInterval(async () => {
       try {
-        const size = await scraper.getFolderSize(outDir)
-        if (!size?.ok && size?.error === 'not_found') {
-          await handleMissingOutputDir(outDir)
-          return
-        }
-        const summary = await scraper.readSummary(`${outDir}/results.summary.json`)
-        if (summary?.ok) setSummaryData(summary.data)
-        else setSummaryData(null)
-        const state = await scraper.readState(`${outDir}/run_state.json`)
-        if (state?.ok) {
-          setStateData(state.data)
-          if (state.data?.total_sites && state.data?.processed_sites && running) {
-            const computed = (state.data.processed_sites / Math.max(1, state.data.total_sites)) * 100
-            setProgress(Math.min(100, computed))
-          }
-          if (!runStartedAt && state.data?.processed_sites) {
-            setRunStartedAt(Date.now())
-          }
-        }
         const needsExplorerData =
           activeNav === 'results'
           || activeNav === 'explorer'
           || activeNav === 'annotations'
           || activeNav === 'consistency'
-        if (needsExplorerData) {
-          const explorer = await scraper.readExplorer(`${outDir}/explorer.jsonl`, 500)
-          if (explorer?.ok && Array.isArray(explorer.data)) {
-            const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
-            setExplorerData(cleaned)
-          } else {
-            setExplorerData([])
-          }
+        const snapshot = await readWorkspaceSnapshot({
+          outDir,
+          includeFolderSize: true,
+          includeExplorer: needsExplorerData,
+          includeResults: activeNav === 'audit',
+          includeAudit: activeNav === 'audit',
+          includeAnnotation: annotateRunning || activeNav === 'annotations',
+        })
+        if (snapshot.missingOutputDir) {
+          await handleMissingOutputDir(outDir)
+          return
         }
-        if (activeNav === 'audit') {
-          const results = await scraper.readResults(`${outDir}/results.jsonl`)
-          if (results?.ok && Array.isArray(results.data)) {
-            const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
-            setResultsData(cleanedResults)
-          } else {
-            setResultsData([])
-          }
-          const auditState = await scraper.readAuditState(outDir)
-          if (auditState?.ok && auditState.data) {
-            setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
-            setAuditUrlOverrides(auditState.data.urlOverrides || {})
-          } else {
-            setAuditVerifiedSites([])
-            setAuditUrlOverrides({})
-          }
-        }
-        // Refresh annotation stats during annotate run or when viewing annotations
-        if (annotateRunning || activeNav === 'annotations') {
-          await refreshAnnotationStats()
+        applyWorkspaceSnapshot(snapshot, {
+          preserveRunning: true,
+          mergeHasRun: true,
+          mergeProgress: running,
+        })
+        if (!runStartedAt && snapshot.processedSites) {
+          setRunStartedAt(Date.now())
         }
       } catch (error) {
         setErrorMessage(String(error))
       }
     }, 2000)
     return () => clearInterval(interval)
-  }, [hasRun, outDir, annotateRunning, activeNav, refreshAnnotationStats, handleMissingOutputDir])
+  }, [activeNav, annotateRunning, applyWorkspaceSnapshot, handleMissingOutputDir, hasRun, outDir, runStartedAt, running])
 
   useEffect(() => {
     if (!window.scraper || activeNav !== 'database') return
 
     let cancelled = false
     const refreshSize = async () => {
-      const size = await window.scraper?.getFolderSize(outDir)
-      if (!cancelled && size?.ok && typeof size.bytes === 'number') {
+      const size = await readFolderSize(outDir)
+      if (!cancelled && size.ok && typeof size.bytes === 'number') {
         setFolderBytes(size.bytes)
-      } else if (!cancelled && size?.error === 'not_found') {
+      } else if (!cancelled && size.error === 'not_found') {
         setFolderBytes(null)
         await handleMissingOutputDir(outDir)
       }
@@ -1067,16 +1044,12 @@ function App() {
   }, [autoAnnotatePending, running, hasRun, annotateRunning, startAnnotate])
 
   const refreshRuns = async (baseDir: string = runsRoot) => {
-    if (!window.scraper) return
-    const res = await window.scraper.listRuns(baseDir)
-    if (res?.ok && Array.isArray(res.runs)) {
-      setRunRecords(res.runs)
-    } else {
-      setRunRecords([])
-    }
-    const size = await window.scraper.getFolderSize(outDir)
-    if (!size?.ok && size?.error === 'not_found') {
+    setRunRecords(await listRunRecords(baseDir))
+    const size = await readFolderSize(outDir)
+    if (!size.ok && size.error === 'not_found') {
       await handleMissingOutputDir(outDir)
+    } else if (size.ok) {
+      setFolderBytes(typeof size.bytes === 'number' ? size.bytes : null)
     }
   }
 
@@ -1114,93 +1087,30 @@ function App() {
   }
 
   const loadOutDir = async (dirOverride?: string) => {
-    if (!window.scraper) return
     const targetDir = dirOverride || outDir
-    let results: any = null
-    const size = await window.scraper.getFolderSize(targetDir)
-    if (!size?.ok && size?.error === 'not_found') {
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: targetDir,
+      includeFolderSize: true,
+      includeExplorer: true,
+      includeResults: true,
+      includeAudit: true,
+      includeManifest: true,
+      includeAnnotation: true,
+    })
+    if (snapshot.missingOutputDir) {
       await handleMissingOutputDir(targetDir)
       return
     }
     if (dirOverride) {
       setOutDir(dirOverride)
     }
-    const summary = await window.scraper.readSummary(`${targetDir}/results.summary.json`)
-    if (summary?.ok) setSummaryData(summary.data)
-    else setSummaryData(null)
-    const state = await window.scraper.readState(`${targetDir}/run_state.json`)
-    if (state?.ok) setStateData(state.data)
-    else setStateData(null)
     // Sync topN from the loaded dataset so ResultsView and LauncherView show the correct target.
     const loadedTargetTotal =
-      summary?.data?.total_sites ?? state?.data?.total_sites
+      snapshot.summary?.total_sites ?? snapshot.state?.total_sites
     if (typeof loadedTargetTotal === 'number' && loadedTargetTotal > 0) {
       setTopN(String(loadedTargetTotal))
     }
-    const explorer = await window.scraper.readExplorer(`${targetDir}/explorer.jsonl`, 500)
-    if (explorer?.ok && Array.isArray(explorer.data)) {
-      const cleaned = explorer.data.filter((rec: any) => rec && rec.site)
-      setExplorerData(cleaned)
-    } else {
-      setExplorerData([])
-    }
-    if (window.scraper.readResults) {
-      results = await window.scraper.readResults(`${targetDir}/results.jsonl`)
-      if (results?.ok && Array.isArray(results.data)) {
-        const cleanedResults = results.data.filter((rec: any) => rec && (rec.site_etld1 || rec.input || rec.site))
-        setResultsData(cleanedResults)
-      } else {
-        setResultsData([])
-      }
-    }
-    if (window.scraper.readAuditState) {
-      const auditState = await window.scraper.readAuditState(targetDir)
-      if (auditState?.ok && auditState.data) {
-        setAuditVerifiedSites(Array.isArray(auditState.data.verifiedSites) ? auditState.data.verifiedSites : [])
-        setAuditUrlOverrides(auditState.data.urlOverrides || {})
-      } else {
-        setAuditVerifiedSites([])
-        setAuditUrlOverrides({})
-      }
-    }
-    if (window.scraper.readRunManifest) {
-      const manifest = await window.scraper.readRunManifest(targetDir)
-      setRunManifest(manifest?.ok ? manifest.data : null)
-    }
-    if (size?.ok && typeof size.bytes === 'number') {
-      setFolderBytes(size.bytes)
-    } else {
-      setFolderBytes(null)
-    }
-    const hasAnyResults = Boolean(
-      summary?.ok
-      || state?.ok
-      || (explorer?.ok && Array.isArray(explorer.data) && explorer.data.length)
-      || (results?.ok && Array.isArray(results.data) && results.data.length)
-    )
-    const loadedProcessed = Number(summary?.data?.processed_sites ?? state?.data?.processed_sites ?? 0)
-    const loadedTotal = Number(summary?.data?.total_sites ?? state?.data?.total_sites ?? 0)
-    const loadedProgress = loadedTotal > 0
-      ? Math.min(100, (loadedProcessed / Math.max(1, loadedTotal)) * 100)
-      : hasAnyResults ? 100 : 0
-    if (hasAnyResults) {
-      setHasRun(true)
-      setRunning(false)
-      setProgress(loadedProgress)
-    } else {
-      setHasRun(false)
-      setRunning(false)
-      setProgress(0)
-    }
-    // Load annotation stats for the new outDir
-    const annRes = await readAnnotationStats(`${targetDir}/artifacts`)
-    if (annRes?.ok) {
-      setAnnotationStats(annRes)
-      setAnnotationRunState(annotationRunStateFromStats(annRes))
-    } else {
-      setAnnotationStats(null)
-      setAnnotationRunState(emptyAnnotationRunState())
-    }
+    applyWorkspaceSnapshot(snapshot)
   }
 
   const deleteOutDir = async () => {

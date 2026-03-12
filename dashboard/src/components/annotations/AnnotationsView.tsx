@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AnnotationStats } from '../../contracts/api'
+import { readPreferredStatementText } from '../../lib/artifactClient'
 
 type AnnotationsViewProps = {
   annotationStats?: AnnotationStats | null
@@ -173,25 +174,14 @@ export function AnnotationsView({ annotationStats, outDir }: AnnotationsViewProp
   const totalSites: number = annotationStats?.total_sites ?? 0
 
   const loadSiteStatements = async (site: string) => {
-    if (!window.scraper || siteStatementsBySite[site] || loadingSite === site) return
+    if (siteStatementsBySite[site] || loadingSite === site) return
     setLoadingSite(site)
     const root = outDir || 'outputs'
-    const [annotatedRes, baseRes] = await Promise.all([
-      window.scraper.readArtifactText({
-        outDir: root,
-        relativePath: `artifacts/${site}/policy_statements_annotated.jsonl`,
-      }),
-      window.scraper.readArtifactText({
-        outDir: root,
-        relativePath: `artifacts/${site}/policy_statements.jsonl`,
-      }),
-    ])
-    const annotatedStatements =
-      annotatedRes?.ok && annotatedRes.data ? parseStatementLines(annotatedRes.data) : []
-    const statements =
-      annotatedStatements.length > 0
-        ? annotatedStatements
-        : (baseRes?.ok && baseRes.data ? parseStatementLines(baseRes.data) : [])
+    const rawStatements = await readPreferredStatementText({
+      outDir: root,
+      basePath: `artifacts/${site}`,
+    })
+    const statements = rawStatements ? parseStatementLines(rawStatements) : []
     setSiteStatementsBySite((prev) => ({ ...prev, [site]: statements }))
     setLoadingSite((current) => (current === site ? null : current))
   }

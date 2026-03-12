@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
+import { readArtifactText } from '../../lib/artifactClient'
 
 type FirstPartyPolicy = {
   url?: string | null
@@ -180,13 +181,9 @@ export function AuditWorkspaceView({
     }
 
     const loadPolicyText = async () => {
-      if (!window.scraper?.readArtifactText) {
-        setPolicyError('readArtifactText API is unavailable')
-        return
-      }
       setPolicyLoading(true)
       setPolicyError(null)
-      const res = await window.scraper.readArtifactText({
+      const res = await readArtifactText({
         outDir,
         relativePath: `artifacts/${selectedSiteKey}/policy.txt`,
       })

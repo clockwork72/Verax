@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnnotationSiteRecord, AnnotationStats, AnnotationThirdPartyRecord } from '../../contracts/api'
 import { ExplorerSite } from '../../data/explorer'
+import { readArtifactTexts } from '../../lib/artifactClient'
 
 type PolicyViewerViewProps = {
   sites?: ExplorerSite[]
@@ -439,7 +440,6 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
   }, [selectedSite, selectedTp, policyType, outDir])
 
   async function doLoad() {
-    if (!window.scraper?.readArtifactText) return
     setLoading(true)
     setLoadError(null)
     setPolicyText(null)
@@ -454,21 +454,19 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
     const root = outDir || 'outputs'
 
     try {
-      const [pRes, sRes, bRes, dRes] = await Promise.all([
-        window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/policy.txt` }),
-        window.scraper.readArtifactText({
-          outDir: root,
-          relativePath: `${base}/policy_statements_annotated.jsonl`,
-        }),
-        window.scraper.readArtifactText({
-          outDir: root,
-          relativePath: `${base}/policy_statements.jsonl`,
-        }),
-        window.scraper.readArtifactText({ outDir: root, relativePath: `${base}/document.json` }),
+      const responses = await readArtifactTexts(root, [
+        `${base}/policy.txt`,
+        `${base}/policy_statements_annotated.jsonl`,
+        `${base}/policy_statements.jsonl`,
+        `${base}/document.json`,
       ])
+      const pRes = responses[`${base}/policy.txt`]
+      const sRes = responses[`${base}/policy_statements_annotated.jsonl`]
+      const bRes = responses[`${base}/policy_statements.jsonl`]
+      const dRes = responses[`${base}/document.json`]
 
       if (pRes?.ok && pRes.data) {
-        setPolicyText(pRes.data as string)
+        setPolicyText(pRes.data)
       } else {
         setLoadError(`Policy text not found at ${root}/${base}/policy.txt`)
       }
@@ -476,7 +474,7 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
       let parsedDoc: DocumentJson | null = null
       if (dRes?.ok && dRes.data) {
         try {
-          parsedDoc = JSON.parse(dRes.data as string)
+          parsedDoc = JSON.parse(dRes.data)
           setDocJson(parsedDoc)
         } catch {
           /* ignore */
@@ -484,10 +482,10 @@ export function PolicyViewerView({ sites, annotationStats, outDir }: PolicyViewe
       }
 
       const annotatedStatements = sRes?.ok && sRes.data
-        ? parseStatementLines(sRes.data as string, parsedDoc)
+        ? parseStatementLines(sRes.data, parsedDoc)
         : []
       const baseStatements = bRes?.ok && bRes.data
-        ? parseStatementLines(bRes.data as string, parsedDoc)
+        ? parseStatementLines(bRes.data, parsedDoc)
         : []
       setStatements(annotatedStatements.length > 0 ? annotatedStatements : baseStatements)
     } catch (e) {

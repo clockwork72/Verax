@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
+import { readPreferredStatementText } from '../../lib/artifactClient'
 import { normalizeCategories } from '../../utils/trackerCategories'
 
 type ViewerEntry = {
@@ -92,22 +93,14 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
   }, [currentEntry?.url])
 
   useEffect(() => {
-    if (detailTab !== 'statements' || !selectedSite || !window.scraper?.readArtifactText) return
+    if (detailTab !== 'statements' || !selectedSite) return
     setStatementsLoading(true)
     setStatements([])
-    Promise.all([
-      window.scraper.readArtifactText({
-        outDir: outDir || 'outputs',
-        relativePath: `artifacts/${selectedSite.site}/policy_statements_annotated.jsonl`,
-      }),
-      window.scraper.readArtifactText({
-        outDir: outDir || 'outputs',
-        relativePath: `artifacts/${selectedSite.site}/policy_statements.jsonl`,
-      }),
-    ]).then(([annotatedRes, baseRes]: any[]) => {
-      const annotated = annotatedRes?.ok && annotatedRes.data ? parseStatementLines(annotatedRes.data) : []
-      const fallback = baseRes?.ok && baseRes.data ? parseStatementLines(baseRes.data) : []
-      setStatements(annotated.length > 0 ? annotated : fallback)
+    readPreferredStatementText({
+      outDir: outDir || 'outputs',
+      basePath: `artifacts/${selectedSite.site}`,
+    }).then((rawStatements) => {
+      setStatements(rawStatements ? parseStatementLines(rawStatements) : [])
       setStatementsLoading(false)
     })
   }, [detailTab, selectedSite, outDir])

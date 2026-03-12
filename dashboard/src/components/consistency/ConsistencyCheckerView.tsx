@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
+import { readPolicyTextWithMethod } from '../../lib/artifactClient'
 import type { ReasoningSelection } from '../reasoning/ReasoningView'
 
 type ConsistencyCheckerViewProps = {
@@ -109,26 +110,17 @@ export function ConsistencyCheckerView({
       setThirdPartyPolicyMethod(null)
 
       const siteFolder = safeDirname(site.site)
-      const sitePolicyPath = `artifacts/${siteFolder}/policy.txt`
-      const sitePolicy = await window.scraper?.readArtifactText({ outDir, relativePath: sitePolicyPath })
-      if (!sitePolicy?.ok || !sitePolicy.data) {
+      const sitePolicy = await readPolicyTextWithMethod({
+        outDir,
+        basePath: `artifacts/${siteFolder}`,
+      })
+      if (!sitePolicy.policyText) {
         setSitePolicyText('')
         setError('First‑party policy text not found for this site.')
         setSitePolicyMethod(null)
       } else {
-        setSitePolicyText(sitePolicy.data)
-        const methodPath = `artifacts/${siteFolder}/policy.extraction.json`
-        const methodRes = await window.scraper?.readArtifactText({ outDir, relativePath: methodPath })
-        if (methodRes?.ok && methodRes.data) {
-          try {
-            const parsed = JSON.parse(methodRes.data)
-            setSitePolicyMethod(typeof parsed?.method === 'string' ? parsed.method : null)
-          } catch {
-            setSitePolicyMethod(null)
-          }
-        } else {
-          setSitePolicyMethod(null)
-        }
+        setSitePolicyText(sitePolicy.policyText)
+        setSitePolicyMethod(sitePolicy.method)
       }
 
       const thirdParties: ExplorerThirdParty[] = site.thirdParties ?? []
@@ -149,28 +141,18 @@ export function ConsistencyCheckerView({
       setThirdPartyPolicyMethod(null)
       return
     }
-    if (!selectedSite || !window.scraper) return
+    if (!selectedSite) return
 
     const loadThirdPartyPolicy = async () => {
       setLoading(true)
       const siteFolder = safeDirname(selectedSite.site)
       const tpFolder = safeDirname(selectedThirdParty)
-      const tpPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.txt`
-      const res = await window.scraper?.readArtifactText({ outDir, relativePath: tpPath })
-      setThirdPartyPolicyText(res?.ok && res.data ? res.data : '')
-
-      const methodPath = `artifacts/${siteFolder}/third_party/${tpFolder}/policy.extraction.json`
-      const methodRes = await window.scraper?.readArtifactText({ outDir, relativePath: methodPath })
-      if (methodRes?.ok && methodRes.data) {
-        try {
-          const parsed = JSON.parse(methodRes.data)
-          setThirdPartyPolicyMethod(typeof parsed?.method === 'string' ? parsed.method : null)
-        } catch {
-          setThirdPartyPolicyMethod(null)
-        }
-      } else {
-        setThirdPartyPolicyMethod(null)
-      }
+      const policy = await readPolicyTextWithMethod({
+        outDir,
+        basePath: `artifacts/${siteFolder}/third_party/${tpFolder}`,
+      })
+      setThirdPartyPolicyText(policy.policyText)
+      setThirdPartyPolicyMethod(policy.method)
       setLoading(false)
     }
 
