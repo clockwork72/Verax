@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
 import { readPreferredStatementText } from '../../lib/artifactClient'
+import { openEmbeddedPolicyWindow } from '../../lib/scraperClient'
 import { normalizeCategories } from '../../utils/trackerCategories'
 
 type ViewerEntry = {
@@ -129,8 +130,8 @@ export function ExplorerView({ hasRun, progress, sites, showExtractionMethod = t
 
   const openPolicyWindow = async () => {
     if (!currentEntry?.url) return
-    const response = await window.scraper?.openPolicyWindow(currentEntry.url)
-    if (!response?.ok) {
+    const ok = await openEmbeddedPolicyWindow(currentEntry.url)
+    if (!ok) {
       setViewerError('Unable to open embedded page. Try again or check the URL.')
     }
   }

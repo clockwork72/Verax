@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import type { ActiveSiteInfo, ResultRecord } from '../../contracts/api'
 import { readArtifactText } from '../../lib/artifactClient'
+import { countOkArtifactSites } from '../../lib/scraperClient'
 
 type ActionResult = { ok: boolean; error?: string }
 
@@ -85,9 +86,7 @@ export function AuditWorkspaceView({
   const [showSuccessfulOnly, setShowSuccessfulOnly] = useState(false)
 
   const refreshOkCount = useCallback(async () => {
-    if (!window.scraper?.countOkArtifacts) return
-    const res = await window.scraper.countOkArtifacts(outDir)
-    if (res?.ok && res.sites) setOkSites(new Set(res.sites))
+    setOkSites(new Set(await countOkArtifactSites(outDir)))
   }, [outDir])
 
   useEffect(() => {

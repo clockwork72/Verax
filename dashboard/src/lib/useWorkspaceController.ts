@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 
-import { listRunRecords, readFolderSize, readWorkspaceSnapshot, type WorkspaceSnapshot } from './scraperClient'
+import { listRunRecords, readFolderSize, readWorkspaceSnapshot, writeAuditState, type WorkspaceSnapshot } from './scraperClient'
 import type { ApplyWorkspaceSnapshotOptions, WorkspaceDataUpdate } from './useWorkspaceData'
 
 type UseWorkspaceControllerArgs = {
@@ -93,9 +93,8 @@ export function useWorkspaceController({
     nextUrlOverrides: Record<string, string>,
     dirOverride?: string,
   ) => {
-    if (!window.scraper?.writeAuditState) return
     const targetDir = dirOverride || outDir
-    const res = await window.scraper.writeAuditState({
+    const res = await writeAuditState({
       outDir: targetDir,
       verifiedSites: nextVerifiedSites,
       urlOverrides: nextUrlOverrides,

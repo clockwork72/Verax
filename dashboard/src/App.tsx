@@ -21,10 +21,14 @@ import {
   normalizeScraperRuntimeEvent,
 } from './lib/scraperRuntime'
 import {
+  hasScraperBridge,
   listRunRecords,
   readAnnotationStats,
   readFolderSize,
   readWorkspaceSnapshot,
+  subscribeAnnotatorEvents,
+  subscribePipelineEvents,
+  subscribeScraperEvents,
 } from './lib/scraperClient'
 import { useBridgeStatus } from './lib/useBridgeStatus'
 import { useRunController } from './lib/useRunController'
@@ -447,110 +451,95 @@ function App() {
     setBridgeActionMessage,
   })
   useEffect(() => {
-    if (!window.scraper) return
-    const scraper = window.scraper
-    scraper.onEvent((rawEvent) => {
-      const event = normalizeScraperRuntimeEvent(rawEvent)
-      if (!event) return
-      if (event.type === 'run_started') {
-        updateWorkspaceData({ hasRun: true })
-        setRunning(true)
-        setAutoAnnotatePending(false)
-        updateWorkspaceData({ progress: launchStartingProgress })
-        setErrorMessage(null)
-        setRunStartedAt(Date.now())
-        setEtaText('')
-        setScraperActivity(emptyScraperSiteActivityState())
-      }
-      if (event.type === 'run_progress') {
-        const processed = Number(event.processed || 0)
-        const total = Number(event.total || 0)
-        if (total > 0) {
-          updateWorkspaceData({ progress: Math.min(100, (processed / total) * 100) })
+    const unsubscribeScraper = subscribeScraperEvents({
+      onEvent: (rawEvent) => {
+        const event = normalizeScraperRuntimeEvent(rawEvent)
+        if (!event) return
+        if (event.type === 'run_started') {
+          updateWorkspaceData({ hasRun: true })
+          setRunning(true)
+          setAutoAnnotatePending(false)
+          updateWorkspaceData({ progress: launchStartingProgress })
+          setErrorMessage(null)
+          setRunStartedAt(Date.now())
+          setEtaText('')
+          setScraperActivity(emptyScraperSiteActivityState())
         }
-      }
-      if (event.type === 'site_started' || event.type === 'site_stage' || event.type === 'site_finished') {
-        setScraperActivity((prev) => applyScraperRuntimeEvent(prev, event, SITE_STAGE_LABELS))
-        if (event.type === 'site_finished') {
-          setAuditBusySite((current) => (current === event.site ? null : current))
+        if (event.type === 'run_progress') {
+          const processed = Number(event.processed || 0)
+          const total = Number(event.total || 0)
+          if (total > 0) {
+            updateWorkspaceData({ progress: Math.min(100, (processed / total) * 100) })
+          }
         }
-      }
-      if (event.type === 'run_completed') {
-        setStopRunPending(false)
+        if (event.type === 'site_started' || event.type === 'site_stage' || event.type === 'site_finished') {
+          setScraperActivity((prev) => applyScraperRuntimeEvent(prev, event, SITE_STAGE_LABELS))
+          if (event.type === 'site_finished') {
+            setAuditBusySite((current) => (current === event.site ? null : current))
+          }
+        }
+        if (event.type === 'run_completed') {
+          setStopRunPending(false)
+          setRunning(false)
+          setAutoAnnotatePending(autoAnnotate)
+          updateWorkspaceData({ progress: 100 })
+          setEtaText('0s')
+          setAuditBusySite(null)
+          setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
+          void syncLoadedRunState(outDir)
+          refreshRuns()
+        }
+      },
+      onLog: (rawEvent) => {
+        const event = normalizeScraperMessageEvent(rawEvent)
+        if (event?.message) {
+          appendScraperLog(event.message)
+        }
+      },
+      onError: (rawEvent) => {
+        const event = normalizeScraperMessageEvent(rawEvent)
+        if (event?.message) {
+          setErrorMessage(event.message)
+          appendScraperLog(`ERROR: ${event.message}`)
+        }
         setRunning(false)
-        setAutoAnnotatePending(autoAnnotate)
-        updateWorkspaceData({ progress: 100 })
-        setEtaText('0s')
+        setAutoAnnotatePending(false)
+        setStopRunPending(false)
         setAuditBusySite(null)
-        setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
-        refreshRuns()
-      }
-    })
-    scraper.onLog((rawEvent) => {
-      const event = normalizeScraperMessageEvent(rawEvent)
-      if (event?.message) {
-        appendScraperLog(event.message)
-      }
-    })
-    scraper.onError((rawEvent) => {
-      const event = normalizeScraperMessageEvent(rawEvent)
-      if (event?.message) {
-        setErrorMessage(event.message)
-        appendScraperLog(`ERROR: ${event.message}`)
-      }
-      setRunning(false)
-      setAutoAnnotatePending(false)
-      setStopRunPending(false)
-      setAuditBusySite(null)
-      void syncLoadedRunState(outDir)
-    })
-    scraper.onExit((rawEvent) => {
-      const evt = normalizeScraperExitEvent(rawEvent)
-      const code = Number(evt.code ?? 0)
-      const signal = evt.signal ? String(evt.signal) : null
-      const requested = Boolean(evt.stop_requested) || stopRunPendingRef.current
-      if (code !== 0 && !requested) {
-        setErrorMessage(`Scraper exited with code ${code}${signal ? ` (${signal})` : ''}`)
-      } else if (requested) {
-        appendScraperLog(`Scraper stopped${signal ? ` (${signal})` : ''}`)
-        setErrorMessage(null)
-      }
-      setRunning(false)
-      setAutoAnnotatePending(false)
-      setStopRunPending(false)
-      setAuditBusySite(null)
-      void syncLoadedRunState(outDir)
+      },
+      onExit: (rawEvent) => {
+        const evt = normalizeScraperExitEvent(rawEvent)
+        const code = Number(evt.code ?? 0)
+        const signal = evt.signal ? String(evt.signal) : null
+        const requested = Boolean(evt.stop_requested) || stopRunPendingRef.current
+        if (code !== 0 && !requested) {
+          setErrorMessage(`Scraper exited with code ${code}${signal ? ` (${signal})` : ''}`)
+        } else if (requested) {
+          appendScraperLog(`Scraper stopped${signal ? ` (${signal})` : ''}`)
+          setErrorMessage(null)
+        }
+        setRunning(false)
+        setAutoAnnotatePending(false)
+        setStopRunPending(false)
+        setAuditBusySite(null)
+        void syncLoadedRunState(outDir)
+      },
     })
 
-    if (scraper.onAnnotatorLog) {
-      scraper.onAnnotatorLog((evt) => {
+    const unsubscribeAnnotator = subscribeAnnotatorEvents({
+      onLog: (evt) => {
         const raw = evt?.message ? String(evt.message).trimEnd() : String(evt)
         const lines = raw.split('\n').map((l: string) => l.trimEnd()).filter(Boolean)
         if (lines.length) {
           annotateLogsRef.current = [...annotateLogsRef.current, ...lines]
           setAnnotateLogs((prev) => [...prev.slice(-(200 - lines.length)), ...lines])
         }
-      })
-    }
-
-    if (scraper.onPipelineEvent) {
-      scraper.onPipelineEvent((evt) => {
-        updateWorkspaceData((prev) => ({
-          ...prev,
-          annotationRunState: applyAnnotationProgressEvent(prev.annotationRunState, evt),
-        }))
-      })
-    }
-
-    if (scraper.onAnnotatorStream) {
-      scraper.onAnnotatorStream((evt) => {
+      },
+      onStream: (evt) => {
         setLatestStreamEvent(evt)
-      })
-    }
-
-    if (scraper.onAnnotatorExit) {
-      scraper.onAnnotatorExit((evt) => {
+      },
+      onExit: (evt) => {
         setLatestStreamEvent(null)
         setAnnotateRunning(false)
         setAuditAnnotatingSite(null)
@@ -570,7 +559,6 @@ function App() {
           annotateLogsRef.current = next.slice(-200)
           return annotateLogsRef.current
         })
-        // refresh stats after annotator finishes
         void readAnnotationStats(`${outDir}/artifacts`).then((res) => {
           if (res?.ok) {
             updateWorkspaceData({
@@ -579,7 +567,20 @@ function App() {
             })
           }
         })
-      })
+      },
+    })
+
+    const unsubscribePipeline = subscribePipelineEvents((evt) => {
+      updateWorkspaceData((prev) => ({
+        ...prev,
+        annotationRunState: applyAnnotationProgressEvent(prev.annotationRunState, evt),
+      }))
+    })
+
+    return () => {
+      unsubscribeScraper?.()
+      unsubscribeAnnotator?.()
+      unsubscribePipeline?.()
     }
   }, [appendScraperLog, autoAnnotate, launchStartingProgress, outDir, refreshRuns, syncLoadedRunState, updateWorkspaceData])
 
@@ -587,7 +588,7 @@ function App() {
 
   useEffect(() => {
     if (!running) return
-    if (!window.scraper) {
+    if (!hasScraperBridge()) {
       const timer = setInterval(() => {
         updateWorkspaceData((prev) => ({ ...prev, progress: Math.min(100, prev.progress + 4 + Math.random() * 6) }))
       }, 520)
@@ -597,7 +598,7 @@ function App() {
 
   useEffect(() => {
     if (!running) return
-    if (window.scraper) return
+    if (hasScraperBridge()) return
     if (progress >= 100) {
       setRunning(false)
     }
@@ -620,7 +621,7 @@ function App() {
   }, [progress, running, runStartedAt, stateData])
 
   useEffect(() => {
-    if (!window.scraper || !hasRun) return
+    if (!hasScraperBridge() || !hasRun) return
     const interval = setInterval(async () => {
       try {
         const needsExplorerData =
@@ -656,7 +657,7 @@ function App() {
   }, [activeNav, annotateRunning, applyWorkspaceSnapshot, handleMissingOutputDir, hasRun, outDir, runStartedAt, running])
 
   useEffect(() => {
-    if (!window.scraper || activeNav !== 'database') return
+    if (!hasScraperBridge() || activeNav !== 'database') return
 
     let cancelled = false
     const refreshSize = async () => {

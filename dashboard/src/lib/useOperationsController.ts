@@ -1,6 +1,16 @@
 import { useCallback } from 'react'
 
 import type { BridgeScriptResult } from '../contracts/api'
+import {
+  clearWorkspaceResults,
+  deleteAllWorkspaceOutputs,
+  deleteWorkspaceOutput,
+  openLogWindow as showLogWindow,
+  requestStopRun,
+  runBridgeDiagnostics,
+  runBridgeRepair,
+  runRemoteRefresh,
+} from './scraperClient'
 
 type BridgeActionKind = 'diagnose' | 'repair' | 'refresh'
 
@@ -69,13 +79,13 @@ export function useOperationsController({
   setBridgeActionMessage,
 }: UseOperationsControllerArgs) {
   const clearResults = useCallback(async (includeArtifacts?: boolean) => {
-    if (!window.scraper) {
-      resetLoadedOutputState()
-      return
-    }
     setClearing(true)
     try {
-      const res = await window.scraper.clearResults({ includeArtifacts, outDir })
+      const res = await clearWorkspaceResults({ includeArtifacts, outDir })
+      if (res.error === 'clearResults API unavailable') {
+        resetLoadedOutputState()
+        return
+      }
       if (!res.ok) {
         setErrorMessage(res.error || 'Failed to clear results')
       } else {
@@ -87,7 +97,6 @@ export function useOperationsController({
   }, [outDir, resetLoadedOutputState, setClearing, setErrorMessage])
 
   const deleteOutDir = useCallback(async () => {
-    if (!window.scraper) return
     const targetDir = String(outDir || '').trim()
     const validationError = validateDeleteOutDirTarget(targetDir, runsRoot)
     if (validationError) {
@@ -99,7 +108,7 @@ export function useOperationsController({
     }
     setClearing(true)
     try {
-      const res = await window.scraper.deleteOutput(targetDir)
+      const res = await deleteWorkspaceOutput(targetDir)
       if (!res.ok) {
         setErrorMessage(res.error || 'Failed to delete output folder')
       } else {
@@ -113,13 +122,12 @@ export function useOperationsController({
   }, [defaultOutDir, outDir, refreshRuns, resetLoadedOutputState, runsRoot, setClearing, setErrorMessage])
 
   const deleteAllOutputs = useCallback(async () => {
-    if (!window.scraper?.deleteAllOutputs) return
     if (!window.confirm(`Delete every folder inside "${runsRoot}"?`)) {
       return
     }
     setClearing(true)
     try {
-      const res = await window.scraper.deleteAllOutputs()
+      const res = await deleteAllWorkspaceOutputs()
       if (!res.ok) {
         setErrorMessage(res.error || 'Failed to delete all outputs')
       } else {
@@ -133,7 +141,6 @@ export function useOperationsController({
   }, [defaultOutDir, refreshRuns, resetLoadedOutputState, runsRoot, setClearing, setErrorMessage])
 
   const stopRun = useCallback(async () => {
-    if (!window.scraper) return
     if (stopRunPending) return
     if (!scraperActive) {
       setErrorMessage('No active scraper run is currently attached to the dashboard.')
@@ -142,7 +149,7 @@ export function useOperationsController({
     if (!window.confirm('Stop the current scrape run and keep partial results?')) return
     setStopRunPending(true)
     appendScraperLog('Stop requested')
-    const res = await window.scraper.stopRun()
+    const res = await requestStopRun()
     if (!res.ok) {
       setStopRunPending(false)
       if (res.error === 'not_running') {
@@ -165,9 +172,8 @@ export function useOperationsController({
   ])
 
   const openLogWindow = useCallback(async () => {
-    if (!window.scraper?.openLogWindow) return
     const content = logs.length ? logs.join('\n') : 'No logs yet.'
-    await window.scraper.openLogWindow(content, 'Run logs')
+    await showLogWindow(content, 'Run logs')
   }, [logs])
 
   const runBridgeAction = useCallback(async ({
@@ -189,14 +195,13 @@ export function useOperationsController({
     invoke: () => Promise<BridgeScriptResult>
     showSuccessLogs?: boolean
   }) => {
-    if (!window.scraper?.openLogWindow) return
     setBridgeActionBusy(kind)
     setBridgeActionMessage(pendingMessage)
     try {
       const result = await invoke()
       const shouldShowLog = showSuccessLogs || !result.ok || !result.health_ok
       if (shouldShowLog) {
-        await window.scraper.openLogWindow(formatBridgeScriptOutput(title, result), title)
+        await showLogWindow(formatBridgeScriptOutput(title, result), title)
       }
       setBridgeActionMessage(
         result.ok
@@ -212,7 +217,6 @@ export function useOperationsController({
   }, [refreshBridgeStatus, setBridgeActionBusy, setBridgeActionMessage])
 
   const diagnoseBridge = useCallback(async () => {
-    if (!window.scraper?.diagnoseBridge) return
     await runBridgeAction({
       kind: 'diagnose',
       pendingMessage: 'Running bridge diagnostics...',
@@ -220,13 +224,12 @@ export function useOperationsController({
       successMessage: 'Bridge diagnostics completed.',
       degradedMessage: 'Bridge diagnostics completed.',
       failureMessage: 'Bridge diagnostics found a problem. Review the diagnostics window.',
-      invoke: () => window.scraper!.diagnoseBridge(),
+      invoke: runBridgeDiagnostics,
       showSuccessLogs: true,
     })
   }, [runBridgeAction])
 
   const repairBridge = useCallback(async () => {
-    if (!window.scraper?.repairBridge) return
     await runBridgeAction({
       kind: 'repair',
       pendingMessage: 'Repairing bridge tunnel...',
@@ -234,12 +237,11 @@ export function useOperationsController({
       successMessage: 'Bridge repaired and health probe is responding.',
       degradedMessage: 'Tunnel reopened, but the orchestrator is still not answering.',
       failureMessage: 'Bridge repair failed. Review the bridge repair log.',
-      invoke: () => window.scraper!.repairBridge(),
+      invoke: runBridgeRepair,
     })
   }, [runBridgeAction])
 
   const refreshRemote = useCallback(async () => {
-    if (!window.scraper?.refreshRemote) return
     await runBridgeAction({
       kind: 'refresh',
       pendingMessage: 'Refreshing remote orchestrator...',
@@ -247,7 +249,7 @@ export function useOperationsController({
       successMessage: 'Remote orchestrator refreshed. Re-checking bridge health...',
       degradedMessage: 'Remote orchestrator refreshed. Re-checking bridge health...',
       failureMessage: 'Remote refresh failed. Review the remote refresh log.',
-      invoke: () => window.scraper!.refreshRemote(),
+      invoke: runRemoteRefresh,
     })
   }, [runBridgeAction])
 

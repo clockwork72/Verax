@@ -1,15 +1,27 @@
 import type {
   AnnotationRunState,
   AnnotationStats,
+  BridgeScriptResult,
+  ClearResultsResponse,
+  CruxCacheStatsResponse,
+  DeleteOutputResponse,
   HpcBridgeStatus,
+  JsonPathResponse,
   PipelineEvent,
   ResultRecord,
   RunManifest,
   RunRecord,
   RunState,
   RunSummary,
+  SiteActionResponse,
+  StartRunResponse,
+  ScraperExitEvent,
+  ScraperMessageEvent,
+  ScraperRuntimeEvent,
+  WriteAuditStateResponse,
 } from '../contracts/api'
 import type { ExplorerSite, ExplorerThirdParty } from '../data/explorer'
+import type { AnnotatorStreamEvent } from '../vite-env'
 import { annotationRunStateFromStats, emptyAnnotationRunState } from './annotationRunState'
 import { normalizePipelineEvent } from './pipelineEvents'
 
@@ -49,6 +61,21 @@ export type WorkspaceSnapshot = {
 const EMPTY_AUDIT_STATE: AuditWorkspaceState = {
   verifiedSites: [],
   urlOverrides: {},
+}
+
+export type ClearResultsOptions = Parameters<NonNullable<Window['scraper']>['clearResults']>[0]
+export type WriteAuditStateOptions = Parameters<NonNullable<Window['scraper']>['writeAuditState']>[0]
+export type StartRunOptions = Parameters<NonNullable<Window['scraper']>['startRun']>[0]
+export type RerunSiteOptions = Parameters<NonNullable<Window['scraper']>['rerunSite']>[0]
+export type AnnotateSiteOptions = Parameters<NonNullable<Window['scraper']>['annotateSite']>[0]
+export type StartAnnotateOptions = Parameters<NonNullable<Window['scraper']>['startAnnotate']>[0]
+
+function getScraperBridge() {
+  return window.scraper ?? null
+}
+
+export function hasScraperBridge() {
+  return getScraperBridge() !== null
 }
 
 function sanitizeResults(records: unknown): ResultRecord[] {
@@ -265,37 +292,182 @@ function computeSnapshotProgress(summary: RunSummary | null, state: RunState | n
 }
 
 export async function readBridgeStatus(): Promise<{ ok: boolean; data?: HpcBridgeStatus; error?: string }> {
-  if (!window.scraper?.checkTunnel) {
+  const scraper = getScraperBridge()
+  if (!scraper?.checkTunnel) {
     return { ok: false, error: 'checkTunnel unavailable' }
   }
-  const result = await window.scraper.checkTunnel()
+  const result = await scraper.checkTunnel()
   return result?.ok
     ? { ok: true, data: result.data }
     : { ok: false, error: result?.error || 'bridge_check_failed', data: result?.data }
 }
 
 export async function readAnnotationStats(artifactsDir?: string): Promise<AnnotationStats | null> {
-  if (!window.scraper?.annotationStats) return null
-  const result = await window.scraper.annotationStats(artifactsDir)
+  const scraper = getScraperBridge()
+  if (!scraper?.annotationStats) return null
+  const result = await scraper.annotationStats(artifactsDir)
   return result?.ok ? result as AnnotationStats : null
 }
 
 export async function listRunRecords(baseOutDir?: string): Promise<RunRecord[]> {
-  if (!window.scraper?.listRuns) return []
-  const result = await window.scraper.listRuns(baseOutDir)
+  const scraper = getScraperBridge()
+  if (!scraper?.listRuns) return []
+  const result = await scraper.listRuns(baseOutDir)
   return result?.ok && Array.isArray(result.runs)
     ? result.runs.map(normalizeRunRecord).filter((run): run is RunRecord => Boolean(run))
     : []
 }
 
 export async function readFolderSize(outDir?: string): Promise<{ ok: boolean; bytes?: number; error?: string }> {
-  if (!window.scraper?.getFolderSize) {
+  const scraper = getScraperBridge()
+  if (!scraper?.getFolderSize) {
     return { ok: false, error: 'getFolderSize unavailable' }
   }
-  const result = await window.scraper.getFolderSize(outDir)
+  const result = await scraper.getFolderSize(outDir)
   return result?.ok
     ? { ok: true, bytes: result.bytes }
     : { ok: false, error: result?.error || 'folder_size_failed' }
+}
+
+export async function countOkArtifactSites(outDir?: string): Promise<string[]> {
+  const scraper = getScraperBridge()
+  if (!scraper?.countOkArtifacts) return []
+  const result = await scraper.countOkArtifacts(outDir)
+  return result?.ok && Array.isArray(result.sites) ? result.sites : []
+}
+
+export async function readCruxCacheStats(outDir?: string): Promise<CruxCacheStatsResponse | null> {
+  const scraper = getScraperBridge()
+  if (!scraper?.cruxCacheStats) return null
+  const result = await scraper.cruxCacheStats(outDir)
+  return result?.ok ? result : null
+}
+
+export async function openEmbeddedPolicyWindow(url: string): Promise<boolean> {
+  const scraper = getScraperBridge()
+  if (!scraper?.openPolicyWindow) return false
+  const result = await scraper.openPolicyWindow(url)
+  return Boolean(result?.ok)
+}
+
+export async function writeAuditState(payload?: WriteAuditStateOptions): Promise<WriteAuditStateResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.writeAuditState) {
+    return { ok: false, error: 'writeAuditState API unavailable' }
+  }
+  return scraper.writeAuditState(payload)
+}
+
+export async function clearWorkspaceResults(options?: ClearResultsOptions): Promise<ClearResultsResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.clearResults) {
+    return { ok: false, removed: [], errors: [], error: 'clearResults API unavailable' }
+  }
+  return scraper.clearResults(options)
+}
+
+export async function deleteWorkspaceOutput(outDir?: string): Promise<DeleteOutputResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.deleteOutput) {
+    return { ok: false, error: 'deleteOutput API unavailable' }
+  }
+  return scraper.deleteOutput(outDir)
+}
+
+export async function deleteAllWorkspaceOutputs(): Promise<DeleteOutputResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.deleteAllOutputs) {
+    return { ok: false, error: 'deleteAllOutputs API unavailable' }
+  }
+  return scraper.deleteAllOutputs()
+}
+
+export async function requestStopRun(): Promise<SiteActionResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.stopRun) {
+    return { ok: false, error: 'stopRun API unavailable' }
+  }
+  return scraper.stopRun()
+}
+
+export async function openLogWindow(content: string, title?: string): Promise<{ ok: boolean; error?: string }> {
+  const scraper = getScraperBridge()
+  if (!scraper?.openLogWindow) {
+    return { ok: false, error: 'openLogWindow API unavailable' }
+  }
+  return scraper.openLogWindow(content, title)
+}
+
+export async function runBridgeDiagnostics(): Promise<BridgeScriptResult> {
+  const scraper = getScraperBridge()
+  if (!scraper?.diagnoseBridge) {
+    return { ok: false, error: 'diagnoseBridge API unavailable' }
+  }
+  return scraper.diagnoseBridge()
+}
+
+export async function runBridgeRepair(): Promise<BridgeScriptResult> {
+  const scraper = getScraperBridge()
+  if (!scraper?.repairBridge) {
+    return { ok: false, error: 'repairBridge API unavailable' }
+  }
+  return scraper.repairBridge()
+}
+
+export async function runRemoteRefresh(): Promise<BridgeScriptResult> {
+  const scraper = getScraperBridge()
+  if (!scraper?.refreshRemote) {
+    return { ok: false, error: 'refreshRemote API unavailable' }
+  }
+  return scraper.refreshRemote()
+}
+
+export async function requestRerunSite(options: RerunSiteOptions): Promise<SiteActionResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.rerunSite) {
+    return { ok: false, error: 'rerunSite API unavailable' }
+  }
+  return scraper.rerunSite(options)
+}
+
+export async function requestAnnotateSite(options: AnnotateSiteOptions): Promise<SiteActionResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.annotateSite) {
+    return { ok: false, error: 'annotateSite API unavailable' }
+  }
+  return scraper.annotateSite(options)
+}
+
+export async function requestStartAnnotate(options: StartAnnotateOptions): Promise<SiteActionResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.startAnnotate) {
+    return { ok: false, error: 'startAnnotate API unavailable' }
+  }
+  return scraper.startAnnotate(options)
+}
+
+export async function requestStopAnnotate(): Promise<SiteActionResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.stopAnnotate) {
+    return { ok: false, error: 'stopAnnotate API unavailable' }
+  }
+  return scraper.stopAnnotate()
+}
+
+export async function requestStartRun(options: StartRunOptions): Promise<StartRunResponse> {
+  const scraper = getScraperBridge()
+  if (!scraper?.startRun) {
+    return { ok: false, error: 'startRun API unavailable' }
+  }
+  return scraper.startRun(options)
+}
+
+export async function readRunManifest(outDir?: string): Promise<JsonPathResponse<RunManifest>> {
+  const scraper = getScraperBridge()
+  if (!scraper?.readRunManifest) {
+    return { ok: false, error: 'readRunManifest API unavailable' }
+  }
+  return scraper.readRunManifest(outDir)
 }
 
 export async function readWorkspaceSnapshot({
@@ -308,7 +480,8 @@ export async function readWorkspaceSnapshot({
   includeAnnotation = false,
   includeFolderSize = false,
 }: ReadWorkspaceSnapshotOptions): Promise<WorkspaceSnapshot> {
-  if (!window.scraper) {
+  const scraper = getScraperBridge()
+  if (!scraper) {
     return {
       summary: null,
       state: null,
@@ -322,7 +495,7 @@ export async function readWorkspaceSnapshot({
 
   let folderBytes: number | null | undefined
   if (includeFolderSize) {
-    const size = await window.scraper.getFolderSize(outDir)
+    const size = await scraper.getFolderSize(outDir)
     if (!size?.ok && size?.error === 'not_found') {
       return {
         summary: null,
@@ -338,8 +511,8 @@ export async function readWorkspaceSnapshot({
     folderBytes = size?.ok && typeof size.bytes === 'number' ? size.bytes : null
   }
 
-  const summaryResult = await window.scraper.readSummary(`${outDir}/results.summary.json`)
-  const stateResult = await window.scraper.readState(`${outDir}/run_state.json`)
+  const summaryResult = await scraper.readSummary(`${outDir}/results.summary.json`)
+  const stateResult = await scraper.readState(`${outDir}/run_state.json`)
   const summary = summaryResult?.ok ? normalizeRunSummary(summaryResult.data) : null
   const state = stateResult?.ok ? normalizeRunState(stateResult.data) : null
 
@@ -354,21 +527,21 @@ export async function readWorkspaceSnapshot({
   }
 
   if (includeExplorer) {
-    const explorerResult = await window.scraper.readExplorer(`${outDir}/explorer.jsonl`, explorerLimit)
+    const explorerResult = await scraper.readExplorer(`${outDir}/explorer.jsonl`, explorerLimit)
     const explorer = explorerResult?.ok ? sanitizeExplorer(explorerResult.data) : []
     snapshot.explorer = explorer
     snapshot.hasAnyResults = snapshot.hasAnyResults || explorer.length > 0
   }
 
-  if (includeResults && window.scraper.readResults) {
-    const resultsResult = await window.scraper.readResults(`${outDir}/results.jsonl`)
+  if (includeResults && scraper.readResults) {
+    const resultsResult = await scraper.readResults(`${outDir}/results.jsonl`)
     const results = resultsResult?.ok ? sanitizeResults(resultsResult.data) : []
     snapshot.results = results
     snapshot.hasAnyResults = snapshot.hasAnyResults || results.length > 0
   }
 
-  if (includeAudit && window.scraper.readAuditState) {
-    const auditResult = await window.scraper.readAuditState(outDir)
+  if (includeAudit && scraper.readAuditState) {
+    const auditResult = await scraper.readAuditState(outDir)
     snapshot.auditState = auditResult?.ok && auditResult.data
       ? {
           verifiedSites: Array.isArray(auditResult.data.verifiedSites) ? auditResult.data.verifiedSites : [],
@@ -377,8 +550,8 @@ export async function readWorkspaceSnapshot({
       : EMPTY_AUDIT_STATE
   }
 
-  if (includeManifest && window.scraper.readRunManifest) {
-    const manifestResult = await window.scraper.readRunManifest(outDir)
+  if (includeManifest && scraper.readRunManifest) {
+    const manifestResult = await scraper.readRunManifest(outDir)
     snapshot.runManifest = manifestResult?.ok ? normalizeRunManifest(manifestResult.data) : null
   }
 
@@ -402,11 +575,40 @@ export async function readWorkspaceSnapshot({
 }
 
 export function subscribePipelineEvents(callback: (event: PipelineEvent) => void): (() => void) | null {
-  if (!window.scraper?.onPipelineEvent) return null
+  const scraper = getScraperBridge()
+  if (!scraper?.onPipelineEvent) return null
   const handler = (raw: unknown) => {
     const event = normalizePipelineEvent(raw)
     if (event) callback(event)
   }
-  window.scraper.onPipelineEvent(handler)
+  scraper.onPipelineEvent(handler)
+  return () => {}
+}
+
+export function subscribeScraperEvents(handlers: {
+  onEvent?: (event: ScraperRuntimeEvent) => void
+  onLog?: (event: ScraperMessageEvent) => void
+  onError?: (event: ScraperMessageEvent) => void
+  onExit?: (event: ScraperExitEvent) => void
+}): (() => void) | null {
+  const scraper = getScraperBridge()
+  if (!scraper) return null
+  if (handlers.onEvent && scraper.onEvent) scraper.onEvent(handlers.onEvent)
+  if (handlers.onLog && scraper.onLog) scraper.onLog(handlers.onLog)
+  if (handlers.onError && scraper.onError) scraper.onError(handlers.onError)
+  if (handlers.onExit && scraper.onExit) scraper.onExit(handlers.onExit)
+  return () => {}
+}
+
+export function subscribeAnnotatorEvents(handlers: {
+  onLog?: (event: { message?: string | null }) => void
+  onStream?: (event: AnnotatorStreamEvent) => void
+  onExit?: (event: { code?: number | null; signal?: string | null; stop_requested?: boolean }) => void
+}): (() => void) | null {
+  const scraper = getScraperBridge()
+  if (!scraper) return null
+  if (handlers.onLog && scraper.onAnnotatorLog) scraper.onAnnotatorLog(handlers.onLog)
+  if (handlers.onStream && scraper.onAnnotatorStream) scraper.onAnnotatorStream(handlers.onStream)
+  if (handlers.onExit && scraper.onAnnotatorExit) scraper.onAnnotatorExit(handlers.onExit)
   return () => {}
 }

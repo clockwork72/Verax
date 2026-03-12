@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { readCruxCacheStats } from '../../lib/scraperClient'
 import { Theme } from '../../types'
 
 type CruxCacheStats = { count: number; present: number; absent: number }
@@ -103,8 +104,7 @@ export function SettingsView({
   const [cruxCache, setCruxCache] = useState<CruxCacheStats | null>(null)
 
   const refreshCruxCache = useCallback(async () => {
-    if (!window.scraper?.cruxCacheStats) return
-    const res = await window.scraper.cruxCacheStats(outDir)
+    const res = await readCruxCacheStats(outDir)
     if (res?.ok && (res.count ?? 0) > 0) {
       setCruxCache({ count: res.count!, present: res.present!, absent: res.absent! })
     } else {

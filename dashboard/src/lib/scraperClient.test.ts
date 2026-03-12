@@ -1,6 +1,32 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { listRunRecords, readFolderSize, readWorkspaceSnapshot } from './scraperClient'
+import {
+  clearWorkspaceResults,
+  countOkArtifactSites,
+  deleteAllWorkspaceOutputs,
+  deleteWorkspaceOutput,
+  hasScraperBridge,
+  listRunRecords,
+  openEmbeddedPolicyWindow,
+  openLogWindow,
+  readCruxCacheStats,
+  readFolderSize,
+  readRunManifest,
+  readWorkspaceSnapshot,
+  requestAnnotateSite,
+  requestRerunSite,
+  requestStartAnnotate,
+  requestStartRun,
+  requestStopAnnotate,
+  requestStopRun,
+  runBridgeDiagnostics,
+  runBridgeRepair,
+  runRemoteRefresh,
+  subscribeAnnotatorEvents,
+  subscribePipelineEvents,
+  subscribeScraperEvents,
+  writeAuditState,
+} from './scraperClient'
 
 const baseSummary = {
   run_id: 'run-1',
@@ -48,12 +74,25 @@ const baseState = {
 
 function installScraperMock(overrides: Partial<NonNullable<Window['scraper']>>) {
   window.scraper = {
+    startRun: async () => ({ ok: true }),
+    stopRun: async () => ({ ok: true, status: 'stopping' }),
     readSummary: async () => ({ ok: true, data: null }),
     readState: async () => ({ ok: true, data: null }),
     readExplorer: async () => ({ ok: true, data: [] }),
     readResults: async () => ({ ok: true, data: [] }),
     readAuditState: async () => ({ ok: true, data: { verifiedSites: [], urlOverrides: {} } }),
     readRunManifest: async () => ({ ok: true, data: null }),
+    writeAuditState: async (payload) => ({
+      ok: true,
+      data: {
+        verifiedSites: payload?.verifiedSites || [],
+        urlOverrides: payload?.urlOverrides || {},
+      },
+    }),
+    readArtifactText: async () => ({ ok: true, data: '' }),
+    clearResults: async () => ({ ok: true, removed: [], errors: [] }),
+    deleteOutput: async () => ({ ok: true, path: 'outputs/unified', removed: [] }),
+    deleteAllOutputs: async () => ({ ok: true, path: 'outputs', removed: [] }),
     annotationStats: async () => ({
       ok: true,
       total_sites: 0,
@@ -67,6 +106,27 @@ function installScraperMock(overrides: Partial<NonNullable<Window['scraper']>>) 
     }),
     getFolderSize: async () => ({ ok: true, bytes: 0 }),
     listRuns: async () => ({ ok: true, runs: [] }),
+    openLogWindow: async () => ({ ok: true }),
+    countOkArtifacts: async () => ({ ok: true, count: 0, sites: [], path: 'outputs/unified/artifacts_ok' }),
+    readTpCache: async () => ({ ok: true, total: 0, fetched: 0, failed: 0, by_status: {} }),
+    cruxCacheStats: async () => ({ ok: true, count: 0, present: 0, absent: 0, path: 'results.crux_cache.json' }),
+    openPolicyWindow: async () => ({ ok: true }),
+    onEvent: () => {},
+    onLog: () => {},
+    onError: () => {},
+    onExit: () => {},
+    rerunSite: async (options) => ({ ok: true, site: options.site }),
+    startAnnotate: async () => ({ ok: true }),
+    checkTunnel: async () => ({ ok: true, data: { service_ready: true } }),
+    stopAnnotate: async () => ({ ok: true, status: 'stopped' }),
+    annotateSite: async (options) => ({ ok: true, site: options.site }),
+    onAnnotatorLog: () => {},
+    onAnnotatorExit: () => {},
+    onAnnotatorStream: () => {},
+    onPipelineEvent: () => {},
+    diagnoseBridge: async () => ({ ok: true, stdout: 'diagnose' }),
+    repairBridge: async () => ({ ok: true, stdout: 'repair' }),
+    refreshRemote: async () => ({ ok: true, stdout: 'refresh' }),
     ...overrides,
   } as Window['scraper']
 }
@@ -76,6 +136,12 @@ afterEach(() => {
 })
 
 describe('scraperClient', () => {
+  it('detects bridge availability', () => {
+    expect(hasScraperBridge()).toBe(false)
+    installScraperMock({})
+    expect(hasScraperBridge()).toBe(true)
+  })
+
   it('builds a cleaned workspace snapshot from the scraper bridge', async () => {
     installScraperMock({
       readSummary: async () => ({ ok: true, data: { ...baseSummary, processed_sites: 4, total_sites: 10 } }),
@@ -196,5 +262,168 @@ describe('scraperClient', () => {
       started_at: undefined,
     }])
     await expect(readFolderSize('outputs/run-1')).resolves.toEqual({ ok: true, bytes: 4096 })
+  })
+
+  it('routes helper calls for artifact counts, crux cache stats, and policy windows through the client layer', async () => {
+    installScraperMock({
+      countOkArtifacts: async () => ({
+        ok: true,
+        count: 2,
+        sites: ['docker.com', 'openai.com'],
+        path: 'outputs/unified/artifacts_ok',
+      }),
+      cruxCacheStats: async () => ({
+        ok: true,
+        count: 12,
+        present: 10,
+        absent: 2,
+        path: 'results.crux_cache.json',
+      }),
+      openPolicyWindow: async () => ({ ok: true }),
+    })
+
+    await expect(countOkArtifactSites('outputs/unified')).resolves.toEqual(['docker.com', 'openai.com'])
+    await expect(readCruxCacheStats('outputs/unified')).resolves.toEqual({
+      ok: true,
+      count: 12,
+      present: 10,
+      absent: 2,
+      path: 'results.crux_cache.json',
+    })
+    await expect(openEmbeddedPolicyWindow('https://example.com/privacy')).resolves.toBe(true)
+  })
+
+  it('routes control-plane actions through the client layer', async () => {
+    installScraperMock({
+      clearResults: async () => ({ ok: true, removed: ['results.jsonl'], errors: [] }),
+      deleteOutput: async () => ({ ok: true, path: 'outputs/run-1', removed: ['outputs/run-1'] }),
+      deleteAllOutputs: async () => ({ ok: true, path: 'outputs', removed: ['outputs/run-1', 'outputs/run-2'] }),
+      stopRun: async () => ({ ok: true, status: 'stopping' }),
+      writeAuditState: async (payload) => ({
+        ok: true,
+        data: {
+          verifiedSites: payload?.verifiedSites || [],
+          urlOverrides: payload?.urlOverrides || {},
+        },
+      }),
+      startRun: async () => ({ ok: true, paths: { outDir: 'outputs/run-2', resultsJsonl: 'r.jsonl', summaryJson: 's.json', stateJson: 'state.json', explorerJsonl: 'e.jsonl', artifactsDir: 'artifacts', artifactsOkDir: 'artifacts_ok' } }),
+      readRunManifest: async () => ({ ok: true, data: { version: 1, status: 'running', mode: 'tranco', updatedAt: '2026-03-12T05:00:00+00:00' } }),
+      rerunSite: async (options) => ({ ok: true, site: options.site }),
+      annotateSite: async (options) => ({ ok: true, site: options.site }),
+      startAnnotate: async () => ({ ok: true }),
+      stopAnnotate: async () => ({ ok: true, status: 'stopped' }),
+      openLogWindow: async () => ({ ok: true }),
+      diagnoseBridge: async () => ({ ok: true, stdout: 'diagnose' }),
+      repairBridge: async () => ({ ok: true, stdout: 'repair' }),
+      refreshRemote: async () => ({ ok: true, stdout: 'refresh' }),
+    })
+
+    await expect(clearWorkspaceResults({ outDir: 'outputs/run-1' })).resolves.toEqual({
+      ok: true,
+      removed: ['results.jsonl'],
+      errors: [],
+    })
+    await expect(deleteWorkspaceOutput('outputs/run-1')).resolves.toEqual({
+      ok: true,
+      path: 'outputs/run-1',
+      removed: ['outputs/run-1'],
+    })
+    await expect(deleteAllWorkspaceOutputs()).resolves.toEqual({
+      ok: true,
+      path: 'outputs',
+      removed: ['outputs/run-1', 'outputs/run-2'],
+    })
+    await expect(requestStopRun()).resolves.toEqual({ ok: true, status: 'stopping' })
+    await expect(writeAuditState({
+      outDir: 'outputs/run-1',
+      verifiedSites: ['docker.com'],
+      urlOverrides: { 'docker.com': 'https://docker.com/privacy' },
+    })).resolves.toEqual({
+      ok: true,
+      data: {
+        verifiedSites: ['docker.com'],
+        urlOverrides: { 'docker.com': 'https://docker.com/privacy' },
+      },
+    })
+    await expect(requestStartRun({ outDir: 'outputs/run-2', artifactsDir: 'outputs/run-2/artifacts', topN: 5 })).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      paths: expect.objectContaining({ outDir: 'outputs/run-2' }),
+    }))
+    await expect(readRunManifest('outputs/run-2')).resolves.toEqual({
+      ok: true,
+      data: { version: 1, status: 'running', mode: 'tranco', updatedAt: '2026-03-12T05:00:00+00:00' },
+    })
+    await expect(requestRerunSite({ site: 'docker.com', outDir: 'outputs/run-1' })).resolves.toEqual({
+      ok: true,
+      site: 'docker.com',
+    })
+    await expect(requestAnnotateSite({ site: 'docker.com', outDir: 'outputs/run-1' })).resolves.toEqual({
+      ok: true,
+      site: 'docker.com',
+    })
+    await expect(requestStartAnnotate({ artifactsDir: 'outputs/run-1/artifacts', concurrency: 1 })).resolves.toEqual({ ok: true })
+    await expect(requestStopAnnotate()).resolves.toEqual({ ok: true, status: 'stopped' })
+    await expect(openLogWindow('logs', 'Run logs')).resolves.toEqual({ ok: true })
+    await expect(runBridgeDiagnostics()).resolves.toEqual({ ok: true, stdout: 'diagnose' })
+    await expect(runBridgeRepair()).resolves.toEqual({ ok: true, stdout: 'repair' })
+    await expect(runRemoteRefresh()).resolves.toEqual({ ok: true, stdout: 'refresh' })
+  })
+
+  it('subscribes to scraper, annotator, and pipeline events through the client layer', () => {
+    let runtimeEventHandler: Parameters<NonNullable<Window['scraper']>['onEvent']>[0] = () => {}
+    let runtimeLogHandler: Parameters<NonNullable<Window['scraper']>['onLog']>[0] = () => {}
+    let runtimeErrorHandler: Parameters<NonNullable<Window['scraper']>['onError']>[0] = () => {}
+    let runtimeExitHandler: Parameters<NonNullable<Window['scraper']>['onExit']>[0] = () => {}
+    let annotatorLogHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorLog']>[0] = () => {}
+    let annotatorStreamHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorStream']>[0] = () => {}
+    let annotatorExitHandler: Parameters<NonNullable<Window['scraper']>['onAnnotatorExit']>[0] = () => {}
+    let pipelineHandler: Parameters<NonNullable<Window['scraper']>['onPipelineEvent']>[0] = () => {}
+
+    installScraperMock({
+      onEvent: (handler) => { runtimeEventHandler = handler },
+      onLog: (handler) => { runtimeLogHandler = handler },
+      onError: (handler) => { runtimeErrorHandler = handler },
+      onExit: (handler) => { runtimeExitHandler = handler },
+      onAnnotatorLog: (handler) => { annotatorLogHandler = handler },
+      onAnnotatorStream: (handler) => { annotatorStreamHandler = handler },
+      onAnnotatorExit: (handler) => { annotatorExitHandler = handler },
+      onPipelineEvent: (handler) => { pipelineHandler = handler },
+    })
+
+    const seen: string[] = []
+    subscribeScraperEvents({
+      onEvent: (event) => { seen.push(`runtime:${event.type}`) },
+      onLog: (event) => { seen.push(`log:${event.message}`) },
+      onError: (event) => { seen.push(`error:${event.message}`) },
+      onExit: (event) => { seen.push(`exit:${event.code}`) },
+    })
+    subscribeAnnotatorEvents({
+      onLog: (event) => { seen.push(`annotator-log:${event.message}`) },
+      onStream: (event) => { seen.push(`annotator-stream:${event.site}`) },
+      onExit: (event) => { seen.push(`annotator-exit:${event.code}`) },
+    })
+    subscribePipelineEvents((event) => {
+      seen.push(`pipeline:${event.channel}`)
+    })
+
+    runtimeEventHandler({ type: 'run_started' })
+    runtimeLogHandler({ message: 'hello' })
+    runtimeErrorHandler({ message: 'boom' })
+    runtimeExitHandler({ code: 0 })
+    annotatorLogHandler({ message: 'annotator ready' })
+    annotatorStreamHandler({ site: 'docker.com', chunk_idx: 1, chunk_total: 2, round: 1, phase: 'extraction', tag: 'delta', delta: '...' })
+    annotatorExitHandler({ code: 0 })
+    pipelineHandler({ channel: 'annotation', timestamp: '2026-03-12T05:00:00+00:00', payload: {}, message: 'updated' })
+
+    expect(seen).toEqual([
+      'runtime:run_started',
+      'log:hello',
+      'error:boom',
+      'exit:0',
+      'annotator-log:annotator ready',
+      'annotator-stream:docker.com',
+      'annotator-exit:0',
+      'pipeline:annotation',
+    ])
   })
 })

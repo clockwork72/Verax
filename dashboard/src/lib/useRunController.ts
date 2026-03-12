@@ -3,6 +3,14 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 import type { HpcBridgeStatus } from '../contracts/api'
 import { emptyAnnotationRunState } from './annotationRunState'
 import { emptyScraperSiteActivityState, type ScraperSiteActivityState } from './scraperRuntime'
+import {
+  readRunManifest,
+  requestAnnotateSite,
+  requestRerunSite,
+  requestStartAnnotate,
+  requestStartRun,
+  requestStopAnnotate,
+} from './scraperClient'
 import type { WorkspaceDataUpdate } from './useWorkspaceData'
 
 export type LauncherMode = 'start' | 'continue' | 'extend'
@@ -321,9 +329,6 @@ export function useRunController({
   }, [auditUrlOverrides, auditVerifiedSites, persistAuditState])
 
   const rerunAuditSite = useCallback(async (site: string, overrideUrl?: string) => {
-    if (!window.scraper?.rerunSite) {
-      return { ok: false, error: 'rerunSite API unavailable' }
-    }
     const siteKey = normalizeSiteKey(site)
     const normalizedOverride = (overrideUrl || '').trim()
     const nextOverrides = { ...auditUrlOverrides }
@@ -337,7 +342,7 @@ export function useRunController({
     const trackerRadarIndex = mappingMode === 'trackerdb' ? undefined : 'tracker_radar_index.json'
     const trackerDbIndex = mappingMode === 'radar' ? undefined : 'trackerdb_index.json'
     setAuditBusySite(site)
-    const res = await window.scraper.rerunSite({
+    const res = await requestRerunSite({
       site,
       outDir,
       artifactsDir: `${outDir}/artifacts`,
@@ -376,22 +381,24 @@ export function useRunController({
       setAnnotateLogs([blocked.message])
       return { ok: false, error: blocked.error }
     }
-    if (!window.scraper?.annotateSite) {
-      annotateLogsRef.current = ['Annotation API unavailable in the current Electron session.']
-      setAnnotateLogs(['Annotation API unavailable in the current Electron session.'])
-      return { ok: false, error: 'annotateSite API unavailable' }
-    }
     annotateLogsRef.current = []
     updateWorkspaceData({ annotationRunState: emptyAnnotationRunState(annotationStatsTotalSites || 1) })
     setAnnotateLogs([`Starting annotation for ${site}...`])
     setAnnotateRunning(true)
     setAuditAnnotatingSite(site)
-    const res = await window.scraper.annotateSite({
+    const res = await requestAnnotateSite({
       site,
       outDir,
       llmModel,
       force: true,
     })
+    if (res.error === 'annotateSite API unavailable') {
+      setAnnotateRunning(false)
+      setAuditAnnotatingSite(null)
+      annotateLogsRef.current = ['Annotation API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotation API unavailable in the current Electron session.'])
+      return { ok: false, error: res.error }
+    }
     if (!res?.ok) {
       setAnnotateRunning(false)
       setAuditAnnotatingSite(null)
@@ -423,21 +430,22 @@ export function useRunController({
       setAnnotateLogs([blocked.message])
       return
     }
-    if (!window.scraper?.startAnnotate) {
-      annotateLogsRef.current = ['Annotator start API unavailable in the current Electron session.']
-      setAnnotateLogs(['Annotator start API unavailable in the current Electron session.'])
-      return
-    }
     annotateLogsRef.current = []
     updateWorkspaceData({ annotationRunState: emptyAnnotationRunState(annotationStatsTotalSites) })
     setAnnotateLogs(['Starting annotator...'])
     setAnnotateRunning(true)
-    const res = await window.scraper.startAnnotate({
+    const res = await requestStartAnnotate({
       artifactsDir: `${outDir}/artifacts`,
       llmModel: opts.llmModel ?? llmModel,
       concurrency: opts.concurrency ?? 1,
       force: opts.force ?? false,
     })
+    if (res.error === 'startAnnotate API unavailable') {
+      setAnnotateRunning(false)
+      annotateLogsRef.current = ['Annotator start API unavailable in the current Electron session.']
+      setAnnotateLogs(['Annotator start API unavailable in the current Electron session.'])
+      return
+    }
     if (!res?.ok) {
       if (res?.error === 'annotator_already_running') {
         const message = 'Annotator is already running on the remote orchestrator. Reattaching to the live job.'
@@ -467,8 +475,7 @@ export function useRunController({
   ])
 
   const stopAnnotate = useCallback(async () => {
-    if (!window.scraper?.stopAnnotate) return
-    await window.scraper.stopAnnotate()
+    await requestStopAnnotate()
     setAnnotateRunning(false)
     setAuditAnnotatingSite(null)
   }, [setAnnotateRunning, setAuditAnnotatingSite])
@@ -515,29 +522,26 @@ export function useRunController({
     }
 
     setOutDir(plan.runOutDir)
-    if (window.scraper) {
-      const res = await window.scraper.startRun(plan.startOptions)
-      if (!res.ok) {
-        setErrorMessage(res.error || 'Failed to start scraper')
-      } else {
-        updateWorkspaceData({ hasRun: true })
-        setRunning(true)
-        updateWorkspaceData({ progress: launchStartingProgress })
-        setRunStartedAt(Date.now())
-        setEtaText('')
-        if (window.scraper.readRunManifest) {
-          const manifestRes = await window.scraper.readRunManifest(plan.runOutDir)
-          updateWorkspaceData({ runManifest: manifestRes?.ok ? (manifestRes.data ?? null) : null })
-        }
-      }
+    const res = await requestStartRun(plan.startOptions)
+    if (res.error === 'startRun API unavailable') {
+      updateWorkspaceData({ hasRun: true })
+      setRunning(true)
+      updateWorkspaceData({ progress: launchStartingProgress })
+      setRunStartedAt(Date.now())
+      setEtaText('')
       return
     }
-
-    updateWorkspaceData({ hasRun: true })
-    setRunning(true)
-    updateWorkspaceData({ progress: launchStartingProgress })
-    setRunStartedAt(Date.now())
-    setEtaText('')
+    if (!res.ok) {
+      setErrorMessage(res.error || 'Failed to start scraper')
+    } else {
+      updateWorkspaceData({ hasRun: true })
+      setRunning(true)
+      updateWorkspaceData({ progress: launchStartingProgress })
+      setRunStartedAt(Date.now())
+      setEtaText('')
+      const manifestRes = await readRunManifest(plan.runOutDir)
+      updateWorkspaceData({ runManifest: manifestRes?.ok ? (manifestRes.data ?? null) : null })
+    }
   }, [
     cruxApiKey,
     cruxKeyMissing,
