@@ -1,3 +1,4 @@
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ActiveSiteInfo,
@@ -7,22 +8,45 @@ import type {
   HpcBridgeStatus,
 } from '../../contracts/api'
 import { pricingForModel } from '../../utils/annotationCost'
+import { BentoCard, BentoGrid } from '../ui/BentoCard'
+import { PulseRing } from '../ui/PulseRing'
+import { StatusPill } from '../ui/StatusPill'
+import { AnimatedCounter } from '../ui/AnimatedCounter'
 import { LiveAnnotatorPanel } from './LiveAnnotatorPanel'
+import { FlowChartModal } from './FlowChartModal'
 import type { AnnotatorStreamEvent } from '../../vite-env'
 
 function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-// DeepSeek-R1-Distill-Llama-70B served locally via HPC SSH tunnel
 const DEEPSEEK_MODEL = { value: 'openai/local', label: 'DeepSeek-R1-70B (HPC)', price: 'local — no cost' }
-import { FlowChartModal } from './FlowChartModal'
 
-const logLines = [
- ''
-]
+const logLines = ['']
 
 const STAGE_STEPS = ['Home fetch', 'Policy discovery', '3P extraction', '3P policies']
+const PIPELINE_STEPS = ['Fetch', 'Crawl', 'Extract', 'Map', 'Output']
+
+// Arc progress circle
+function ArcProgress({ pct, size = 80 }: { pct: number; size?: number }) {
+  const r = (size - 10) / 2
+  const circ = 2 * Math.PI * r
+  const dash = circ * (pct / 100)
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={5} />
+      <circle
+        cx={size / 2} cy={size / 2} r={r}
+        fill="none"
+        stroke="var(--color-primary)"
+        strokeWidth={5}
+        strokeLinecap="round"
+        strokeDasharray={`${dash} ${circ}`}
+        style={{ transition: 'stroke-dasharray 0.7s cubic-bezier(0.22,1,0.36,1)', filter: 'drop-shadow(0 0 4px rgba(0,230,255,0.5))' }}
+      />
+    </svg>
+  )
+}
 
 type LauncherViewProps = {
   topN: string
@@ -53,7 +77,6 @@ type LauncherViewProps = {
   onOpenLogWindow?: () => void
   activeSites?: Record<string, ActiveSiteInfo>
   recentCompleted?: CompletedSiteInfo[]
-  // Stage 2 — Annotation
   tunnelStatus?: 'checking' | 'online' | 'degraded' | 'offline'
   bridgeReady?: boolean
   bridgeHeadline?: string
@@ -78,7 +101,6 @@ type LauncherViewProps = {
   annotationRunState?: AnnotationRunState
   onStartAnnotate?: (opts: { llmModel?: string; concurrency?: number; force?: boolean }) => void
   onStopAnnotate?: () => void
-  // Resume mode — use unified output dir to skip already-scraped sites
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
   topNLocked?: boolean
@@ -89,7 +111,7 @@ export function LauncherView({
   onTopNChange,
   onStart,
   primaryActionLabel = 'Start run',
-  primaryActionHint = 'Choose how many sites to crawl. Press Enter to start.',
+  primaryActionHint = 'Choose how many sites to crawl.',
   primaryActionDisabled = false,
   onStop,
   stopRunPending = false,
@@ -145,6 +167,8 @@ export function LauncherView({
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
   const [showFlow, setShowFlow] = useState(false)
   const [annotateConcurrency, setAnnotateConcurrency] = useState('1')
+  const reduce = useReducedMotion()
+
   const visibleLogs = useMemo(() => {
     if (logs && logs.length > 0) return logs.slice(-120)
     if (!hasRun) return []
@@ -161,232 +185,51 @@ export function LauncherView({
     annotateLogRef.current.scrollTop = annotateLogRef.current.scrollHeight
   }, [annotateLogs])
 
-  const bridgeBadgeClass = tunnelStatus === 'online'
-    ? 'border-[var(--color-success)] text-[var(--color-success)]'
-    : tunnelStatus === 'degraded'
-      ? 'border-[var(--color-warn)] text-[var(--color-warn)]'
-      : tunnelStatus === 'offline'
-        ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
-        : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-  const bridgeBadgeLabel = tunnelStatus === 'online'
-    ? '● Bridge live'
-    : tunnelStatus === 'degraded'
-      ? '◐ Bridge degraded'
-      : tunnelStatus === 'offline'
-        ? '○ Bridge offline'
-        : '◌ Checking bridge…'
   const bridgeSteps = [
     {
       label: 'SSH tunnel',
-      state: tunnelStatus === 'online' ? 'ready' : tunnelStatus === 'degraded' ? 'warn' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
-      detail: tunnelStatus === 'online' ? 'Port 8910 forwarding clean' : tunnelStatus === 'degraded' ? 'Local port still listens, but the target is unhealthy' : tunnelStatus === 'offline' ? 'No local bridge' : 'Handshake pending',
+      state: tunnelStatus === 'online' ? 'ok' : tunnelStatus === 'degraded' ? 'warn' : tunnelStatus === 'offline' ? 'error' : 'pending',
+      detail: tunnelStatus === 'online' ? 'Port 8910 forwarding' : tunnelStatus === 'degraded' ? 'Tunnel degraded' : tunnelStatus === 'offline' ? 'No local bridge' : 'Pending',
     },
     {
       label: 'Control API',
-      state: bridgeReady || tunnelStatus === 'degraded' ? 'ready' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
-      detail: bridgeReady || tunnelStatus === 'degraded' ? 'Remote orchestrator reachable' : 'Waiting for health probe',
+      state: bridgeReady || tunnelStatus === 'degraded' ? 'ok' : tunnelStatus === 'offline' ? 'error' : 'pending',
+      detail: bridgeReady ? 'Orchestrator reachable' : 'Waiting for health probe',
     },
     {
       label: 'PostgreSQL',
-      state: bridgeReady || tunnelStatus === 'degraded' ? 'ready' : tunnelStatus === 'offline' ? 'blocked' : 'pending',
-      detail: bridgeReady || tunnelStatus === 'degraded' ? 'Database session confirmed' : 'Service still warming up',
+      state: bridgeReady || tunnelStatus === 'degraded' ? 'ok' : tunnelStatus === 'offline' ? 'error' : 'pending',
+      detail: bridgeReady ? 'DB session confirmed' : 'Service warming up',
     },
     {
       label: 'Workspace',
-      state: workspaceReady ? 'ready' : bridgeReady ? 'pending' : 'blocked',
-      detail: workspaceReady ? 'Remote state synced locally' : bridgeReady ? 'Waiting for a remote run' : 'Locked behind bridge gate',
+      state: workspaceReady ? 'ok' : bridgeReady ? 'pending' : 'error',
+      detail: workspaceReady ? 'Remote state synced' : bridgeReady ? 'Awaiting remote run' : 'Locked',
     },
   ] as const
 
+  // Annotation runtime state
+  const runtimeState = annotationRunState ?? {
+    totalSites: annotationStats?.total_sites ?? 0,
+    sites: {},
+    processedSites: 0,
+    completedSites: annotationStats?.annotated_sites ?? 0,
+    activeSites: [],
+    tokensIn: 0,
+    tokensOut: 0,
+  }
+  const knownTotal  = runtimeState.totalSites || annotationStats?.total_sites || 0
+  const doneCount   = runtimeState.processedSites
+  const progressPct = knownTotal > 0 ? Math.round((doneCount / knownTotal) * 100) : 0
+  const annotateSites = runtimeState.activeSites
+  const annotateCompleted = Object.values(runtimeState.sites)
+    .filter((s) => !['pending', 'preprocessing', 'extracting', 'committing'].includes(s.status))
+    .sort((a, b) => a.site.localeCompare(b.site))
+  const tokensIn  = runtimeState.tokensIn
+  const tokensOut = runtimeState.tokensOut
+
   return (
     <>
-      <section className="card rounded-2xl p-6">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Launch</p>
-              <h2 className="text-lg font-semibold">Dataset launcher</h2>
-              <p className="text-xs text-[var(--muted-text)]">
-                {primaryActionHint}
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs"
-                onClick={() => setShowFlow(true)}
-              >
-                Flow chart
-              </button>
-              <button
-                className="focusable rounded-full bg-[var(--color-primary)] px-4 py-2 text-xs font-semibold text-white"
-                onClick={onStart}
-                disabled={primaryActionDisabled || scraperActive || !bridgeReady}
-              >
-                {primaryActionLabel}
-              </button>
-              <button
-                className={`focusable rounded-full border px-4 py-2 text-xs font-semibold ${
-                  scraperActive || stopRunPending
-                    ? 'border-[var(--color-danger)] text-white'
-                    : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-                }`}
-                onClick={onStop}
-                disabled={!scraperActive && !stopRunPending}
-              >
-                {stopRunPending ? 'Stopping...' : 'Stop run'}
-              </button>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-[var(--border-soft)] bg-black/15 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="max-w-2xl">
-                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">Cluster bridge</p>
-                <h3 className="text-sm font-semibold">{bridgeHeadline}</h3>
-                <p className="mt-1 text-xs text-[var(--muted-text)]">{bridgeDetail}</p>
-              </div>
-              <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${bridgeBadgeClass}`}>
-                {bridgeBadgeLabel}
-              </span>
-            </div>
-            <div className="mt-4 grid gap-2 md:grid-cols-4">
-              {bridgeSteps.map((step) => (
-                <div
-                  key={step.label}
-                  className={`rounded-xl border px-3 py-3 ${
-                    step.state === 'ready'
-                      ? 'border-[var(--color-success)] bg-emerald-950/20'
-                      : step.state === 'warn'
-                        ? 'border-[var(--color-warn)] bg-amber-950/20'
-                        : step.state === 'blocked'
-                          ? 'border-[var(--color-danger)] bg-rose-950/20'
-                          : 'border-[var(--border-soft)] bg-black/20'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className={`inline-block h-2 w-2 rounded-full ${
-                      step.state === 'ready'
-                        ? 'bg-[var(--color-success)]'
-                        : step.state === 'warn'
-                          ? 'bg-[var(--color-warn)]'
-                          : step.state === 'blocked'
-                            ? 'bg-[var(--color-danger)]'
-                            : 'bg-[var(--muted-text)]'
-                    }`} />
-                    <span className="font-semibold text-[var(--color-text)]">{step.label}</span>
-                  </div>
-                  <p className="mt-2 text-[11px] text-[var(--muted-text)]">{step.detail}</p>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-[var(--muted-text)]">
-              <code className="rounded-lg border border-[var(--border-soft)] bg-black/30 px-2.5 py-1 font-mono">
-                hpc/scraper/launch_remote.sh
-              </code>
-              <button
-                className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px]"
-                onClick={onDiagnoseBridge}
-                disabled={bridgeActionBusy !== null}
-              >
-                {bridgeActionBusy === 'diagnose' ? 'Diagnosing...' : 'Diagnose'}
-              </button>
-              <button
-                className={`focusable rounded-full px-3 py-1 text-[11px] ${
-                  tunnelStatus === 'online'
-                    ? 'border border-[var(--border-soft)] text-[var(--muted-text)]'
-                    : 'border border-amber-500/50 text-amber-300'
-                }`}
-                onClick={onRepairBridge}
-                disabled={bridgeActionBusy !== null || tunnelStatus === 'checking' || tunnelStatus === 'online'}
-              >
-                {bridgeActionBusy === 'repair' ? 'Repairing...' : 'Repair bridge'}
-              </button>
-              <button
-                className={`focusable rounded-full px-3 py-1 text-[11px] ${
-                  remoteCodeOutdated
-                    ? 'border border-amber-500/50 text-amber-300'
-                    : 'border border-[var(--border-soft)] text-[var(--muted-text)]'
-                }`}
-                onClick={onRefreshRemote}
-                disabled={bridgeActionBusy !== null}
-              >
-                {bridgeActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh remote'}
-              </button>
-              {bridgeNode && <span>Node {bridgeNode}</span>}
-              {bridgeCurrentOutDir && <span>Remote out {bridgeCurrentOutDir}</span>}
-              <span>Checked {bridgeCheckedAt}</span>
-              <span>Last healthy {bridgeHealthyAt}</span>
-              {bridgeFailures > 0 && tunnelStatus !== 'online' && <span>{bridgeFailures} missed heartbeat{bridgeFailures > 1 ? 's' : ''}</span>}
-            </div>
-            {bridgeActionMessage && (
-              <p className="mt-3 text-[11px] text-[var(--muted-text)]">{bridgeActionMessage}</p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-text)]">
-            <button
-              className={`focusable rounded-full border px-4 py-2 text-xs ${
-                scraperActive || stopRunPending ? 'border-[var(--color-danger)] text-white' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-              }`}
-              onClick={onStop}
-              disabled={!scraperActive && !stopRunPending}
-            >
-              {stopRunPending ? 'Stopping...' : 'Stop run'}
-            </button>
-            {(scraperActive || stopRunPending) && <span>Stopping will keep partial results.</span>}
-            {!bridgeReady && <span>Launcher stays locked until the SSH tunnel, orchestrator API, and database are all healthy.</span>}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              type="number"
-              min={1}
-              value={topN}
-              onChange={(event) => onTopNChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') onStart()
-              }}
-              className="focusable w-40 rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-white"
-              placeholder="1000"
-              disabled={topNLocked || !bridgeReady}
-            />
-            <span className="text-xs text-[var(--muted-text)]">
-              {topNLocked ? 'Target locked to loaded dataset' : resumeMode ? 'target total sites' : 'sites from Tranco list'}
-            </span>
-
-            {/* Read-only pipeline settings chips — configure in Settings */}
-            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs ${
-              useCrux ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-            }`} title="Configure in Settings">
-              CrUX {useCrux ? 'on' : 'off'}
-            </span>
-            {useCrux && !cruxApiKey?.trim() && (
-              <span className="inline-flex items-center rounded-full border border-amber-500/50 px-3 py-1 text-xs text-amber-300">
-                CrUX key required
-              </span>
-            )}
-            <span className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]" title="Configure in Settings">
-              {mappingMode === 'mixed' ? 'Mixed mapping' : mappingMode === 'trackerdb' ? 'TrackerDB' : 'Tracker Radar'}
-            </span>
-            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs ${
-              excludeSameEntity ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-            }`} title="Configure in Settings">
-              {excludeSameEntity ? 'Excl. same entity' : 'All 3P'}
-            </span>
-
-            <button
-              className={`focusable rounded-full border px-3 py-1 text-xs ${
-                resumeMode
-                  ? 'border-[var(--color-primary)] text-white'
-                  : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-              }`}
-              onClick={() => onToggleResumeMode?.(!resumeMode)}
-              title="Uses a shared output dir so already-scraped AND already-annotated sites are both skipped automatically."
-            >
-              Resume mode {resumeMode ? 'on' : 'off'}
-            </button>
-          </div>
-        </div>
-      </section>
-
       <FlowChartModal
         open={showFlow}
         onClose={() => setShowFlow(false)}
@@ -404,437 +247,586 @@ export function LauncherView({
         running={running}
       />
 
-      <section
-        className={`overflow-hidden transition-all duration-700 ${
-          hasRun ? 'max-h-[1200px] opacity-100' : 'max-h-0 opacity-0'
-        }`}
-      >
-        <div className="card rounded-2xl p-6">
-          {/* Header row */}
-          <div className="flex flex-wrap items-center justify-between gap-4">
+      {/* ── Bridge Status Card ─────────────────────────────────────── */}
+      <BentoCard className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          {/* Status indicator + headline */}
+          <div className="flex items-center gap-3">
+            <PulseRing status={tunnelStatus} size={12} />
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Progress</p>
-              <h3 className="text-lg font-semibold">Active crawl</h3>
-            </div>
-            <div className="flex items-center gap-3">
-              {running && (
-                <span className="flex items-center gap-1.5 text-xs text-[var(--color-primary)]">
-                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--color-primary)]" />
-                  Running · {Object.keys(activeSites).length} concurrent
-                </span>
-              )}
-              {!running && progress >= 100 && (
-                <span className="text-xs text-[var(--color-success)]">Completed</span>
-              )}
-              <button
-                className={`focusable rounded-full border px-4 py-2 text-xs ${
-                  resultsReady
-                    ? 'border-[var(--color-primary)] text-white'
-                    : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-                }`}
-                onClick={onViewResults}
-                disabled={!resultsReady}
-              >
-                View results
-              </button>
+              <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Cluster bridge</p>
+              <h3 className="text-sm font-semibold">{bridgeHeadline}</h3>
+              <p className="text-[12px] text-[var(--muted-text)]">{bridgeDetail}</p>
             </div>
           </div>
 
-          {/* Progress bar */}
-          <div className="mt-4">
-            <div className="h-2 w-full overflow-hidden rounded-full bg-black/30">
+          {/* Step pills */}
+          <div className="flex flex-wrap items-center gap-2">
+            {bridgeSteps.map((step) => (
+              <StatusPill
+                key={step.label}
+                variant={step.state as 'ok' | 'warn' | 'error' | 'pending'}
+                label={step.label}
+                pulse={step.state === 'pending'}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Actions row */}
+        <div className="flex flex-wrap items-center gap-2">
+          <code className="mono rounded-lg border border-[var(--border-soft)] bg-black/20 px-2.5 py-1 text-[10px] text-[var(--muted-text)]">
+            hpc/scraper/launch_remote.sh
+          </code>
+          <button
+            className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
+            onClick={onDiagnoseBridge}
+            disabled={bridgeActionBusy !== null}
+          >
+            {bridgeActionBusy === 'diagnose' ? 'Diagnosing…' : 'Diagnose'}
+          </button>
+          <button
+            className={`focusable rounded-full border px-3 py-1 text-[11px] transition-colors ${
+              tunnelStatus === 'online'
+                ? 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                : 'border-[rgba(255,184,77,0.35)] text-[var(--color-warn)] hover:border-[rgba(255,184,77,0.55)]'
+            }`}
+            onClick={onRepairBridge}
+            disabled={bridgeActionBusy !== null || tunnelStatus === 'checking' || tunnelStatus === 'online'}
+          >
+            {bridgeActionBusy === 'repair' ? 'Repairing…' : 'Repair bridge'}
+          </button>
+          <button
+            className={`focusable rounded-full border px-3 py-1 text-[11px] transition-colors ${
+              remoteCodeOutdated
+                ? 'border-[rgba(255,184,77,0.35)] text-[var(--color-warn)] hover:border-[rgba(255,184,77,0.55)]'
+                : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+            }`}
+            onClick={onRefreshRemote}
+            disabled={bridgeActionBusy !== null}
+          >
+            {bridgeActionBusy === 'refresh' ? 'Refreshing…' : 'Refresh remote'}
+          </button>
+          <div className="ml-auto flex items-center gap-3 text-[11px] text-[var(--muted-text)]">
+            {bridgeNode && <span>Node <span className="mono text-[var(--color-text)]">{bridgeNode}</span></span>}
+            {bridgeCurrentOutDir && <span>Out <span className="mono text-[var(--color-text)]">{bridgeCurrentOutDir}</span></span>}
+            <span>Checked {bridgeCheckedAt}</span>
+            <span>Healthy {bridgeHealthyAt}</span>
+            {bridgeFailures > 0 && tunnelStatus !== 'online' && (
+              <span className="text-[var(--color-warn)]">{bridgeFailures} missed heartbeat{bridgeFailures > 1 ? 's' : ''}</span>
+            )}
+          </div>
+        </div>
+
+        {bridgeActionMessage && (
+          <p className="rounded-lg border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-[11px] text-[var(--muted-text)]">
+            {bridgeActionMessage}
+          </p>
+        )}
+      </BentoCard>
+
+      {/* ── Run Config + Controls ─────────────────────────────────── */}
+      <BentoGrid className="grid-cols-1 lg:grid-cols-[1fr_auto]">
+        {/* Config card */}
+        <BentoCard>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Launch</p>
+                <h3 className="text-sm font-semibold">Dataset crawler</h3>
+                <p className="text-[12px] text-[var(--muted-text)]">{primaryActionHint}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
+                  onClick={() => setShowFlow(true)}
+                >
+                  Flow chart
+                </button>
+                <motion.button
+                  className="focusable rounded-full bg-[var(--color-primary)] px-5 py-2 text-xs font-semibold text-[#08090E] disabled:opacity-40"
+                  onClick={onStart}
+                  disabled={primaryActionDisabled || scraperActive || !bridgeReady}
+                  whileTap={reduce ? undefined : { scale: 0.95 }}
+                >
+                  {primaryActionLabel}
+                </motion.button>
+                <motion.button
+                  className={`focusable rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
+                    scraperActive || stopRunPending
+                      ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+                      : 'border-[var(--border-soft)] text-[var(--muted-text)] opacity-50'
+                  }`}
+                  onClick={onStop}
+                  disabled={!scraperActive && !stopRunPending}
+                  whileTap={reduce ? undefined : { scale: 0.95 }}
+                >
+                  {stopRunPending ? 'Stopping…' : 'Stop run'}
+                </motion.button>
+              </div>
+            </div>
+
+            {/* Settings row */}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                value={topN}
+                onChange={(e) => onTopNChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onStart() }}
+                className="focusable w-32 rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm"
+                placeholder="1000"
+                disabled={topNLocked || !bridgeReady}
+              />
+              <span className="text-[12px] text-[var(--muted-text)]">
+                {topNLocked ? 'locked to dataset' : resumeMode ? 'target total' : 'sites from Tranco'}
+              </span>
+
+              <div className="ml-2 flex flex-wrap items-center gap-1.5">
+                <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] ${useCrux ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'}`} title="Configure in Settings">
+                  CrUX {useCrux ? 'on' : 'off'}
+                </span>
+                {useCrux && !cruxApiKey?.trim() && (
+                  <span className="inline-flex items-center rounded-full border border-[rgba(255,92,138,0.3)] bg-[rgba(255,92,138,0.08)] px-2.5 py-0.5 text-[11px] text-[var(--color-danger)]">
+                    key required
+                  </span>
+                )}
+                <span className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-2.5 py-0.5 text-[11px] text-[var(--muted-text)]" title="Configure in Settings">
+                  {mappingMode === 'mixed' ? 'Mixed mapping' : mappingMode === 'trackerdb' ? 'TrackerDB' : 'Tracker Radar'}
+                </span>
+                <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] ${excludeSameEntity ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'}`} title="Configure in Settings">
+                  {excludeSameEntity ? 'Excl. same entity' : 'All 3P'}
+                </span>
+                <button
+                  className={`focusable rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${resumeMode ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'}`}
+                  onClick={() => onToggleResumeMode?.(!resumeMode)}
+                  title="Uses a shared output dir — already-scraped and annotated sites are skipped."
+                >
+                  Resume {resumeMode ? 'on' : 'off'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </BentoCard>
+
+        {/* Status summary — shows active info or a quick counter */}
+        {(scraperActive || hasRun) && (
+          <BentoCard className="flex flex-col items-center justify-center gap-2 min-w-[140px]">
+            <div className="relative flex items-center justify-center">
+              <ArcProgress pct={progress} size={72} />
+              <div className="absolute flex flex-col items-center">
+                <span className="text-lg font-bold leading-none text-[var(--color-text)]">
+                  <AnimatedCounter value={Math.round(progress)} suffix="%" />
+                </span>
+              </div>
+            </div>
+            {running && (
+              <div className="flex items-center gap-1.5 text-[11px] text-[var(--color-primary)]">
+                <PulseRing status="online" size={7} />
+                {Object.keys(activeSites).length} concurrent
+              </div>
+            )}
+            {!running && progress >= 100 && (
+              <span className="text-[11px] text-[var(--color-success)]">Completed</span>
+            )}
+            {etaText && running && (
+              <span className="text-[11px] text-[var(--muted-text)]">ETA {etaText}</span>
+            )}
+          </BentoCard>
+        )}
+      </BentoGrid>
+
+      {/* ── Active Crawl Card (slides in when hasRun) ────────────── */}
+      <AnimatePresence>
+        {hasRun && (
+          <motion.div
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 16 }}
+            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+            exit={reduce   ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            transition={{ type: 'spring', stiffness: 280, damping: 24 }}
+          >
+            <div className="glass-card p-5 flex flex-col gap-5">
+              {/* Pipeline step timeline */}
+              <div className="flex items-center gap-0">
+                {PIPELINE_STEPS.map((step, i) => {
+                  const stepPct = (i / (PIPELINE_STEPS.length - 1)) * 100
+                  const done = progress > stepPct + 5
+                  const active = !done && progress >= stepPct - 5
+                  return (
+                    <div key={step} className="flex flex-1 items-center">
+                      <div className="flex flex-col items-center gap-1.5">
+                        <div className={`relative flex h-7 w-7 items-center justify-center rounded-full border-2 transition-all duration-500 ${
+                          done
+                            ? 'border-[var(--color-primary)] bg-[rgba(0,230,255,0.12)]'
+                            : active
+                              ? 'border-[var(--color-primary)] bg-transparent'
+                              : 'border-[var(--border-soft)] bg-transparent'
+                        }`}>
+                          {done
+                            ? <svg className="h-3.5 w-3.5 text-[var(--color-primary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                            : active
+                              ? <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--color-primary)]" />
+                              : <span className="h-2 w-2 rounded-full bg-[var(--border-soft)]" />
+                          }
+                        </div>
+                        <span className={`text-[10px] font-medium ${done || active ? 'text-[var(--color-text)]' : 'text-[var(--muted-text)]'}`}>
+                          {step}
+                        </span>
+                      </div>
+                      {i < PIPELINE_STEPS.length - 1 && (
+                        <div className="relative mx-1 mt-[-14px] h-[2px] flex-1 overflow-hidden rounded-full bg-[var(--border-soft)]">
+                          <div
+                            className="absolute inset-y-0 left-0 rounded-full bg-[var(--color-primary)] transition-all duration-700"
+                            style={{ width: done ? '100%' : active ? '50%' : '0%', boxShadow: '0 0 6px rgba(0,230,255,0.6)' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Header + controls */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Progress</p>
+                  <h3 className="text-sm font-semibold">Active crawl</h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] text-[var(--muted-text)]">
+                    {progress.toFixed(0)}% · {topN} sites · {etaText ? `ETA ${etaText}` : 'ETA --'}
+                  </span>
+                  {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
+                    <span className="text-[12px] text-[var(--color-primary)]">
+                      {annotationStats?.annotated_sites ?? 0} annotated (will skip)
+                    </span>
+                  )}
+                  <button
+                    className={`focusable rounded-full border px-4 py-1.5 text-xs transition-colors ${resultsReady ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)] opacity-50'}`}
+                    onClick={onViewResults}
+                    disabled={!resultsReady}
+                  >
+                    View results
+                  </button>
+                </div>
+              </div>
+
+              {/* Flat progress bar */}
+              <div className="h-1 w-full overflow-hidden rounded-full bg-black/30">
+                <div
+                  className="h-full rounded-full transition-all duration-700"
+                  style={{ width: `${progress}%`, background: 'var(--color-primary)', boxShadow: '0 0 8px rgba(0,230,255,0.5)' }}
+                />
+              </div>
+
+              {/* Active sites table */}
+              {Object.keys(activeSites).length > 0 && (
+                <div>
+                  <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Actively processing</p>
+                  <div className="overflow-hidden rounded-xl border border-[var(--border-soft)]">
+                    <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-x-4 bg-black/20 px-4 py-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">
+                      <span>Site</span><span>Rank</span><span>Step</span><span>Pipeline</span>
+                    </div>
+                    <motion.div
+                      variants={{ show: { transition: { staggerChildren: reduce ? 0 : 0.04 } } }}
+                      initial="hidden" animate="show"
+                    >
+                      {Object.entries(activeSites).map(([site, info]) => (
+                        <motion.div
+                          key={site}
+                          variants={{
+                            hidden: reduce ? { opacity: 0 } : { opacity: 0, y: 8 },
+                            show:   reduce ? { opacity: 1 } : { opacity: 1, y: 0 },
+                          }}
+                          transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+                          className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-x-4 border-t border-[var(--border-soft)] px-4 py-2.5"
+                          style={{ borderLeft: '2px solid rgba(0,230,255,0.5)' }}
+                        >
+                          <span className="mono text-sm text-[var(--color-text)]">{site}</span>
+                          <span className="text-xs text-[var(--muted-text)]">#{info.rank}</span>
+                          <span className="text-xs text-[var(--color-primary)]">{info.label}</span>
+                          <div className="flex items-center gap-1">
+                            {STAGE_STEPS.map((s, i) => (
+                              <span
+                                key={s}
+                                className={`inline-block h-2 w-2 rounded-full ${
+                                  i < info.stepIndex ? 'bg-[var(--color-primary)]' : i === info.stepIndex ? 'animate-pulse bg-[var(--color-primary)]' : 'bg-black/30'
+                                }`}
+                                title={s}
+                              />
+                            ))}
+                          </div>
+                        </motion.div>
+                      ))}
+                    </motion.div>
+                  </div>
+                </div>
+              )}
+
+              {/* Recently completed chips */}
+              {recentCompleted.length > 0 && (
+                <div>
+                  <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Recently completed</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {recentCompleted.map((item, i) => (
+                      <span
+                        key={`${item.site}-${i}`}
+                        className={`stagger-item inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                          item.status === 'ok'
+                            ? 'border-[rgba(57,255,20,0.3)] text-[var(--color-success)]'
+                            : item.cached || item.annotated
+                              ? 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                              : 'border-[rgba(255,45,149,0.3)] text-[var(--color-danger)]'
+                        }`}
+                      >
+                        {item.status === 'ok' && !item.cached ? '✓' : item.annotated ? '★' : item.cached ? '↩' : '✕'}
+                        {item.site}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {scraperActive && Object.keys(activeSites).length === 0 && (
+                <div className="flex items-center gap-2 text-[12px] text-[var(--muted-text)]">
+                  <PulseRing status="online" size={8} />
+                  Initializing — waiting for first site…
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Logs Card ────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {hasRun && (
+          <motion.div
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 12 }}
+            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+            exit={reduce   ? { opacity: 0 } : { opacity: 0, y: 8 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 24, delay: 0.05 }}
+          >
+            <div className="glass-card p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Logs</p>
+                  <h3 className="text-sm font-semibold">Run output</h3>
+                </div>
+                <button
+                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px] text-[var(--muted-text)] transition-colors hover:text-[var(--color-text)]"
+                  onClick={onOpenLogWindow}
+                >
+                  Open full log
+                </button>
+              </div>
+              {errorMessage && (
+                <div className="mb-3 rounded-lg border border-[rgba(255,45,149,0.4)] bg-[rgba(255,45,149,0.06)] px-3 py-2 text-[12px] text-[var(--color-danger)]">
+                  {errorMessage}
+                </div>
+              )}
               <div
-                className="h-full rounded-full bg-[var(--color-primary)] transition-all duration-700"
-                style={{ width: `${progress}%` }}
+                ref={logRef}
+                className="mono max-h-[260px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 pb-6 text-[11px] leading-relaxed"
+                style={{ scrollPaddingBottom: '1.5rem' }}
+              >
+                {visibleLogs.length === 0 && <div className="text-[var(--muted-text)]">Launch a run to see logs.</div>}
+                {visibleLogs.map((line, i) => (
+                  <div key={`${line}-${i}`} className={`flex gap-2 ${i === visibleLogs.length - 1 ? 'shimmer-bar rounded' : ''}`}>
+                    <span className="shrink-0 text-[var(--muted-text)]">{String(i + 1).padStart(2, '0')}</span>
+                    <span className="text-[var(--color-text)]">{line}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Stage 2 — Policy Annotation ──────────────────────────── */}
+      <BentoCard>
+        <div className="flex flex-col gap-4">
+          {/* Header */}
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Stage 2</p>
+              <h3 className="text-sm font-semibold">Policy annotation</h3>
+              <p className="text-[12px] text-[var(--muted-text)]">
+                LLM extraction of structured privacy statements.
+                {annotationStats && (
+                  <span className="ml-1 text-[var(--color-text)]">
+                    <AnimatedCounter value={annotationStats.annotated_sites ?? 0} />/<AnimatedCounter value={annotationStats.total_sites ?? 0} /> done ·{' '}
+                    <AnimatedCounter value={annotationStats.total_statements ?? 0} /> statements
+                  </span>
+                )}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {remoteCodeOutdated && (
+                <button
+                  className="focusable rounded-full border border-[rgba(59,217,255,0.28)] bg-[rgba(59,217,255,0.08)] px-4 py-2 text-xs font-semibold text-[var(--color-primary)]"
+                  onClick={onRefreshRemote}
+                  disabled={bridgeActionBusy !== null}
+                >
+                  {bridgeActionBusy === 'refresh' ? 'Refreshing…' : 'Refresh remote'}
+                </button>
+              )}
+              <motion.button
+                className={`focusable rounded-full border px-5 py-2 text-xs font-semibold transition-colors ${
+                  annotateRunning
+                    ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+                    : 'border-[var(--color-primary)] bg-[rgba(0,230,255,0.08)] text-[var(--color-primary)]'
+                }`}
+                onClick={() => {
+                  if (annotateRunning) onStopAnnotate?.()
+                  else onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })
+                }}
+                disabled={!annotateRunning && !hasRun && !((annotationStats?.total_sites ?? 0) > 0)}
+                whileTap={reduce ? undefined : { scale: 0.95 }}
+              >
+                {annotateRunning ? 'Stop annotation' : 'Annotate policies'}
+              </motion.button>
+              {!annotateRunning && (hasRun || (annotationStats?.total_sites ?? 0) > 0) && (
+                <button
+                  className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)] transition-colors hover:text-[var(--color-text)]"
+                  onClick={() => onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: true })}
+                >
+                  Re-annotate (force)
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Controls row */}
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusPill
+              variant={tunnelStatus === 'online' ? 'running' : tunnelStatus === 'degraded' ? 'warn' : tunnelStatus === 'offline' ? 'error' : 'pending'}
+              label={tunnelStatus === 'online' ? 'Cluster bridge active' : tunnelStatus === 'degraded' ? 'Bridge degraded' : tunnelStatus === 'offline' ? 'Bridge offline' : 'Checking bridge…'}
+              pulse={annotateRunning && tunnelStatus === 'online'}
+            />
+            <span className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-2.5 py-0.5 text-[11px] text-[var(--muted-text)]" title="Remote Slurm orchestrator via SSH tunnel">
+              {DEEPSEEK_MODEL.label}
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-[var(--muted-text)]">Concurrency</span>
+              <input
+                type="number" min={1} max={16}
+                className="focusable w-16 rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-1.5 text-sm"
+                value={annotateConcurrency}
+                onChange={(e) => setAnnotateConcurrency(e.target.value)}
               />
             </div>
-            <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-[var(--muted-text)]">
-              <span>{progress.toFixed(0)}% complete</span>
-              <span>{etaText ? `ETA ${etaText}` : 'ETA --'}</span>
-              <span>{topN} sites total</span>
-              {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
-                <span className="text-[var(--color-primary)]">
-                  {annotationStats?.annotated_sites ?? 0} annotated — will skip
-                </span>
-              )}
-            </div>
           </div>
 
-          {/* Active sites table */}
-          {Object.keys(activeSites).length > 0 && (
-            <div className="mt-5">
-              <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">
-                Actively processing
-              </p>
+          {/* Annotation progress */}
+          {(annotateRunning || doneCount > 0) && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-[var(--muted-text)]">
+                <span>
+                  <AnimatedCounter value={doneCount} />{knownTotal > 0 ? ` / ${knownTotal}` : ''} sites processed
+                  {annotateSites.length > 0 && (
+                    <span className="ml-2 text-[var(--color-primary)]">· {annotateSites.length} active</span>
+                  )}
+                </span>
+                {(tokensIn > 0 || tokensOut > 0) && (
+                  <span className="mono text-[10px]">
+                    {fmtK(tokensIn)}↑ {fmtK(tokensOut)}↓ tokens
+                    <span className="ml-1 opacity-50">
+                      {(() => {
+                        const rates = pricingForModel(llmModel)
+                        const cost = (tokensIn / 1e6) * rates.input + (tokensOut / 1e6) * rates.output
+                        return `(≈$${cost.toFixed(3)})`
+                      })()}
+                    </span>
+                  </span>
+                )}
+              </div>
+              <div className="h-1 w-full overflow-hidden rounded-full bg-black/30">
+                {knownTotal > 0
+                  ? <div className="h-full rounded-full transition-all duration-700" style={{ width: `${progressPct}%`, background: 'var(--color-primary)', boxShadow: '0 0 8px rgba(0,230,255,0.5)' }} />
+                  : <div className="h-full animate-pulse rounded-full bg-[var(--color-primary)]" style={{ width: '35%' }} />
+                }
+              </div>
+            </div>
+          )}
+
+          {/* Active annotation sites */}
+          {annotateSites.length > 0 && (
+            <div>
+              <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Actively annotating</p>
               <div className="overflow-hidden rounded-xl border border-[var(--border-soft)]">
-                {/* Column headers */}
-                <div className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-x-4 bg-black/30 px-4 py-2 text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">
-                  <span>Site</span>
-                  <span>Rank</span>
-                  <span>Current step</span>
-                  <span>Pipeline</span>
-                </div>
-                {Object.entries(activeSites).map(([site, info]) => (
+                {annotateSites.map((site) => (
                   <div
                     key={site}
-                    className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-x-4 border-t border-[var(--border-soft)] px-4 py-2.5"
+                    className="flex items-center gap-3 border-t border-[var(--border-soft)] px-4 py-2.5 first:border-t-0"
+                    style={{ borderLeft: '2px solid rgba(0,230,255,0.4)' }}
                   >
-                    {/* Site name */}
+                    <PulseRing status="online" size={7} />
                     <span className="mono text-sm text-[var(--color-text)]">{site}</span>
-                    {/* Rank */}
-                    <span className="text-xs text-[var(--muted-text)]">#{info.rank}</span>
-                    {/* Step label */}
-                    <span className="text-xs text-[var(--color-primary)]">{info.label}</span>
-                    {/* 4-dot pipeline indicator */}
-                    <div className="flex items-center gap-1">
-                      {STAGE_STEPS.map((s, i) => (
-                        <span
-                          key={s}
-                          className={`inline-block h-2 w-2 rounded-full ${
-                            i < info.stepIndex
-                              ? 'bg-[var(--color-primary)]'
-                              : i === info.stepIndex
-                                ? 'animate-pulse bg-[var(--color-primary)]'
-                                : 'bg-black/30'
-                          }`}
-                          title={s}
-                        />
-                      ))}
-                    </div>
+                    <span className="text-[11px] text-[var(--muted-text)]">
+                      {runtimeState.sites[site]?.phase || runtimeState.sites[site]?.status || 'annotating'}
+                      {typeof runtimeState.sites[site]?.statements === 'number' && runtimeState.sites[site].statements > 0
+                        ? ` · ${runtimeState.sites[site].statements} stmts` : '…'}
+                    </span>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Recently completed */}
-          {recentCompleted.length > 0 && (
-            <div className="mt-4">
-              <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">
-                Recently completed
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {recentCompleted.map((item, i) => (
+          {/* Completed annotation chips */}
+          {annotateCompleted.length > 0 && (
+            <div>
+              <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Completed</p>
+              <div className="flex flex-wrap gap-1.5">
+                {annotateCompleted.map((item, i) => (
                   <span
                     key={`${item.site}-${i}`}
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                      item.status === 'ok'
-                        ? 'border-[var(--color-success)] text-[var(--color-success)]'
-                        : item.cached || item.annotated
+                    className={`stagger-item inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                      item.status === 'completed' || item.status === 'reused'
+                        ? 'border-[rgba(57,255,20,0.3)] text-[var(--color-success)]'
+                        : item.status === 'stopped'
                           ? 'border-[var(--border-soft)] text-[var(--muted-text)]'
-                          : 'border-[var(--color-danger)] text-[var(--color-danger)]'
+                          : 'border-[rgba(255,45,149,0.3)] text-[var(--color-danger)]'
                     }`}
                   >
-                    {item.status === 'ok' && !item.cached ? '✓' : item.annotated ? '★' : item.cached ? '↩' : '✕'}
+                    {item.status === 'completed' || item.status === 'reused' ? '✓' : item.status === 'stopped' ? '↩' : '✕'}
                     {item.site}
-                    {item.annotated && <span className="opacity-60">annotated</span>}
-                    {item.cached && !item.annotated && <span className="opacity-60">cached</span>}
+                    {item.statements > 0 && <span className="opacity-50">{item.statements}</span>}
                   </span>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Idle state */}
-          {scraperActive && Object.keys(activeSites).length === 0 && (
-            <div className="mt-5 text-xs text-[var(--muted-text)]">Initializing — waiting for first site…</div>
+          {/* Live streaming panel */}
+          <LiveAnnotatorPanel streamEvent={latestStreamEvent} annotateRunning={annotateRunning} />
+
+          {/* Annotator logs */}
+          {annotateLogs.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-[10px] uppercase tracking-[0.18em] text-[var(--muted-text)]">Annotator logs</p>
+              <div
+                ref={annotateLogRef}
+                className="mono max-h-[180px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 text-[11px] leading-relaxed"
+              >
+                {annotateLogs.map((line, i) => (
+                  <div key={i} className="flex gap-2">
+                    <span className="shrink-0 text-[var(--muted-text)]">{String(i + 1).padStart(2, '0')}</span>
+                    <span className={
+                      line.includes('[done]') ? 'text-[var(--color-success)]'
+                      : line.includes('[error]') || line.includes('[ERROR]') ? 'text-[var(--color-danger)]'
+                      : line.includes('[WARNING]') ? 'text-[var(--color-warn)]'
+                      : line.includes('[start]') ? 'text-[var(--color-primary)]'
+                      : 'text-[var(--color-text)]'
+                    }>{line}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
-      </section>
-
-      <section
-        className={`overflow-hidden transition-all duration-700 ${
-          hasRun ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0'
-        }`}
-      >
-        <div className="card rounded-2xl p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Logs</p>
-              <h3 className="text-lg font-semibold">Run details</h3>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-[var(--muted-text)]">
-              <button
-                className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs"
-                onClick={onOpenLogWindow}
-              >
-                Open full log
-              </button>
-              <span>tail -f</span>
-            </div>
-          </div>
-          <div className="mt-4 space-y-2 text-xs">
-            {errorMessage && (
-              <div className="rounded-lg border border-[var(--color-danger)] bg-black/20 px-3 py-2 text-[var(--color-danger)]">
-                {errorMessage}
-              </div>
-            )}
-            <div
-              ref={logRef}
-              className="mono max-h-[420px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 pb-6 text-[11px] leading-relaxed text-[var(--muted-text)]"
-              style={{ scrollPaddingBottom: '1.5rem' }}
-            >
-              {visibleLogs.length === 0 && <div>Launch a run to see logs.</div>}
-              {visibleLogs.map((line, index) => (
-                <div key={`${line}-${index}`} className="flex gap-2">
-                  <span className="text-[var(--muted-text)]">{String(index + 1).padStart(2, '0')}</span>
-                  <span className="text-[var(--color-text)]">{line}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Stage 2 — Annotation */}
-      <section className="card rounded-2xl p-6">
-        {(() => {
-          const runtimeState = annotationRunState ?? {
-            totalSites: annotationStats?.total_sites ?? 0,
-            sites: {},
-            processedSites: 0,
-            completedSites: annotationStats?.annotated_sites ?? 0,
-            activeSites: [],
-            tokensIn: 0,
-            tokensOut: 0,
-          }
-          const knownTotal = runtimeState.totalSites || annotationStats?.total_sites || 0
-          const doneCount = runtimeState.processedSites
-          const progressPct = knownTotal > 0 ? Math.round((doneCount / knownTotal) * 100) : 0
-          const annotateSites = runtimeState.activeSites
-          const annotateCompleted = Object.values(runtimeState.sites)
-            .filter((site) => !['pending', 'preprocessing', 'extracting', 'committing'].includes(site.status))
-            .sort((a, b) => a.site.localeCompare(b.site))
-          const tokensIn = runtimeState.tokensIn
-          const tokensOut = runtimeState.tokensOut
-
-          return (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Stage 2</p>
-                  <h3 className="text-lg font-semibold">Policy annotation</h3>
-                  <p className="text-xs text-[var(--muted-text)]">
-                    LLM extraction of structured privacy statements. Only sites with a completed Stage 1 scrape are
-                    eligible.
-                    {annotationStats && (
-                      <span className="ml-1 text-[var(--color-text)]">
-                        {annotationStats.annotated_sites ?? 0}/{annotationStats.total_sites ?? 0} done ·{' '}
-                        {(annotationStats.total_statements ?? 0).toLocaleString()} statements
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {remoteCodeOutdated && (
-                    <button
-                      className="focusable rounded-full border border-amber-500/50 px-4 py-2 text-xs font-semibold text-amber-300"
-                      onClick={onRefreshRemote}
-                      disabled={bridgeActionBusy !== null}
-                    >
-                      {bridgeActionBusy === 'refresh' ? 'Refreshing...' : 'Refresh remote'}
-                    </button>
-                  )}
-                  <button
-                    className={`focusable rounded-full border px-4 py-2 text-xs font-semibold ${
-                      annotateRunning
-                        ? 'border-[var(--color-danger)] text-white'
-                        : 'border-[var(--color-primary)] bg-[var(--color-primary)] text-white'
-                    }`}
-                    onClick={() => {
-                      if (annotateRunning) {
-                        onStopAnnotate?.()
-                      } else {
-                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: false })
-                      }
-                    }}
-                    disabled={!annotateRunning && !hasRun && !((annotationStats?.total_sites ?? 0) > 0)}
-                  >
-                    {annotateRunning ? 'Stop annotation' : 'Annotate policies'}
-                  </button>
-                  {!annotateRunning && (hasRun || (annotationStats?.total_sites ?? 0) > 0) && (
-                    <button
-                      className="focusable rounded-full border border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--muted-text)]"
-                      onClick={() =>
-                        onStartAnnotate?.({ llmModel, concurrency: Number(annotateConcurrency) || 1, force: true })
-                      }
-                    >
-                      Re-annotate (force)
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Controls row */}
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                {/* Cluster bridge status */}
-                <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${
-                  tunnelStatus === 'online'
-                    ? 'border-[var(--color-success)] text-[var(--color-success)]'
-                    : tunnelStatus === 'degraded'
-                      ? 'border-[var(--color-warn)] text-[var(--color-warn)]'
-                    : tunnelStatus === 'offline'
-                      ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
-                      : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-                }`}>
-                  {tunnelStatus === 'online' ? '● Cluster bridge active' : tunnelStatus === 'degraded' ? '◐ Cluster bridge degraded' : tunnelStatus === 'offline' ? '○ Cluster bridge offline' : '◌ Checking bridge…'}
-                </span>
-                {/* DeepSeek model — read-only chip */}
-                <span
-                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-soft)] px-3 py-1 text-xs text-[var(--muted-text)]"
-                  title="Remote Slurm orchestrator via SSH tunnel on port 8910"
-                >
-                  {DEEPSEEK_MODEL.label} — {DEEPSEEK_MODEL.price}
-                </span>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-[var(--muted-text)]">Concurrency</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={16}
-                    className="focusable w-20 rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
-                    value={annotateConcurrency}
-                    onChange={(e) => setAnnotateConcurrency(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              {/* Progress bar + stats — shown when running or after a run */}
-              {(annotateRunning || doneCount > 0) && (
-                <div className="mt-5">
-                  <div className="flex items-center justify-between text-xs text-[var(--muted-text)]">
-                    <span>
-                      {doneCount}
-                      {knownTotal > 0 ? ` / ${knownTotal}` : ''} sites processed
-                      {annotateSites.length > 0 && (
-                        <span className="ml-2 text-[var(--color-primary)]">· {annotateSites.length} active</span>
-                      )}
-                    </span>
-                    {(tokensIn > 0 || tokensOut > 0) && (
-                      <span className="font-mono text-[10px]">
-                        {fmtK(tokensIn)}↑&nbsp;{fmtK(tokensOut)}↓&nbsp;tokens
-                        <span className="ml-1 text-[var(--muted-text)] opacity-60">
-                          {(() => {
-                            const rates = pricingForModel(llmModel)
-                            const cost = (tokensIn / 1e6) * rates.input + (tokensOut / 1e6) * rates.output
-                            return `(≈$${cost.toFixed(3)})`
-                          })()}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-black/30">
-                    {knownTotal > 0 ? (
-                      <div
-                        className="h-full rounded-full bg-[var(--color-primary)] transition-all duration-700"
-                        style={{ width: `${progressPct}%` }}
-                      />
-                    ) : (
-                      <div className="h-full animate-pulse rounded-full bg-[var(--color-primary)]" style={{ width: '40%' }} />
-                    )}
-                  </div>
-                  {doneCount > 0 && knownTotal > 0 && (
-                    <p className="mt-1 text-[10px] text-[var(--muted-text)]">{progressPct}% complete</p>
-                  )}
-                </div>
-              )}
-
-              {/* Active sites */}
-              {annotateSites.length > 0 && (
-                <div className="mt-4">
-                  <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">
-                    Actively annotating
-                  </p>
-                  <div className="overflow-hidden rounded-xl border border-[var(--border-soft)]">
-                    {annotateSites.map((site) => (
-                      <div
-                        key={site}
-                        className="flex items-center gap-3 border-t border-[var(--border-soft)] px-4 py-2.5 first:border-t-0"
-                      >
-                        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--color-primary)]" />
-                        <span className="mono text-sm text-[var(--color-text)]">{site}</span>
-                        <span className="text-xs text-[var(--muted-text)]">
-                          {runtimeState.sites[site]?.phase || runtimeState.sites[site]?.status || 'annotating'}
-                          {typeof runtimeState.sites[site]?.statements === 'number' && runtimeState.sites[site].statements > 0
-                            ? ` · ${runtimeState.sites[site].statements} stmts`
-                            : '…'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Completed sites chips */}
-              {annotateCompleted.length > 0 && (
-                <div className="mt-4">
-                  <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-[var(--muted-text)]">
-                    Completed
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {annotateCompleted.map((item, i) => (
-                      <span
-                        key={`${item.site}-${i}`}
-                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
-                          item.status === 'completed' || item.status === 'reused'
-                            ? 'border-[var(--color-success)] text-[var(--color-success)]'
-                            : item.status === 'stopped'
-                              ? 'border-[var(--border-soft)] text-[var(--muted-text)]'
-                              : 'border-[var(--color-danger)] text-[var(--color-danger)]'
-                        }`}
-                      >
-                        {item.status === 'completed' || item.status === 'reused' ? '✓' : item.status === 'stopped' ? '↩' : '✕'}
-                        {item.site}
-                        {item.statements > 0 && (
-                          <span className="opacity-60">{item.statements} stmts</span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Live streaming panel */}
-              <LiveAnnotatorPanel
-                streamEvent={latestStreamEvent}
-                annotateRunning={annotateRunning}
-              />
-
-              {/* Annotator logs */}
-              {annotateLogs.length > 0 && (
-                <div className="mt-4">
-                  <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Annotator logs</p>
-                  <div
-                    ref={annotateLogRef}
-                    className="mono mt-2 max-h-[200px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 text-[11px] leading-relaxed text-[var(--muted-text)]"
-                  >
-                    {annotateLogs.map((line, i) => (
-                      <div key={i} className="flex gap-2">
-                        <span className="shrink-0 text-[var(--muted-text)]">{String(i + 1).padStart(2, '0')}</span>
-                        <span
-                          className={
-                            line.includes('[done]')
-                              ? 'text-[var(--color-success)]'
-                              : line.includes('[error]') || line.includes('[ERROR]')
-                                ? 'text-[var(--color-danger)]'
-                                : line.includes('[WARNING]')
-                                  ? 'text-[var(--color-warn)]'
-                                  : line.includes('[start]')
-                                    ? 'text-[var(--color-primary)]'
-                                    : 'text-[var(--color-text)]'
-                          }
-                        >
-                          {line}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )
-        })()}
-      </section>
+      </BentoCard>
     </>
   )
 }

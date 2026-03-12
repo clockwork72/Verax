@@ -190,9 +190,9 @@ const PHASE_LABELS: Record<Phase, string> = {
 }
 
 const PHASE_COLORS: Record<Phase, string> = {
-  reasoning: 'text-amber-400 border-amber-400/40 bg-amber-400/5',
-  extraction: 'text-cyan-400 border-cyan-400/40 bg-cyan-400/5',
-  exhaustion: 'text-slate-400 border-slate-400/30 bg-slate-400/5',
+  reasoning: 'text-[var(--color-primary)] border-[rgba(59,217,255,0.35)] bg-[rgba(59,217,255,0.08)]',
+  extraction: 'text-[var(--color-success)] border-[rgba(56,217,138,0.35)] bg-[rgba(56,217,138,0.08)]',
+  exhaustion: 'text-[var(--color-text)] border-white/15 bg-white/5',
   idle: 'text-[var(--muted-text)] border-[var(--border-soft)] bg-transparent',
 }
 
@@ -335,23 +335,23 @@ export function LiveAnnotatorPanel({ streamEvent, annotateRunning }: LiveAnnotat
       <div className="p-4 space-y-3">
         {/* Reasoning panel */}
         {(state.reasoning || state.phase === 'reasoning') && (
-          <div className="rounded-xl border border-amber-400/20 bg-amber-950/20">
+          <div className="rounded-xl border border-[rgba(59,217,255,0.22)] bg-[rgba(59,217,255,0.08)]">
             <button
               className="flex w-full items-center justify-between px-3 py-2 text-left"
               onClick={() => setShowReasoning((v) => !v)}
             >
-              <span className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-amber-400/70">
+              <span className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-[color:rgba(59,217,255,0.88)]">
                 <span>Chain-of-thought</span>
                 {state.phase === 'reasoning' && isLive && (
-                  <span className="text-amber-400"><StreamingCursor /></span>
+                  <span className="text-[var(--color-primary)]"><StreamingCursor /></span>
                 )}
               </span>
-              <span className="text-[10px] text-amber-400/40">{showReasoning ? '▲' : '▼'}</span>
+              <span className="text-[10px] text-[color:rgba(59,217,255,0.52)]">{showReasoning ? '▲' : '▼'}</span>
             </button>
             {showReasoning && (
               <pre
                 ref={reasoningRef}
-                className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words px-3 pb-3 font-mono text-[11px] leading-relaxed text-amber-200/60"
+                className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words px-3 pb-3 font-mono text-[11px] leading-relaxed text-[var(--color-text)]"
               >
                 {stripThinkTags(state.reasoning)}
                 {state.phase === 'reasoning' && isLive && <StreamingCursor />}
@@ -362,13 +362,13 @@ export function LiveAnnotatorPanel({ streamEvent, annotateRunning }: LiveAnnotat
 
         {/* Extraction panel */}
         {(state.extraction || state.phase === 'extraction' || state.phase === 'exhaustion') && (
-          <div className={`rounded-xl border ${state.phase === 'exhaustion' ? 'border-slate-500/20 bg-slate-900/20' : 'border-cyan-400/20 bg-cyan-950/20'}`}>
+          <div className={`rounded-xl border ${state.phase === 'exhaustion' ? 'border-white/15 bg-white/5' : 'border-[rgba(56,217,138,0.22)] bg-[rgba(56,217,138,0.08)]'}`}>
             <div className="flex items-center gap-2 px-3 py-2">
-              <span className={`text-[10px] uppercase tracking-widest ${state.phase === 'exhaustion' ? 'text-slate-400/70' : 'text-cyan-400/70'}`}>
+              <span className={`text-[10px] uppercase tracking-widest ${state.phase === 'exhaustion' ? 'text-[color:rgba(245,251,255,0.74)]' : 'text-[color:rgba(56,217,138,0.88)]'}`}>
                 {state.phase === 'exhaustion' ? 'Completeness check' : 'Extraction output'}
               </span>
               {(state.phase === 'extraction' || state.phase === 'exhaustion') && isLive && (
-                <span className={state.phase === 'exhaustion' ? 'text-slate-400' : 'text-cyan-400'}>
+                <span className={state.phase === 'exhaustion' ? 'text-[var(--color-text)]' : 'text-[var(--color-success)]'}>
                   <StreamingCursor />
                 </span>
               )}
@@ -376,7 +376,7 @@ export function LiveAnnotatorPanel({ streamEvent, annotateRunning }: LiveAnnotat
             <pre
               ref={extractionRef}
               className={`max-h-48 overflow-y-auto whitespace-pre-wrap break-words px-3 pb-3 font-mono text-[11px] leading-relaxed ${
-                state.phase === 'exhaustion' ? 'text-slate-300/70' : 'text-cyan-100/80'
+                state.phase === 'exhaustion' ? 'text-[var(--color-text)]' : 'text-[var(--color-text)]'
               }`}
             >
               <ColorizedJson text={state.extraction} />

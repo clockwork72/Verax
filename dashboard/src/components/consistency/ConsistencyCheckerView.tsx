@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
+
+import { BentoCard } from '../ui/BentoCard'
+import { StatusPill } from '../ui/StatusPill'
 import { readPolicyTextWithMethod } from '../../lib/artifactClient'
+import type { ExplorerSite, ExplorerThirdParty } from '../../data/explorer'
 import type { ReasoningSelection } from '../reasoning/ReasoningView'
 
 type ConsistencyCheckerViewProps = {
@@ -18,6 +21,11 @@ function safeDirname(value: string) {
 function formatExtractionMethod(value?: string | null) {
   if (!value) return 'Unknown'
   return value === 'trafilatura' ? 'Trafilatura' : 'Fallback'
+}
+
+function copyText(text: string) {
+  if (!text || !navigator?.clipboard?.writeText) return
+  void navigator.clipboard.writeText(text)
 }
 
 export function ConsistencyCheckerView({
@@ -39,6 +47,7 @@ export function ConsistencyCheckerView({
   const [searchTerm, setSearchTerm] = useState('')
   const [wrapText, setWrapText] = useState(true)
   const [fontSize, setFontSize] = useState<'sm' | 'md' | 'lg'>('sm')
+  const [focusPane, setFocusPane] = useState<'first' | 'third'>('first')
   const lastLoadRef = useRef('')
   const storageKey = `consistency_state:${outDir}`
 
@@ -76,14 +85,7 @@ export function ConsistencyCheckerView({
       fontSize,
     }
     sessionStorage.setItem(storageKey, JSON.stringify(payload))
-  }, [
-    storageKey,
-    selectedSiteId,
-    selectedThirdParty,
-    searchTerm,
-    wrapText,
-    fontSize,
-  ])
+  }, [fontSize, searchTerm, selectedSiteId, selectedThirdParty, storageKey, wrapText])
 
   useEffect(() => {
     if (!selectedSiteId) {
@@ -116,7 +118,7 @@ export function ConsistencyCheckerView({
       })
       if (!sitePolicy.policyText) {
         setSitePolicyText('')
-        setError('First‑party policy text not found for this site.')
+        setError('First-party policy text not found for this site.')
         setSitePolicyMethod(null)
       } else {
         setSitePolicyText(sitePolicy.policyText)
@@ -133,7 +135,7 @@ export function ConsistencyCheckerView({
     }
 
     void loadPolicies()
-  }, [selectedSiteId, outDir, eligibleSites, selectedThirdParty])
+  }, [eligibleSites, outDir, selectedSiteId, selectedThirdParty])
 
   useEffect(() => {
     if (!selectedThirdParty) {
@@ -157,7 +159,7 @@ export function ConsistencyCheckerView({
     }
 
     void loadThirdPartyPolicy()
-  }, [selectedThirdParty, selectedSite, outDir])
+  }, [outDir, selectedSite, selectedThirdParty])
 
   const fontSizeClass = fontSize === 'lg' ? 'text-[13px]' : fontSize === 'md' ? 'text-[12px]' : 'text-[11px]'
   const wrapClass = wrapText ? 'whitespace-pre-wrap' : 'whitespace-pre'
@@ -170,7 +172,7 @@ export function ConsistencyCheckerView({
     const lower = query.toLowerCase()
     return text.split(regex).map((part, index) =>
       part.toLowerCase() === lower ? (
-        <mark key={`${part}-${index}`} className="rounded bg-[var(--color-warn)]/30 px-1 text-[var(--color-text)]">
+        <mark key={`${part}-${index}`} className="rounded bg-[rgba(0,230,255,0.2)] px-1 text-white ring-1 ring-[rgba(0,230,255,0.32)]">
           {part}
         </mark>
       ) : (
@@ -218,35 +220,49 @@ export function ConsistencyCheckerView({
 
   if (!hasRun) {
     return (
-      <section className="card rounded-2xl p-6">
-        <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">No results</p>
-        <h2 className="text-lg font-semibold">Consistency checker is empty</h2>
+      <BentoCard className="p-6">
+        <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">No results</p>
+        <h2 className="mt-2 text-lg font-semibold">Consistency checker is empty</h2>
         <p className="mt-2 text-sm text-[var(--muted-text)]">
-          Run the scraper first to generate privacy policy texts.
+          Run the scraper first to generate privacy policy texts and third-party policy captures.
         </p>
-      </section>
+      </BentoCard>
     )
   }
 
   return (
-    <>
-      <section className="card rounded-2xl p-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="flex flex-col gap-5">
+      <BentoCard className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Consistency checker</p>
-            <h2 className="text-lg font-semibold">Policy text comparison</h2>
-            <p className="text-xs text-[var(--muted-text)]">
-              Select a site and a third‑party with a scraped policy to compare side‑by‑side.
+            <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Consistency lab</p>
+            <h2 className="text-sm font-semibold">Side-by-side policy comparison</h2>
+            <p className="mt-1 text-[12px] text-[var(--muted-text)]">
+              Compare first-party language against a selected third-party policy with matched search highlighting.
             </p>
           </div>
-          {loading && <span className="text-xs text-[var(--muted-text)]">Loading policies…</span>}
+          <div className="flex flex-wrap items-center gap-2">
+            {loading && <StatusPill variant="running" label="loading policies" pulse />}
+            {error && <StatusPill variant="warn" label="partial data" />}
+            <button
+              className={`focusable rounded-full border px-4 py-2 text-[11px] font-medium transition-colors ${
+                canSendToReasoning
+                  ? 'border-[var(--glass-border)] bg-[rgba(0,230,255,0.08)] text-[var(--color-primary)]'
+                  : 'border-[var(--border-soft)] text-[var(--muted-text)] opacity-50'
+              }`}
+              disabled={!canSendToReasoning}
+              onClick={handleSendToReasoning}
+            >
+              Send pair to Reasoning
+            </button>
+          </div>
         </div>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-[1.1fr_1.2fr]">
+        <div className="mt-4 grid gap-3 xl:grid-cols-[1.05fr_1.05fr_0.9fr]">
           <div className="flex flex-col gap-2">
-            <label className="text-xs text-[var(--muted-text)]">First‑party site</label>
+            <label className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">First-party site</label>
             <select
-              className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
+              className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-[var(--color-text)]"
               value={selectedSiteId}
               onChange={(event) => setSelectedSiteId(event.target.value)}
             >
@@ -258,138 +274,159 @@ export function ConsistencyCheckerView({
               ))}
             </select>
           </div>
+
           <div className="flex flex-col gap-2">
-            <label className="text-xs text-[var(--muted-text)]">Third‑party service</label>
+            <label className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Third-party service</label>
             <select
-              className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-white"
+              className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-[var(--color-text)]"
               value={selectedThirdParty}
               onChange={(event) => setSelectedThirdParty(event.target.value)}
               disabled={!selectedSiteId || thirdPartyOptions.length === 0}
             >
-              <option value="">{selectedSiteId ? 'Select a third‑party' : 'Select a site first'}</option>
+              <option value="">{selectedSiteId ? 'Select a third-party' : 'Select a site first'}</option>
               {thirdPartyOptions.map((tp) => (
                 <option key={tp.name} value={tp.name}>
                   {tp.name} {tp.entity ? `• ${tp.entity}` : ''}
                 </option>
               ))}
             </select>
-            {selectedSiteId && thirdPartyOptions.length === 0 && !loading && (
-              <span className="text-xs text-[var(--muted-text)]">No third‑party policy texts found for this site.</span>
-            )}
           </div>
-        </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-[var(--muted-text)]">
-          <button
-            className={`focusable rounded-full border px-3 py-1 ${
-              canSendToReasoning
-                ? 'border-[var(--color-danger)] text-white'
-                : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-            }`}
-            disabled={!canSendToReasoning}
-            onClick={handleSendToReasoning}
-          >
-            Send pair to Reasoning
-          </button>
-          <div className="flex items-center gap-2">
-            <span>Find</span>
-            <input
-              className="focusable w-56 rounded-full border border-[var(--border-soft)] bg-black/20 px-3 py-1 text-xs text-white"
-              placeholder="Search in both policies"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <span>Wrap</span>
-            <button
-              className={`focusable rounded-full border px-3 py-1 ${
-                wrapText ? 'border-[var(--color-danger)] text-white' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-              }`}
-              onClick={() => setWrapText((prev) => !prev)}
-            >
-              {wrapText ? 'On' : 'Off'}
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <span>Size</span>
-            {(['sm', 'md', 'lg'] as const).map((size) => (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Find text</label>
+              <input
+                className="focusable rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-sm text-[var(--color-text)]"
+                placeholder="Search both panes"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <button
-                key={size}
-                className={`focusable rounded-full border px-3 py-1 ${
-                  fontSize === size
-                    ? 'border-[var(--color-danger)] text-white'
+                className={`focusable rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
+                  wrapText
+                    ? 'border-[var(--glass-border)] text-[var(--color-primary)]'
                     : 'border-[var(--border-soft)] text-[var(--muted-text)]'
                 }`}
-                onClick={() => setFontSize(size)}
+                onClick={() => setWrapText((prev) => !prev)}
               >
-                {size.toUpperCase()}
+                Wrap {wrapText ? 'on' : 'off'}
               </button>
-            ))}
+              {(['sm', 'md', 'lg'] as const).map((size) => (
+                <button
+                  key={size}
+                  className={`focusable rounded-full border px-3 py-1.5 text-[11px] transition-colors ${
+                    fontSize === size
+                      ? 'border-[var(--glass-border)] text-[var(--color-primary)]'
+                      : 'border-[var(--border-soft)] text-[var(--muted-text)]'
+                  }`}
+                  onClick={() => setFontSize(size)}
+                >
+                  {size.toUpperCase()}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
+        {selectedSiteId && thirdPartyOptions.length === 0 && !loading && (
+          <div className="mt-4 rounded-xl border border-[rgba(255,209,102,0.28)] bg-[rgba(255,209,102,0.06)] px-3 py-2 text-[12px] text-[var(--color-warn)]">
+            No third-party policy texts were found for this site.
+          </div>
+        )}
         {error && (
-          <div className="mt-4 rounded-xl border border-[var(--color-warn)] bg-black/20 px-3 py-2 text-xs text-[var(--color-warn)]">
+          <div className="mt-4 rounded-xl border border-[rgba(255,209,102,0.28)] bg-[rgba(255,209,102,0.06)] px-3 py-2 text-[12px] text-[var(--color-warn)]">
             {error}
           </div>
         )}
-      </section>
+      </BentoCard>
 
-      <section className="card rounded-2xl p-6">
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">First‑party policy</p>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-text)]">
-              <span>{selectedSite?.site || '—'}</span>
-              <span>{siteWordCount.toLocaleString()} words • {countMatches(sitePolicyText)} matches</span>
+      <div className="grid gap-5 xl:grid-cols-2">
+        <BentoCard
+          className={`p-5 ${focusPane === 'first' ? 'ring-1 ring-[var(--glass-border)]' : ''}`}
+          glow={focusPane === 'first'}
+          onClick={() => setFocusPane('first')}
+          role="button"
+          aria-label="Focus first-party pane"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">First-party policy</p>
+              <h3 className="text-sm font-semibold">{selectedSite?.site || 'No site selected'}</h3>
             </div>
-            {showExtractionMethod && (
-              <div className="mt-1 text-xs text-[var(--muted-text)]">
-                Extraction: {formatExtractionMethod(selectedSiteMethod)}
-              </div>
-            )}
-            <div className={`consistency-text mt-3 max-h-[480px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 ${fontSizeClass} leading-relaxed text-[var(--muted-text)]`}>
-              <div className="flex justify-end">
-                <button
-                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[10px]"
-                  onClick={() => navigator.clipboard.writeText(sitePolicyText)}
-                  disabled={!sitePolicyText}
-                >
-                  Copy text
-                </button>
-              </div>
-              <pre className={`mono ${wrapClass}`}>{sitePolicyText ? highlight(sitePolicyText) : 'Select a site to load the policy text.'}</pre>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted-text)]">Third‑party policy</p>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted-text)]">
-              <span>{selectedThirdParty || '—'}</span>
-              <span>{thirdPartyWordCount.toLocaleString()} words • {countMatches(thirdPartyPolicyText)} matches</span>
-            </div>
-            {showExtractionMethod && (
-              <div className="mt-1 text-xs text-[var(--muted-text)]">
-                Extraction: {formatExtractionMethod(selectedThirdPartyMethod)}
-              </div>
-            )}
-            <div className={`consistency-text mt-3 max-h-[480px] overflow-y-auto rounded-xl border border-[var(--border-soft)] bg-black/30 p-3 ${fontSizeClass} leading-relaxed text-[var(--muted-text)]`}>
-              <div className="flex justify-end">
-                <button
-                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[10px]"
-                  onClick={() => navigator.clipboard.writeText(thirdPartyPolicyText)}
-                  disabled={!thirdPartyPolicyText}
-                >
-                  Copy text
-                </button>
-              </div>
-              <pre className={`mono ${wrapClass}`}>
-                {thirdPartyPolicyText ? highlight(thirdPartyPolicyText) : 'Select a third‑party policy to load the text.'}
-              </pre>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill variant={sitePolicyText ? 'ok' : 'idle'} label={`${siteWordCount.toLocaleString()} words`} />
+              <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-[11px] text-[var(--muted-text)]">
+                {countMatches(sitePolicyText)} matches
+              </span>
+              {showExtractionMethod && (
+                <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-[11px] text-[var(--muted-text)]">
+                  {formatExtractionMethod(selectedSiteMethod)}
+                </span>
+              )}
             </div>
           </div>
-        </div>
-      </section>
-    </>
+          <div className="mt-4 flex justify-end">
+            <button
+              className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[10px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
+              onClick={(event) => {
+                event.stopPropagation()
+                copyText(sitePolicyText)
+              }}
+              disabled={!sitePolicyText}
+            >
+              Copy text
+            </button>
+          </div>
+          <div className={`consistency-text mt-3 max-h-[560px] overflow-y-auto rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4 ${fontSizeClass} leading-relaxed text-[var(--color-text)]`}>
+            <pre className={`mono ${wrapClass}`}>{sitePolicyText ? highlight(sitePolicyText) : 'Select a site to load the policy text.'}</pre>
+          </div>
+        </BentoCard>
+
+        <BentoCard
+          className={`p-5 ${focusPane === 'third' ? 'ring-1 ring-[var(--glass-border)]' : ''}`}
+          glow={focusPane === 'third'}
+          onClick={() => setFocusPane('third')}
+          role="button"
+          aria-label="Focus third-party pane"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">Third-party policy</p>
+              <h3 className="text-sm font-semibold">{selectedThirdParty || 'No service selected'}</h3>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill variant={thirdPartyPolicyText ? 'ok' : 'idle'} label={`${thirdPartyWordCount.toLocaleString()} words`} />
+              <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-[11px] text-[var(--muted-text)]">
+                {countMatches(thirdPartyPolicyText)} matches
+              </span>
+              {showExtractionMethod && (
+                <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-[11px] text-[var(--muted-text)]">
+                  {formatExtractionMethod(selectedThirdPartyMethod)}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button
+              className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[10px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
+              onClick={(event) => {
+                event.stopPropagation()
+                copyText(thirdPartyPolicyText)
+              }}
+              disabled={!thirdPartyPolicyText}
+            >
+              Copy text
+            </button>
+          </div>
+          <div className={`consistency-text mt-3 max-h-[560px] overflow-y-auto rounded-2xl border border-[var(--border-soft)] bg-black/20 p-4 ${fontSizeClass} leading-relaxed text-[var(--color-text)]`}>
+            <pre className={`mono ${wrapClass}`}>
+              {thirdPartyPolicyText ? highlight(thirdPartyPolicyText) : 'Select a third-party policy to load the text.'}
+            </pre>
+          </div>
+        </BentoCard>
+      </div>
+    </div>
   )
 }

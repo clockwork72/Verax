@@ -40,8 +40,12 @@ describe('LauncherView', () => {
       />
     )
 
-    expect(screen.getByText('● Bridge live')).toBeInTheDocument()
-    expect(screen.getByText(/4\/10 done/i)).toBeInTheDocument()
-    expect(screen.getByText('Dataset launcher')).toBeInTheDocument()
+    // Bridge headline and detail are rendered directly
+    expect(screen.getByText('Bridge stable')).toBeInTheDocument()
+    expect(screen.getByText('Remote orchestrator healthy.')).toBeInTheDocument()
+    // Crawler section title
+    expect(screen.getByText('Dataset crawler')).toBeInTheDocument()
+    // Annotation stats section header is present
+    expect(screen.getByText('Policy annotation')).toBeInTheDocument()
   })
 })

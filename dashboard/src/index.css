@@ -10,27 +10,44 @@
 /* Default DARK theme */
 :root[data-theme="dark"] {
 
-    --color-primary: #00E6FF; /* neon cyan */
-    --color-success: #39FF14; /* neon green */
-    --color-warn: #FFD166;    /* warm neon amber */
-    --color-danger: #FF2D95;  /* neon pink */
+    --color-primary: #3BD9FF; /* electric blue */
+    --color-success: #38D98A; /* bright emerald */
+    --color-warn: #FFB84D;    /* strong amber for true warning states */
+    --color-danger: #FF5C8A;  /* saturated rose for true error states */
 
-    --color-canvas: #05060A;  /* near-black canvas */
-    --color-surface: #071026; /* slightly lifted surface */
-    --color-text: #E6FBFF;    /* cool off-white text */
+    --color-canvas:  #08090E; /* carbon near-black */
+    --color-surface: #0D1117; /* lifted surface */
+    --surface-2:     #141921; /* card layer */
+    --color-text: #F5FBFF;    /* crisp white */
 
-    --border-soft: rgba(0, 230, 255, 0.10);
-    --muted-text: rgba(230, 251, 255, 0.55);
-    --chip-bg: rgba(0, 230, 255, 0.03);
-    --chip-ring: rgba(0, 230, 255, 0.10);
-    --focus-ring: #00E6FF;
-    --kbd-bg: #02121a;
-    --kbd-text: #00E6FF;
-    --shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 24px rgba(0, 230, 255, 0.06);
+    --border-soft:  rgba(59, 217, 255, 0.16);
+    --glass-bg:     rgba(13, 17, 23, 0.78);
+    --glass-border: rgba(59, 217, 255, 0.24);
+    --muted-text:   rgba(245, 251, 255, 0.72);
+    --chip-bg:      rgba(59, 217, 255, 0.08);
+    --chip-ring:    rgba(59, 217, 255, 0.22);
+    --focus-ring:   #3BD9FF;
+    --kbd-bg:       #02121a;
+    --kbd-text:     #3BD9FF;
+    --shadow:       0 8px 32px rgba(0, 0, 0, 0.65), 0 0 24px rgba(59, 217, 255, 0.05);
+    --glow-xs:      0 0 12px rgba(59, 217, 255, 0.10);
+    --glow-sm:      0 0 24px rgba(59, 217, 255, 0.16), 0 0 1px rgba(59, 217, 255, 0.32);
+    --glow-success: 0 0 16px rgba(56, 217, 138, 0.18);
+    --glow-danger:  0 0 16px rgba(255, 92, 138, 0.18);
+    --glow-warn:    0 0 16px rgba(255, 184, 77, 0.18);
 }
 
 /* VS Code Red (Dark+ red accent) */
 :root[data-theme="vscode-red"] {
+    --surface-2:     #2A2A2B;
+    --glass-bg:      rgba(37, 37, 38, 0.88);
+    --glass-border:  #444444;
+    --glow-xs:       none;
+    --glow-sm:       none;
+    --glow-success:  none;
+    --glow-danger:   none;
+    --glow-warn:     none;
+
     --color-primary: #F44747;
     /* VS Code error red */
     --color-success: #2EA043;
@@ -56,6 +73,14 @@
 /* Academia (research UI) */
 :root[data-theme="academia"] {
     color-scheme: light;
+    --surface-2:     #EEEAE4;
+    --glass-bg:      rgba(255, 255, 255, 0.82);
+    --glass-border:  #D0CAC0;
+    --glow-xs:       none;
+    --glow-sm:       none;
+    --glow-success:  none;
+    --glow-danger:   none;
+    --glow-warn:     none;
     --color-primary: #2F6F6D;
     --color-sand: #E9E1D6;
     --color-success: #2E7D32;
@@ -133,6 +158,7 @@ code, .mono {
 .theme-chip {
     background: var(--chip-bg);
     border: 1px solid var(--chip-ring);
+    color: var(--color-text);
 }
 
 .focusable:focus {
@@ -145,6 +171,81 @@ code, .mono {
     box-shadow: var(--shadow);
     border: 1px solid var(--border-soft);
 }
+
+/* ── Glass-morphic card ── */
+.glass-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.04),
+        0 16px 40px rgba(0, 0, 0, 0.55),
+        var(--glow-xs);
+    border-radius: 16px;
+}
+
+/* Academia / vscode: disable blur (no glass on light or dense surfaces) */
+:root[data-theme="academia"] .glass-card,
+:root[data-theme="vscode-red"] .glass-card {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--glass-bg);
+    box-shadow: var(--shadow);
+}
+
+/* ── Bento grid base ── */
+.bento-grid {
+    display: grid;
+    gap: 1rem;
+}
+
+/* ── Glow ring variant ── */
+.glow-ring {
+    box-shadow: var(--glow-sm);
+    border-color: var(--glass-border);
+}
+
+/* ── Shimmer — live data overlay ── */
+@keyframes shimmer {
+    0%   { background-position: -200% center; }
+    100% { background-position:  200% center; }
+}
+.shimmer-bar {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(0, 230, 255, 0.18) 40%,
+        rgba(0, 230, 255, 0.32) 50%,
+        rgba(0, 230, 255, 0.18) 60%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* ── Pulse ring animation ── */
+@keyframes pulse-ring {
+    0%   { transform: scale(1);   opacity: 0.7; }
+    70%  { transform: scale(2.2); opacity: 0;   }
+    100% { transform: scale(2.2); opacity: 0;   }
+}
+
+/* ── Stagger reveal helper ── */
+@keyframes slide-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0);    }
+}
+.stagger-item { animation: slide-up 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.stagger-item:nth-child(1)  { animation-delay:  30ms; }
+.stagger-item:nth-child(2)  { animation-delay:  80ms; }
+.stagger-item:nth-child(3)  { animation-delay: 130ms; }
+.stagger-item:nth-child(4)  { animation-delay: 180ms; }
+.stagger-item:nth-child(5)  { animation-delay: 230ms; }
+.stagger-item:nth-child(6)  { animation-delay: 280ms; }
+.stagger-item:nth-child(7)  { animation-delay: 320ms; }
+.stagger-item:nth-child(8)  { animation-delay: 360ms; }
+.stagger-item:nth-child(n+9){ animation-delay: 400ms; }
 
 /* --- Vertical toolbar helpers --- */
 .rail {
@@ -256,4 +357,16 @@ code, .mono {
     border-radius: 999px;
     background: color-mix(in srgb, var(--color-primary) 65%, var(--muted-text));
     border: 2px solid color-mix(in srgb, var(--color-surface) 90%, transparent);
+}
+
+/* ── Reduced-motion: collapse all animations to simple fade ── */
+@media (prefers-reduced-motion: reduce) {
+    .reveal, .stagger-item, .shimmer-bar {
+        animation: none !important;
+        opacity: 1 !important;
+        transform: none !important;
+    }
+    .glass-card, .card {
+        transition: none !important;
+    }
 }
