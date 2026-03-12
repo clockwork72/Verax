@@ -1,3 +1,7 @@
+function getScraperBridge() {
+  return window.scraper ?? null
+}
+
 export type ArtifactTextResponse = {
   ok: boolean
   data?: string
@@ -19,10 +23,11 @@ export async function readArtifactText({
   outDir,
   relativePath,
 }: ReadArtifactTextOptions): Promise<ArtifactTextResponse> {
-  if (!window.scraper?.readArtifactText) {
+  const scraper = getScraperBridge()
+  if (!scraper?.readArtifactText) {
     return { ok: false, error: 'readArtifactText unavailable' }
   }
-  const result = await window.scraper.readArtifactText({ outDir, relativePath })
+  const result = await scraper.readArtifactText({ outDir, relativePath })
   if (!result?.ok || typeof result.data !== 'string') {
     return { ok: false, error: result?.error || 'artifact_not_found', path: result?.path }
   }
