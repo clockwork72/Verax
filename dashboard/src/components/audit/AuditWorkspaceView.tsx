@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
+import type { ActiveSiteInfo } from '../../contracts/api'
 import { readArtifactText } from '../../lib/artifactClient'
 
 type FirstPartyPolicy = {
@@ -28,7 +29,6 @@ type AuditResultRecord = {
 }
 
 type ActionResult = { ok: boolean; error?: string }
-type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
 
 type AuditWorkspaceViewProps = {
   outDir: string

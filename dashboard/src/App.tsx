@@ -10,8 +10,20 @@ import { ConsistencyCheckerView } from './components/consistency/ConsistencyChec
 import { DatabaseView } from './components/database/DatabaseView'
 import { SettingsView } from './components/settings/SettingsView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
-import type { AnnotationRunState, AnnotationStats, BridgeScriptResult, HpcBridgeStatus } from './contracts/api'
+import type {
+  AnnotationRunState,
+  AnnotationStats,
+  BridgeScriptResult,
+  HpcBridgeStatus,
+} from './contracts/api'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats, emptyAnnotationRunState } from './lib/annotationRunState'
+import {
+  applyScraperRuntimeEvent,
+  emptyScraperSiteActivityState,
+  normalizeScraperExitEvent,
+  normalizeScraperMessageEvent,
+  normalizeScraperRuntimeEvent,
+} from './lib/scraperRuntime'
 import {
   listRunRecords,
   readAnnotationStats,
@@ -76,7 +88,7 @@ function App() {
   const [hasRun, setHasRun] = useState(false)
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState(0)
-  const [logs, setLogs] = useState<string[]>([])
+  const [scraperActivity, setScraperActivity] = useState(emptyScraperSiteActivityState())
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [summaryData, setSummaryData] = useState<any | null>(null)
   const [explorerData, setExplorerData] = useState<any[] | null>(null)
@@ -121,6 +133,9 @@ function App() {
   const llmModelRef = useRef(llmModel)
   const stopRunPendingRef = useRef(false)
   const defaultOutDir = `${runsRoot}/unified`
+  const logs = scraperActivity.logs
+  const activeSites = scraperActivity.activeSites
+  const recentCompleted = scraperActivity.recentCompleted
 
   const resetLoadedOutputState = useCallback((nextOutDir?: string) => {
     setSummaryData(null)
@@ -135,13 +150,11 @@ function App() {
     setAuditUrlOverrides({})
     setAuditBusySite(null)
     setAuditAnnotatingSite(null)
-    setActiveSites({})
-    setRecentCompleted([])
+    setScraperActivity(emptyScraperSiteActivityState())
     setHasRun(false)
     setRunning(false)
     setStopRunPending(false)
     setProgress(0)
-    setLogs([])
     setRunStartedAt(null)
     setEtaText('')
     setAutoAnnotatePending(false)
@@ -196,6 +209,13 @@ function App() {
     if (!preserveRunning) {
       setRunning(false)
     }
+  }, [])
+
+  const appendScraperLog = useCallback((message: string) => {
+    setScraperActivity((prev) => ({
+      ...prev,
+      logs: [...prev.logs, message].slice(-50),
+    }))
   }, [])
 
   const handleMissingOutputDir = useCallback(async (missingDir: string) => {
@@ -257,11 +277,6 @@ function App() {
       setActiveNav('launcher')
     }
   }, [dashboardLocked, activeNav])
-
-  type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
-  type CompletedSiteInfo = { site: string; status: string; cached: boolean; annotated?: boolean }
-  const [activeSites, setActiveSites] = useState<Record<string, ActiveSiteInfo>>({})
-  const [recentCompleted, setRecentCompleted] = useState<CompletedSiteInfo[]>([])
 
   const SITE_STAGE_LABELS: Record<string, { label: string; index: number }> = {
     home_fetch:               { label: 'Home fetch',       index: 0 },
@@ -468,6 +483,15 @@ function App() {
     : dashboardLocked
         ? 'Cluster bridge offline. Start the orchestrator and SSH tunnel with hpc/scraper/launch_remote.sh.'
         : 'Choose how many sites to crawl. Press Enter to start.'
+  const refreshRuns = useCallback(async (baseDir: string = runsRoot) => {
+    setRunRecords(await listRunRecords(baseDir))
+    const size = await readFolderSize(outDir)
+    if (!size.ok && size.error === 'not_found') {
+      await handleMissingOutputDir(outDir)
+    } else if (size.ok) {
+      setFolderBytes(typeof size.bytes === 'number' ? size.bytes : null)
+    }
+  }, [handleMissingOutputDir, outDir, runsRoot])
   const syncLoadedRunState = useCallback(async (targetDir = outDir) => {
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
@@ -483,8 +507,10 @@ function App() {
   useEffect(() => {
     if (!window.scraper) return
     const scraper = window.scraper
-    scraper.onEvent((event) => {
-      if (event?.type === 'run_started') {
+    scraper.onEvent((rawEvent) => {
+      const event = normalizeScraperRuntimeEvent(rawEvent)
+      if (!event) return
+      if (event.type === 'run_started') {
         setHasRun(true)
         setRunning(true)
         setAutoAnnotatePending(false)
@@ -492,66 +518,44 @@ function App() {
         setErrorMessage(null)
         setRunStartedAt(Date.now())
         setEtaText('')
-        setActiveSites({})
-        setRecentCompleted([])
+        setScraperActivity(emptyScraperSiteActivityState())
       }
-      if (event?.type === 'run_progress') {
+      if (event.type === 'run_progress') {
         const processed = Number(event.processed || 0)
         const total = Number(event.total || 0)
         if (total > 0) {
           setProgress(Math.min(100, (processed / total) * 100))
         }
       }
-      if (event?.type === 'site_started' && event.site) {
-        setActiveSites((prev) => ({
-          ...prev,
-          [event.site]: { label: 'Home fetch', stepIndex: 0, rank: event.rank ?? 0 },
-        }))
-        setLogs((prev) => [...prev, `Processing ${event.site}`].slice(-50))
-      }
-      if (event?.type === 'site_stage' && event.site) {
-        const stageInfo = SITE_STAGE_LABELS[event.stage]
-        if (stageInfo) {
-          setActiveSites((prev) => ({
-            ...prev,
-            [event.site]: { ...(prev[event.site] ?? { rank: event.rank ?? 0 }), label: stageInfo.label, stepIndex: stageInfo.index },
-          }))
+      if (event.type === 'site_started' || event.type === 'site_stage' || event.type === 'site_finished') {
+        setScraperActivity((prev) => applyScraperRuntimeEvent(prev, event, SITE_STAGE_LABELS))
+        if (event.type === 'site_finished') {
+          setAuditBusySite((current) => (current === event.site ? null : current))
         }
       }
-      if (event?.type === 'site_finished' && event.site) {
-        setActiveSites((prev) => {
-          const next = { ...prev }
-          delete next[event.site]
-          return next
-        })
-        setAuditBusySite((current) => (current === event.site ? null : current))
-        setRecentCompleted((prev) => [
-          { site: event.site, status: event.status || 'ok', cached: !!event.cached, annotated: !!event.annotated },
-          ...prev.slice(0, 14),
-        ])
-        setLogs((prev) => [...prev, `Finished ${event.site} (${event.status})`].slice(-50))
-      }
-      if (event?.type === 'run_completed') {
+      if (event.type === 'run_completed') {
         setStopRunPending(false)
         setRunning(false)
         setAutoAnnotatePending(autoAnnotate)
         setProgress(100)
         setEtaText('0s')
-        setActiveSites({})
         setAuditBusySite(null)
+        setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
         refreshRuns()
       }
     })
-    scraper.onLog((evt) => {
-      if (evt?.message) {
-        setLogs((prev) => [...prev, evt.message].slice(-50))
+    scraper.onLog((rawEvent) => {
+      const event = normalizeScraperMessageEvent(rawEvent)
+      if (event?.message) {
+        appendScraperLog(event.message)
       }
     })
-    scraper.onError((evt) => {
-      if (evt?.message) {
-        setErrorMessage(String(evt.message))
-        setLogs((prev) => [...prev, `ERROR: ${evt.message}`].slice(-50))
+    scraper.onError((rawEvent) => {
+      const event = normalizeScraperMessageEvent(rawEvent)
+      if (event?.message) {
+        setErrorMessage(event.message)
+        appendScraperLog(`ERROR: ${event.message}`)
       }
       setRunning(false)
       setAutoAnnotatePending(false)
@@ -559,14 +563,15 @@ function App() {
       setAuditBusySite(null)
       void syncLoadedRunState(outDir)
     })
-    scraper.onExit((evt) => {
-      const code = Number(evt?.code ?? 0)
-      const signal = evt?.signal ? String(evt.signal) : null
-      const requested = Boolean(evt?.stop_requested) || stopRunPendingRef.current
+    scraper.onExit((rawEvent) => {
+      const evt = normalizeScraperExitEvent(rawEvent)
+      const code = Number(evt.code ?? 0)
+      const signal = evt.signal ? String(evt.signal) : null
+      const requested = Boolean(evt.stop_requested) || stopRunPendingRef.current
       if (code !== 0 && !requested) {
         setErrorMessage(`Scraper exited with code ${code}${signal ? ` (${signal})` : ''}`)
       } else if (requested) {
-        setLogs((prev) => [...prev, `Scraper stopped${signal ? ` (${signal})` : ''}`].slice(-50))
+        appendScraperLog(`Scraper stopped${signal ? ` (${signal})` : ''}`)
         setErrorMessage(null)
       }
       setRunning(false)
@@ -629,7 +634,7 @@ function App() {
         })
       })
     }
-  }, [autoAnnotate, launchStartingProgress, outDir, syncLoadedRunState])
+  }, [appendScraperLog, autoAnnotate, launchStartingProgress, outDir, refreshRuns, syncLoadedRunState])
 
   // Keep refs in sync so the IPC exit handler always sees current values
   useEffect(() => { llmModelRef.current = llmModel }, [llmModel])
@@ -911,7 +916,7 @@ function App() {
     }
 
     setErrorMessage(null)
-    setLogs([])
+    setScraperActivity(emptyScraperSiteActivityState())
     if (launcherMode === 'start' && !resumeMode) {
       setSummaryData(null)
       setExplorerData(null)
@@ -1043,16 +1048,6 @@ function App() {
     void startAnnotate({})
   }, [autoAnnotatePending, running, hasRun, annotateRunning, startAnnotate])
 
-  const refreshRuns = async (baseDir: string = runsRoot) => {
-    setRunRecords(await listRunRecords(baseDir))
-    const size = await readFolderSize(outDir)
-    if (!size.ok && size.error === 'not_found') {
-      await handleMissingOutputDir(outDir)
-    } else if (size.ok) {
-      setFolderBytes(typeof size.bytes === 'number' ? size.bytes : null)
-    }
-  }
-
   useEffect(() => {
     if (activeNav !== 'database') return
     void refreshRuns()
@@ -1165,20 +1160,20 @@ function App() {
     }
     if (!window.confirm('Stop the current scrape run and keep partial results?')) return
     setStopRunPending(true)
-    setLogs((prev) => [...prev, 'Stop requested'].slice(-50))
+    appendScraperLog('Stop requested')
     const res = await window.scraper.stopRun()
     if (!res.ok) {
       setStopRunPending(false)
       if (res.error === 'not_running') {
         setErrorMessage(null)
-        setLogs((prev) => [...prev, 'Scraper already stopped'].slice(-50))
+        appendScraperLog('Scraper already stopped')
         await refreshBridgeStatus()
         return
       }
       setErrorMessage(res.error || 'Failed to stop scraper')
       return
     }
-    setLogs((prev) => [...prev, res.status === 'stopping' ? 'Stop already in progress' : 'Stop signal sent'].slice(-50))
+    appendScraperLog(res.status === 'stopping' ? 'Stop already in progress' : 'Stop signal sent')
   }
 
   const openLogWindow = async () => {

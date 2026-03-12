@@ -1,10 +1,15 @@
 /// <reference types="vite/client" />
 
 import type {
+  ActiveSiteInfo,
   AnnotationStats,
   BridgeScriptResult,
+  CompletedSiteInfo,
   HpcBridgeStatus,
   PipelineEvent,
+  ScraperExitEvent,
+  ScraperMessageEvent,
+  ScraperRuntimeEvent,
 } from './contracts/api'
 
 type ScraperStartOptions = {
@@ -81,10 +86,10 @@ declare global {
       listRuns: (baseOutDir?: string) => Promise<{ ok: boolean; error?: string; root?: string; runs?: any[] }>
       openLogWindow: (content: string, title?: string) => Promise<{ ok: boolean; error?: string }>
       openPolicyWindow: (url: string) => Promise<{ ok: boolean; error?: string }>
-      onEvent: (callback: (event: any) => void) => void
-      onLog: (callback: (event: any) => void) => void
-      onError: (callback: (event: any) => void) => void
-      onExit: (callback: (event: any) => void) => void
+      onEvent: (callback: (event: ScraperRuntimeEvent) => void) => void
+      onLog: (callback: (event: ScraperMessageEvent) => void) => void
+      onError: (callback: (event: ScraperMessageEvent) => void) => void
+      onExit: (callback: (event: ScraperExitEvent) => void) => void
       rerunSite: (options: ScraperRerunSiteOptions) => Promise<{ ok: boolean; error?: string; paths?: Record<string, string>; site?: string }>
       startAnnotate: (options: { artifactsDir?: string; llmModel?: string; tokenLimit?: number; concurrency?: number; force?: boolean }) => Promise<{ ok: boolean; error?: string; artifactsDir?: string }>
       checkTunnel: () => Promise<{ ok: boolean; status?: number; error?: string; data?: HpcBridgeStatus }>
@@ -114,5 +119,7 @@ export type AnnotatorStreamEvent = {
   tag: string
   delta: string
 }
+
+export type { ActiveSiteInfo, CompletedSiteInfo }
 
 export {}

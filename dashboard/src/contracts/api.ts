@@ -134,3 +134,94 @@ export type BridgeScriptResult = {
   signal?: string | null
   killed?: boolean
 }
+
+export type ActiveSiteInfo = {
+  label: string
+  stepIndex: number
+  rank: number
+}
+
+export type CompletedSiteInfo = {
+  site: string
+  status: string
+  cached: boolean
+  annotated?: boolean
+}
+
+export type ScraperRunStartedEvent = {
+  type: 'run_started'
+  run_id?: string
+  total_sites?: number
+  timestamp?: string
+}
+
+export type ScraperRunStageEvent = {
+  type: 'run_stage'
+  run_id?: string
+  stage?: string
+  timestamp?: string
+}
+
+export type ScraperRunProgressEvent = {
+  type: 'run_progress'
+  run_id?: string
+  processed?: number
+  total?: number
+  status_counts?: Record<string, number>
+  timestamp?: string
+}
+
+export type ScraperSiteStartedEvent = {
+  type: 'site_started'
+  run_id?: string
+  site: string
+  rank?: number
+  timestamp?: string
+}
+
+export type ScraperSiteStageEvent = {
+  type: 'site_stage'
+  run_id?: string
+  site: string
+  rank?: number
+  stage?: string
+  timestamp?: string
+}
+
+export type ScraperSiteFinishedEvent = {
+  type: 'site_finished'
+  run_id?: string
+  site: string
+  rank?: number
+  status?: string
+  cached?: boolean
+  annotated?: boolean
+  timestamp?: string
+}
+
+export type ScraperRunCompletedEvent = {
+  type: 'run_completed'
+  run_id?: string
+  processed?: number
+  total?: number
+  timestamp?: string
+}
+
+export type ScraperRuntimeEvent =
+  | ScraperRunStartedEvent
+  | ScraperRunStageEvent
+  | ScraperRunProgressEvent
+  | ScraperSiteStartedEvent
+  | ScraperSiteStageEvent
+  | ScraperSiteFinishedEvent
+  | ScraperRunCompletedEvent
+
+export type ScraperMessageEvent = {
+  message?: string | null
+}
+
+export type ScraperExitEvent = {
+  code?: number | null
+  signal?: string | null
+  stop_requested?: boolean
+}

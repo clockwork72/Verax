@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AnnotationRunState, AnnotationStats, HpcBridgeStatus } from '../../contracts/api'
+import type {
+  ActiveSiteInfo,
+  AnnotationRunState,
+  AnnotationStats,
+  CompletedSiteInfo,
+  HpcBridgeStatus,
+} from '../../contracts/api'
 import { pricingForModel } from '../../utils/annotationCost'
 import { LiveAnnotatorPanel } from './LiveAnnotatorPanel'
 import type { AnnotatorStreamEvent } from '../../vite-env'
@@ -15,9 +21,6 @@ import { FlowChartModal } from './FlowChartModal'
 const logLines = [
  ''
 ]
-
-type ActiveSiteInfo = { label: string; stepIndex: number; rank: number }
-type CompletedSiteInfo = { site: string; status: string; cached: boolean; annotated?: boolean }
 
 const STAGE_STEPS = ['Home fetch', 'Policy discovery', '3P extraction', '3P policies']
 
