@@ -59,10 +59,55 @@ _CATEGORY_MAP: dict[str, str] = {
     "obscure ownership":                  "High Risk",
 }
 
+_SERVICE_CATEGORY_ORDER: tuple[str, ...] = (
+    "Advertising",
+    "Analytics",
+    "CDN & Hosting",
+    "Social Media",
+    "Embedded Content",
+    "Tag Management",
+    "Consent Management",
+    "Identity & Payment",
+    "High Risk",
+)
+
+_WEBSITE_CATEGORY_ORDER: tuple[str, ...] = (
+    "Business & Finance",
+    "Technology",
+    "News & Media",
+    "E-commerce",
+    "Entertainment",
+    "Education",
+    "Adult",
+)
+
+_WEBSITE_CATEGORY_ALIASES: dict[str, str] = {
+    "business & finance": "Business & Finance",
+    "business and finance": "Business & Finance",
+    "technology": "Technology",
+    "news & media": "News & Media",
+    "news and media": "News & Media",
+    "news": "News & Media",
+    "e-commerce": "E-commerce",
+    "ecommerce": "E-commerce",
+    "shopping": "E-commerce",
+    "entertainment": "Entertainment",
+    "education": "Education",
+    "adult": "Adult",
+    "adult content": "Adult",
+}
+
 
 def normalize_tracker_category(raw: str) -> str:
     """Map a raw Tracker Radar / TrackerDB category string to a consolidated label."""
     return _CATEGORY_MAP.get(raw.strip().lower(), raw)
+
+
+def normalize_website_category(raw: str) -> str | None:
+    normalized = raw.strip().lower()
+    if not normalized:
+        return None
+    return _WEBSITE_CATEGORY_ALIASES.get(normalized)
 
 
 def _normalize_policy_url(url: str) -> str:
@@ -120,12 +165,14 @@ class SummaryBuilder:
     third_party_unique_unmapped_domains: set = field(default_factory=set)
     english_policy_count: int = 0
     site_category_counts: Counter = field(default_factory=Counter)
+    website_category_counts: Counter = field(default_factory=Counter)
     category_counts: Counter = field(default_factory=Counter)
     category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
     entity_counts: Counter = field(default_factory=Counter)
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
     entity_prevalence_max: dict[str, float] = field(default_factory=dict)
     entity_categories: dict[str, Counter] = field(default_factory=dict)
+    category_service_site_counts: dict[str, Counter] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"))
     updated_at: str | None = None
 
@@ -212,11 +259,28 @@ class SummaryBuilder:
                         self.entity_categories[entity] = Counter()
                     self.entity_categories[entity].update(cats)
 
+        main_category = result.get("main_category")
+        normalized_website_category = None
+        if isinstance(main_category, str) and main_category.strip():
+            main_category_name = main_category.strip()
+            self.site_category_counts[main_category_name] += 1
+            normalized_website_category = normalize_website_category(main_category_name)
+            if normalized_website_category:
+                self.website_category_counts[normalized_website_category] += 1
+                row_counts = self.category_service_site_counts.setdefault(normalized_website_category, Counter())
+                site_level_categories = {
+                    normalize_tracker_category(cat)
+                    for tp in third_parties
+                    if isinstance(tp, dict)
+                    for cat in (tp.get("categories") or [])
+                    if isinstance(cat, str) and cat.strip()
+                }
+                for category in site_level_categories:
+                    if category in _SERVICE_CATEGORY_ORDER:
+                        row_counts[category] += 1
+
         if result.get("policy_is_english"):
             self.english_policy_count += 1
-        main_category = result.get("main_category")
-        if isinstance(main_category, str) and main_category.strip():
-            self.site_category_counts[main_category.strip()] += 1
 
         self.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -251,6 +315,29 @@ class SummaryBuilder:
                 "categories": cats,
             })
 
+        heatmap_rows: list[dict[str, Any]] = []
+        max_percentage = 0.0
+        for website_category in _WEBSITE_CATEGORY_ORDER:
+            total_sites = self.website_category_counts.get(website_category, 0)
+            row_counts = self.category_service_site_counts.get(website_category, Counter())
+            cells: list[dict[str, Any]] = []
+            for service_category in _SERVICE_CATEGORY_ORDER:
+                matched_sites = int(row_counts.get(service_category, 0))
+                percentage = (matched_sites / total_sites * 100.0) if total_sites > 0 else 0.0
+                max_percentage = max(max_percentage, percentage)
+                cells.append({
+                    "service_category": service_category,
+                    "matched_sites": matched_sites,
+                    "total_sites": total_sites,
+                    "percentage": round(percentage, 4),
+                    "zero_overlap": total_sites > 0 and matched_sites == 0,
+                })
+            heatmap_rows.append({
+                "website_category": website_category,
+                "total_sites": total_sites,
+                "cells": cells,
+            })
+
         return {
             "run_id": self.run_id,
             "total_sites": self.total_sites,
@@ -279,6 +366,12 @@ class SummaryBuilder:
             },
             "categories": categories,
             "entities": entities,
+            "category_service_heatmap": {
+                "website_categories": list(_WEBSITE_CATEGORY_ORDER),
+                "service_categories": list(_SERVICE_CATEGORY_ORDER),
+                "rows": heatmap_rows,
+                "max_percentage": round(max_percentage, 4),
+            },
             "started_at": self.started_at,
             "updated_at": self.updated_at,
         }

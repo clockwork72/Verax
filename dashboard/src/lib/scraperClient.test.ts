@@ -154,6 +154,22 @@ describe('scraperClient', () => {
           ...baseSummary,
           processed_sites: 4,
           total_sites: 10,
+          category_service_heatmap: {
+            website_categories: ['Technology'],
+            service_categories: ['Analytics'],
+            rows: [{
+              website_category: 'Technology',
+              total_sites: 2,
+              cells: [{
+                service_category: 'Analytics',
+                matched_sites: 2,
+                total_sites: 2,
+                percentage: 100,
+                zero_overlap: false,
+              }],
+            }],
+            max_percentage: 100,
+          },
           mapping: {
             ...baseSummary.mapping,
             unique_radar_mapped: 2,
@@ -213,6 +229,9 @@ describe('scraperClient', () => {
       unique_radar_mapped: 2,
       unique_trackerdb_mapped: 1,
       unique_unmapped: 3,
+    }))
+    expect(snapshot.summary?.category_service_heatmap).toEqual(expect.objectContaining({
+      rows: [expect.objectContaining({ website_category: 'Technology', total_sites: 2 })],
     }))
     expect(snapshot.explorer).toEqual([
       {

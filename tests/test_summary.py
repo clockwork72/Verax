@@ -62,3 +62,51 @@ def test_category_count_still_increments_for_distinct_services():
     summary = sb.to_summary()
     categories = {row["name"]: row["count"] for row in summary["categories"]}
     assert categories.get("Analytics") == 2
+
+
+def test_summary_emits_category_service_heatmap():
+    sb = SummaryBuilder(run_id="run-4", total_sites=3)
+
+    sb.update({
+        "status": "ok",
+        "main_category": "Technology",
+        "third_parties": [
+            {"third_party_etld1": "ga.example", "categories": ["analytics"]},
+            {"third_party_etld1": "cdn.example", "categories": ["cdn"]},
+        ],
+    })
+    sb.update({
+        "status": "ok",
+        "main_category": "Technology",
+        "third_parties": [
+            {"third_party_etld1": "ads.example", "categories": ["advertising"]},
+            {"third_party_etld1": "ga-2.example", "categories": ["audience measurement"]},
+        ],
+    })
+    sb.update({
+        "status": "ok",
+        "main_category": "Shopping",
+        "third_parties": [
+            {"third_party_etld1": "checkout.example", "categories": ["online payment"]},
+        ],
+    })
+
+    summary = sb.to_summary()
+    heatmap = summary["category_service_heatmap"]
+    assert heatmap["website_categories"] == [
+        "Business & Finance",
+        "Technology",
+        "News & Media",
+        "E-commerce",
+        "Entertainment",
+        "Education",
+        "Adult",
+    ]
+    technology_row = next(row for row in heatmap["rows"] if row["website_category"] == "Technology")
+    ecommerce_row = next(row for row in heatmap["rows"] if row["website_category"] == "E-commerce")
+
+    assert technology_row["total_sites"] == 2
+    assert next(cell for cell in technology_row["cells"] if cell["service_category"] == "Analytics")["matched_sites"] == 2
+    assert next(cell for cell in technology_row["cells"] if cell["service_category"] == "Advertising")["matched_sites"] == 1
+    assert ecommerce_row["total_sites"] == 1
+    assert next(cell for cell in ecommerce_row["cells"] if cell["service_category"] == "Identity & Payment")["matched_sites"] == 1

@@ -194,6 +194,39 @@ function asCountMap(value: unknown): Record<string, number> {
   )
 }
 
+function normalizeCategoryServiceHeatmap(raw: unknown): RunSummary['category_service_heatmap'] {
+  const heatmap = asObject(raw)
+  if (!heatmap) return null
+  return {
+    website_categories: asStringArray(heatmap.website_categories),
+    service_categories: asStringArray(heatmap.service_categories),
+    rows: Array.isArray(heatmap.rows)
+      ? heatmap.rows
+          .map((row) => asObject(row))
+          .filter((row): row is Record<string, unknown> => Boolean(row))
+          .map((row) => ({
+            website_category: String(row.website_category || ''),
+            total_sites: asNumber(row.total_sites),
+            cells: Array.isArray(row.cells)
+              ? row.cells
+                  .map((cell) => asObject(cell))
+                  .filter((cell): cell is Record<string, unknown> => Boolean(cell))
+                  .map((cell) => ({
+                    service_category: String(cell.service_category || ''),
+                    matched_sites: asNumber(cell.matched_sites),
+                    total_sites: asNumber(cell.total_sites),
+                    percentage: asNumber(cell.percentage),
+                    zero_overlap: Boolean(cell.zero_overlap),
+                  }))
+                  .filter((cell) => cell.service_category)
+              : [],
+          }))
+          .filter((row) => row.website_category)
+      : [],
+    max_percentage: asNumber(heatmap.max_percentage),
+  }
+}
+
 function normalizeRunSummary(raw: unknown): RunSummary | null {
   const summary = asObject(raw)
   if (!summary) return null
@@ -257,6 +290,7 @@ function normalizeRunSummary(raw: unknown): RunSummary | null {
           }))
           .filter((item) => item.name)
       : [],
+    category_service_heatmap: normalizeCategoryServiceHeatmap(summary.category_service_heatmap),
     started_at: asString(summary.started_at),
     updated_at: asString(summary.updated_at),
   }

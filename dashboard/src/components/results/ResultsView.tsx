@@ -360,6 +360,7 @@ export function ResultsView({
       {/* ── Row 4: Heatmap + Entities ───────────────────────────── */}
       <BentoGrid className="grid-cols-1 xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]">
         <CategoryServiceHeatmap
+          summary={effectiveSummary}
           records={records || undefined}
           sites={sites || undefined}
         />

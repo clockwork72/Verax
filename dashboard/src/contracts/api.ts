@@ -146,6 +146,27 @@ export type RunThirdPartySummary = {
   no_policy_url: number
 }
 
+export type RunSummaryCategoryServiceHeatmapCell = {
+  service_category: string
+  matched_sites: number
+  total_sites: number
+  percentage: number
+  zero_overlap: boolean
+}
+
+export type RunSummaryCategoryServiceHeatmapRow = {
+  website_category: string
+  total_sites: number
+  cells: RunSummaryCategoryServiceHeatmapCell[]
+}
+
+export type RunSummaryCategoryServiceHeatmap = {
+  website_categories: string[]
+  service_categories: string[]
+  rows: RunSummaryCategoryServiceHeatmapRow[]
+  max_percentage: number
+}
+
 export type RunSummary = {
   run_id?: string
   total_sites: number
@@ -158,6 +179,7 @@ export type RunSummary = {
   mapping: RunMappingSummary
   categories: RunSummaryCategory[]
   entities: RunSummaryEntity[]
+  category_service_heatmap?: RunSummaryCategoryServiceHeatmap | null
   started_at?: string
   updated_at?: string
 }

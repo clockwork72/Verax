@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { deriveCategoryServiceHeatmap } from './categoryServiceHeatmap'
+import { deriveCategoryServiceHeatmap, hydrateCategoryServiceHeatmap, resolveCategoryServiceHeatmap } from './categoryServiceHeatmap'
 
 describe('deriveCategoryServiceHeatmap', () => {
   it('builds website-by-service percentages from result records', () => {
@@ -127,5 +127,95 @@ describe('deriveCategoryServiceHeatmap', () => {
       matchedSites: 1,
       percentage: 100,
     })
+  })
+
+  it('hydrates the heatmap from persisted summary data', () => {
+    const heatmap = hydrateCategoryServiceHeatmap({
+      website_categories: [
+        'Business & Finance',
+        'Technology',
+        'News & Media',
+        'E-commerce',
+        'Entertainment',
+        'Education',
+        'Adult',
+      ],
+      service_categories: [
+        'Advertising',
+        'Analytics',
+        'CDN & Hosting',
+        'Social Media',
+        'Embedded Content',
+        'Tag Management',
+        'Consent Management',
+        'Identity & Payment',
+        'High Risk',
+      ],
+      rows: [
+        {
+          website_category: 'Technology',
+          total_sites: 2,
+          cells: [
+            {
+              service_category: 'Analytics',
+              matched_sites: 2,
+              total_sites: 2,
+              percentage: 100,
+              zero_overlap: false,
+            },
+          ],
+        },
+        {
+          website_category: 'Shopping',
+          total_sites: 1,
+          cells: [
+            {
+              service_category: 'Identity & Payment',
+              matched_sites: 1,
+              total_sites: 1,
+              percentage: 100,
+              zero_overlap: false,
+            },
+          ],
+        },
+      ],
+      max_percentage: 100,
+    })
+
+    expect(heatmap).not.toBeNull()
+    expect(heatmap?.rows.find((row) => row.websiteCategory === 'Technology')?.totalSites).toBe(2)
+    expect(heatmap?.rows.find((row) => row.websiteCategory === 'E-commerce')?.cells.find((cell) => cell.serviceCategory === 'Identity & Payment')).toMatchObject({
+      matchedSites: 1,
+      percentage: 100,
+    })
+  })
+
+  it('prefers persisted summary heatmap data over empty live row inputs', () => {
+    const heatmap = resolveCategoryServiceHeatmap({
+      summaryHeatmap: {
+        website_categories: ['Technology'],
+        service_categories: ['Analytics'],
+        rows: [
+          {
+            website_category: 'Technology',
+            total_sites: 1,
+            cells: [
+              {
+                service_category: 'Analytics',
+                matched_sites: 1,
+                total_sites: 1,
+                percentage: 100,
+                zero_overlap: false,
+              },
+            ],
+          },
+        ],
+        max_percentage: 100,
+      },
+      records: [{ site_etld1: 'missing-category.example', third_parties: [] }],
+      sites: null,
+    })
+
+    expect(heatmap?.rows.find((row) => row.websiteCategory === 'Technology')?.totalSites).toBe(1)
   })
 })

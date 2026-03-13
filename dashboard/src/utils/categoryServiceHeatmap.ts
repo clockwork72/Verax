@@ -1,4 +1,4 @@
-import type { ResultRecord } from '../contracts/api'
+import type { ResultRecord, RunSummaryCategoryServiceHeatmap as PersistedCategoryServiceHeatmap } from '../contracts/api'
 import type { ExplorerSite } from '../data/explorer'
 import { CATEGORY_ORDER, normalizeCategory } from './trackerCategories'
 
@@ -96,6 +96,73 @@ function explorerThirdPartyCategories(site: ExplorerSite): Set<string> {
   return categories
 }
 
+function buildEmptyHeatmapRows() {
+  return WEBSITE_CATEGORY_ORDER.map((websiteCategory) => ({
+    websiteCategory,
+    totalSites: 0,
+    cells: CATEGORY_ORDER.map((serviceCategory) => ({
+      serviceCategory,
+      matchedSites: 0,
+      totalSites: 0,
+      percentage: 0,
+      zeroOverlap: false,
+    })),
+  }))
+}
+
+export function hydrateCategoryServiceHeatmap(
+  summaryHeatmap: PersistedCategoryServiceHeatmap | null | undefined,
+): CategoryServiceHeatmap | null {
+  if (!summaryHeatmap) return null
+
+  const rowMap = new Map(
+    (summaryHeatmap.rows || [])
+      .map((row) => {
+        const websiteCategory = normalizeWebsiteCategory(row.website_category)
+        if (!websiteCategory) return null
+        return [websiteCategory, row] as const
+      })
+      .filter((entry): entry is readonly [WebsiteCategory, PersistedCategoryServiceHeatmap['rows'][number]] => Boolean(entry)),
+  )
+
+  const rows = buildEmptyHeatmapRows().map((baseRow) => {
+    const persistedRow = rowMap.get(baseRow.websiteCategory)
+    const totalSites = typeof persistedRow?.total_sites === 'number' ? persistedRow.total_sites : 0
+    const cellMap = new Map(
+      (persistedRow?.cells || [])
+        .filter((cell) => typeof cell.service_category === 'string' && CATEGORY_ORDER.includes(cell.service_category))
+        .map((cell) => [cell.service_category, cell] as const),
+    )
+    return {
+      websiteCategory: baseRow.websiteCategory,
+      totalSites,
+      cells: CATEGORY_ORDER.map((serviceCategory) => {
+        const cell = cellMap.get(serviceCategory)
+        const matchedSites = typeof cell?.matched_sites === 'number' ? cell.matched_sites : 0
+        const percentage = typeof cell?.percentage === 'number'
+          ? cell.percentage
+          : totalSites > 0 ? (matchedSites / totalSites) * 100 : 0
+        return {
+          serviceCategory,
+          matchedSites,
+          totalSites,
+          percentage,
+          zeroOverlap: totalSites > 0 && matchedSites === 0,
+        }
+      }),
+    }
+  })
+
+  if (!rows.some((row) => row.totalSites > 0)) return null
+
+  return {
+    websiteCategories: WEBSITE_CATEGORY_ORDER,
+    serviceCategories: CATEGORY_ORDER,
+    rows,
+    maxPercentage: rows.reduce((max, row) => Math.max(max, ...row.cells.map((cell) => cell.percentage)), 0),
+  }
+}
+
 export function deriveCategoryServiceHeatmap(
   records: ResultRecord[] | null | undefined,
   sites: ExplorerSite[] | null | undefined,
@@ -189,4 +256,16 @@ export function deriveCategoryServiceHeatmap(
     rows,
     maxPercentage,
   }
+}
+
+export function resolveCategoryServiceHeatmap({
+  summaryHeatmap,
+  records,
+  sites,
+}: {
+  summaryHeatmap?: PersistedCategoryServiceHeatmap | null
+  records?: ResultRecord[] | null
+  sites?: ExplorerSite[] | null
+}): CategoryServiceHeatmap | null {
+  return hydrateCategoryServiceHeatmap(summaryHeatmap) ?? deriveCategoryServiceHeatmap(records, sites)
 }

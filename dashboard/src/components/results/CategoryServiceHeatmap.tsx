@@ -1,14 +1,15 @@
 import { useMemo } from 'react'
 
-import type { ResultRecord } from '../../contracts/api'
+import type { ResultRecord, RunSummary } from '../../contracts/api'
 import type { ExplorerSite } from '../../data/explorer'
 import {
-  deriveCategoryServiceHeatmap,
+  resolveCategoryServiceHeatmap,
   type CategoryServiceHeatmap as CategoryServiceHeatmapData,
 } from '../../utils/categoryServiceHeatmap'
 import { BentoCard } from '../ui/BentoCard'
 
 type CategoryServiceHeatmapProps = {
+  summary?: RunSummary | null
   records?: ResultRecord[] | null
   sites?: ExplorerSite[] | null
 }
@@ -59,8 +60,15 @@ function serviceLabelParts(label: string): string[] {
   return [label]
 }
 
-export function CategoryServiceHeatmap({ records, sites }: CategoryServiceHeatmapProps) {
-  const heatmap = useMemo(() => deriveCategoryServiceHeatmap(records, sites), [records, sites])
+export function CategoryServiceHeatmap({ summary, records, sites }: CategoryServiceHeatmapProps) {
+  const heatmap = useMemo(
+    () => resolveCategoryServiceHeatmap({
+      summaryHeatmap: summary?.category_service_heatmap,
+      records,
+      sites,
+    }),
+    [records, sites, summary?.category_service_heatmap],
+  )
 
   return (
     <BentoCard>
@@ -73,7 +81,7 @@ export function CategoryServiceHeatmap({ records, sites }: CategoryServiceHeatma
       </div>
 
       {!heatmap && (
-        <p className="text-[12px] text-[var(--muted-text)]">No live category-service overlap data is available yet.</p>
+        <p className="text-[12px] text-[var(--muted-text)]">No category-service overlap data is available yet.</p>
       )}
 
       {heatmap && (
