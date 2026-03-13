@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
-
-import { readCruxCacheStats } from '../../lib/scraperClient'
 import { Theme } from '../../types'
 import { BentoCard, BentoGrid } from '../ui/BentoCard'
 import { StatusPill } from '../ui/StatusPill'
-
-type CruxCacheStats = { count: number; present: number; absent: number }
 
 type SettingsViewProps = {
   theme: Theme
@@ -13,10 +8,6 @@ type SettingsViewProps = {
   showExtractionMethod: boolean
   onToggleShowExtractionMethod: (value: boolean) => void
   outDir?: string
-  useCrux?: boolean
-  onToggleCrux?: (v: boolean) => void
-  cruxApiKey?: string
-  onCruxKeyChange?: (v: string) => void
   excludeSameEntity?: boolean
   onToggleExcludeSameEntity?: (v: boolean) => void
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
@@ -70,15 +61,9 @@ function themeLabel(theme: Theme) {
 
 function toneClass(active: boolean, tone: 'primary' | 'success' | 'warn' | 'danger' = 'primary') {
   if (active) {
-    if (tone === 'success') {
-      return 'border-[rgba(57,255,20,0.3)] bg-[rgba(57,255,20,0.08)] text-[var(--color-success)]'
-    }
-    if (tone === 'warn') {
-      return 'border-[rgba(255,209,102,0.3)] bg-[rgba(255,209,102,0.08)] text-[var(--color-warn)]'
-    }
-    if (tone === 'danger') {
-      return 'border-[rgba(255,45,149,0.3)] bg-[rgba(255,45,149,0.08)] text-[var(--color-danger)]'
-    }
+    if (tone === 'success') return 'border-[rgba(57,255,20,0.3)] bg-[rgba(57,255,20,0.08)] text-[var(--color-success)]'
+    if (tone === 'warn') return 'border-[rgba(255,209,102,0.3)] bg-[rgba(255,209,102,0.08)] text-[var(--color-warn)]'
+    if (tone === 'danger') return 'border-[rgba(255,45,149,0.3)] bg-[rgba(255,45,149,0.08)] text-[var(--color-danger)]'
     return 'border-[var(--glass-border)] bg-[rgba(0,230,255,0.08)] text-[var(--color-primary)]'
   }
   return 'border-[var(--border-soft)] text-[var(--muted-text)] hover:border-[var(--glass-border)] hover:text-[var(--color-text)]'
@@ -146,10 +131,6 @@ export function SettingsView({
   showExtractionMethod,
   onToggleShowExtractionMethod,
   outDir,
-  useCrux = false,
-  onToggleCrux,
-  cruxApiKey = '',
-  onCruxKeyChange,
   excludeSameEntity = false,
   onToggleExcludeSameEntity,
   mappingMode = 'mixed',
@@ -172,21 +153,6 @@ export function SettingsView({
   onRefreshRemote,
   remoteCodeOutdated = false,
 }: SettingsViewProps) {
-  const [cruxCache, setCruxCache] = useState<CruxCacheStats | null>(null)
-
-  const refreshCruxCache = useCallback(async () => {
-    const res = await readCruxCacheStats(outDir)
-    if (res?.ok && (res.count ?? 0) > 0) {
-      setCruxCache({ count: res.count!, present: res.present!, absent: res.absent! })
-      return
-    }
-    setCruxCache(null)
-  }, [outDir])
-
-  useEffect(() => {
-    void refreshCruxCache()
-  }, [refreshCruxCache])
-
   const tunnelText = tunnelLabel(tunnelStatus)
   const tunnelTone = tunnelVariant(tunnelStatus)
 
@@ -203,20 +169,18 @@ export function SettingsView({
         </BentoCard>
 
         <BentoCard>
-          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted-text)]">Pipeline mode</p>
-          <p className="mt-2 text-xl font-semibold text-[var(--color-text)]">{mappingLabel(mappingMode)}</p>
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted-text)]">Dataset source</p>
+          <p className="mt-2 text-xl font-semibold text-[var(--color-text)]">Categorized CSV</p>
           <p className="mt-2 text-[12px] text-[var(--muted-text)]">
-            {excludeSameEntity ? 'Same-entity domains excluded.' : 'Same-entity domains included.'}
+            Runs scrape directly from `scrapable_websites_categorized.csv`.
           </p>
         </BentoCard>
 
         <BentoCard>
-          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted-text)]">CrUX cache</p>
-          <p className="mt-2 text-xl font-semibold text-[var(--color-text)]">
-            {cruxCache ? cruxCache.count.toLocaleString() : '0'}
-          </p>
+          <p className="text-[11px] uppercase tracking-[0.14em] text-[var(--muted-text)]">Pipeline mode</p>
+          <p className="mt-2 text-xl font-semibold text-[var(--color-text)]">{mappingLabel(mappingMode)}</p>
           <p className="mt-2 text-[12px] text-[var(--muted-text)]">
-            {useCrux ? 'Filter enabled for future runs.' : 'Filter disabled.'}
+            {excludeSameEntity ? 'Same-entity domains excluded.' : 'Same-entity domains included.'}
           </p>
         </BentoCard>
 
@@ -263,7 +227,7 @@ export function SettingsView({
             <SectionHeader
               eyebrow="Pipeline controls"
               title="Run configuration"
-              detail="These settings affect future crawl runs and third-party mapping behavior."
+              detail="Future runs always use the categorized dataset CSV and keep the same output/extend workflow."
             />
 
             <div className="mt-4 rounded-2xl border border-[var(--border-soft)] bg-black/10 p-4">
@@ -290,56 +254,10 @@ export function SettingsView({
             </div>
 
             <div className="mt-3 rounded-2xl border border-[var(--border-soft)] bg-black/10 p-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-[12px] font-medium text-[var(--color-text)]">CrUX filter</p>
-                  <p className="mt-1 text-[11px] leading-relaxed text-[var(--muted-text)]">
-                    Restrict scraping to origins found in the Chrome UX Report dataset.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className={`focusable rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${toneClass(useCrux, useCrux ? 'success' : 'primary')}`}
-                  onClick={() => onToggleCrux?.(!useCrux)}
-                  aria-pressed={useCrux}
-                >
-                  {useCrux ? 'Enabled' : 'Disabled'}
-                </button>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <MetaRow label="Cached origins" value={cruxCache ? cruxCache.count.toLocaleString() : '0'} />
-                <MetaRow label="Present" value={cruxCache ? cruxCache.present.toLocaleString() : '0'} />
-                <MetaRow label="Absent" value={cruxCache ? cruxCache.absent.toLocaleString() : '0'} />
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-[11px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
-                  onClick={() => void refreshCruxCache()}
-                >
-                  Refresh cache
-                </button>
-                {!cruxCache && (
-                  <span className="rounded-full border border-[var(--border-soft)] px-2.5 py-1 text-[11px] text-[var(--muted-text)]">
-                    No cache entries yet
-                  </span>
-                )}
-              </div>
-
-              {useCrux && (
-                <div className="mt-4">
-                  <label className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-text)]">CrUX API key</label>
-                  <input
-                    type="password"
-                    className="focusable mt-2 w-full rounded-xl border border-[var(--border-soft)] bg-black/20 px-4 py-2 text-sm text-[var(--color-text)]"
-                    placeholder="Chrome UX Report API key"
-                    value={cruxApiKey}
-                    onChange={(event) => onCruxKeyChange?.(event.target.value)}
-                  />
-                </div>
-              )}
+              <p className="text-[12px] font-medium text-[var(--color-text)]">Dataset input</p>
+              <p className="mt-1 text-[11px] leading-relaxed text-[var(--muted-text)]">
+                The scraper now reads directly from `scrapable_websites_categorized.csv`. No CrUX API key or CrUX cache is used.
+              </p>
             </div>
           </BentoCard>
         </div>

@@ -74,8 +74,6 @@ function App() {
   const [clearing, setClearing] = useState(false)
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null)
   const [etaText, setEtaText] = useState<string>('')
-  const [useCrux, setUseCrux] = useState(true)
-  const [cruxApiKey, setCruxApiKey] = useState('')
   const [excludeSameEntity, setExcludeSameEntity] = useState(true)
   const [mappingMode, setMappingMode] = useState<'radar' | 'trackerdb' | 'mixed'>('mixed')
   const [outDir, setOutDir] = useState('outputs/unified')
@@ -189,8 +187,6 @@ function App() {
     runManifest,
     topN,
     resumeMode,
-    useCrux,
-    cruxApiKey,
     dashboardLocked: false,
     outDir,
   })
@@ -221,18 +217,15 @@ function App() {
     datasetState,
     topN,
     resumeMode,
-    useCrux,
-    cruxApiKey,
     dashboardLocked,
     outDir,
-  }), [cruxApiKey, dashboardLocked, datasetState, outDir, resumeMode, topN, useCrux])
+  }), [dashboardLocked, datasetState, outDir, resumeMode, topN])
   const {
     currentTargetTotal,
     requestedTargetTotal,
     launchStartingProgress,
     launcherMode,
     launcherActionLabel,
-    cruxKeyMissing,
     launcherActionHint,
   } = launcherState
 
@@ -273,14 +266,11 @@ function App() {
     runsRoot,
     topN,
     resumeMode,
-    useCrux,
-    cruxApiKey,
     excludeSameEntity,
     mappingMode,
     llmModel,
     scraperActive,
     dashboardLocked,
-    cruxKeyMissing,
     launcherMode,
     currentTargetTotal,
     requestedTargetTotal,
@@ -428,10 +418,6 @@ function App() {
             logs={logs}
             errorMessage={errorMessage || undefined}
             etaText={etaText}
-            useCrux={useCrux}
-            onToggleCrux={setUseCrux}
-            cruxApiKey={cruxApiKey}
-            onCruxKeyChange={setCruxApiKey}
             excludeSameEntity={excludeSameEntity}
             onToggleExcludeSameEntity={setExcludeSameEntity}
             mappingMode={mappingMode}
@@ -467,9 +453,8 @@ function App() {
             recentCompleted={recentCompleted}
             primaryActionLabel={launcherActionLabel}
             primaryActionHint={launcherActionHint}
-            primaryActionDisabled={cruxKeyMissing}
             topNLocked={datasetState.isIncomplete}
-            lastTrancoRank={datasetState.lastSuccessfulRank}
+            lastDatasetRank={datasetState.lastSuccessfulRank}
           />
         )}
         {activeNav === 'audit' && (
@@ -495,12 +480,11 @@ function App() {
             hasRun={hasRun}
             progress={progress}
             topN={topN}
-            lastTrancoRank={datasetState.lastSuccessfulRank}
+            lastDatasetRank={datasetState.lastSuccessfulRank}
             metrics={resultsMetrics}
             summary={summaryData}
             records={resultsData || undefined}
             sites={explorerData || undefined}
-            useCrux={useCrux}
             mappingMode={mappingMode}
             annotationStats={annotationStats}
           />
@@ -584,10 +568,6 @@ function App() {
             showExtractionMethod={showExtractionMethod}
             onToggleShowExtractionMethod={setShowExtractionMethod}
             outDir={outDir || undefined}
-            useCrux={useCrux}
-            onToggleCrux={setUseCrux}
-            cruxApiKey={cruxApiKey}
-            onCruxKeyChange={setCruxApiKey}
             excludeSameEntity={excludeSameEntity}
             onToggleExcludeSameEntity={setExcludeSameEntity}
             mappingMode={mappingMode}

@@ -18,8 +18,6 @@ export type DatasetState = {
   pendingManifestSites: string[]
   manifestMode?: RunManifest['mode']
   manifestTopN: number | null
-  manifestTrancoDate?: string
-  manifestCruxFilter?: boolean
 }
 
 export type LauncherState = {
@@ -30,8 +28,6 @@ export type LauncherState = {
   launchStartingProgress: number
   launcherMode: LauncherMode
   launcherActionLabel: string
-  runRequiresCruxKey: boolean
-  cruxKeyMissing: boolean
   launcherActionHint: string
 }
 
@@ -42,6 +38,10 @@ function normalizeSiteKey(value: string): string {
 function resultSiteKey(record: ResultRecord): string {
   const candidate = record?.site_etld1 || record?.input || record?.site || ''
   return typeof candidate === 'string' ? normalizeSiteKey(candidate) : ''
+}
+
+function isDatasetMode(mode?: RunManifest['mode']): boolean {
+  return mode === 'dataset' || mode === 'tranco'
 }
 
 export function buildDatasetState({
@@ -103,8 +103,6 @@ export function buildDatasetState({
     pendingManifestSites,
     manifestMode: runManifest?.mode,
     manifestTopN: Number(runManifest?.topN || 0) || null,
-    manifestTrancoDate: typeof runManifest?.trancoDate === 'string' ? runManifest.trancoDate : undefined,
-    manifestCruxFilter: typeof runManifest?.cruxFilter === 'boolean' ? runManifest.cruxFilter : undefined,
   }
 }
 
@@ -112,28 +110,21 @@ export function buildLauncherState({
   datasetState,
   topN,
   resumeMode,
-  useCrux,
-  cruxApiKey,
   dashboardLocked,
   outDir,
 }: {
   datasetState: DatasetState
   topN: string
   resumeMode: boolean
-  useCrux: boolean
-  cruxApiKey: string
   dashboardLocked: boolean
   outDir: string
 }): LauncherState {
-  // totalSites (from summary/state file) reflects what the scraper actually targeted this run.
-  // manifestTopN is config metadata that may be stale (e.g. a failed extend wrote topN=1500
-  // but only 138 sites were processed). Prefer the live data over the manifest.
   const currentTargetTotal = datasetState.totalSites || datasetState.uniqueSiteCount || datasetState.manifestTopN || 0
   const requestedTargetTotal = Number(topN || 0)
   const canExtendByTarget = (
     resumeMode
     && datasetState.isComplete
-    && (datasetState.manifestMode === 'tranco' || datasetState.lastSuccessfulRank !== null)
+    && (isDatasetMode(datasetState.manifestMode) || datasetState.lastSuccessfulRank !== null)
   )
   const extensionDelta = canExtendByTarget && Number.isFinite(requestedTargetTotal) && requestedTargetTotal > 0
     ? Math.max(0, requestedTargetTotal - currentTargetTotal)
@@ -146,7 +137,7 @@ export function buildLauncherState({
   const launcherMode: LauncherMode = datasetState.isIncomplete
     ? datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0
       ? 'continue'
-      : datasetState.manifestMode === 'tranco' || datasetState.lastSuccessfulRank !== null
+      : isDatasetMode(datasetState.manifestMode) || datasetState.lastSuccessfulRank !== null
         ? 'continue'
         : 'start'
     : canExtendByTarget
@@ -157,27 +148,17 @@ export function buildLauncherState({
     : launcherMode === 'extend'
       ? 'Extend run'
       : 'Start run'
-  const runRequiresCruxKey = launcherMode === 'continue' && datasetState.isIncomplete
-    ? datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0
-      ? false
-      : Boolean(datasetState.manifestCruxFilter ?? useCrux)
-    : launcherMode === 'extend'
-      ? Boolean(datasetState.manifestCruxFilter ?? useCrux)
-      : Boolean(useCrux)
-  const cruxKeyMissing = runRequiresCruxKey && !cruxApiKey.trim()
   const launcherActionHint = launcherMode === 'continue'
     ? datasetState.manifestMode === 'append_sites' && datasetState.pendingManifestSites.length > 0
       ? `Resume ${datasetState.pendingManifestSites.length} pending append target(s) in ${outDir}.`
       : `Resume ${outDir} after ${datasetState.lastSuccessfulSite || `rank #${datasetState.lastSuccessfulRank ?? 0}`} to reach ${datasetState.totalSites} sites.`
-    : cruxKeyMissing
-      ? 'Enter a CrUX API key in Settings before starting a scrape.'
     : launcherMode === 'extend'
       ? extensionDelta > 0
         ? `Extend ${outDir} from ${currentTargetTotal} to ${requestedTargetTotal} total sites by scraping the remaining ${extensionDelta}.`
         : `This dataset already has ${currentTargetTotal} sites. Enter a higher total to continue scraping from the next rank.`
-    : dashboardLocked
+      : dashboardLocked
         ? 'Cluster bridge offline. Start the orchestrator and SSH tunnel with hpc/scraper/launch_remote.sh.'
-        : 'Choose how many sites to crawl. Press Enter to start.'
+        : 'Scrape directly from scrapable_websites_categorized.csv. Enter a target and start the run.'
 
   return {
     currentTargetTotal,
@@ -187,8 +168,6 @@ export function buildLauncherState({
     launchStartingProgress,
     launcherMode,
     launcherActionLabel,
-    runRequiresCruxKey,
-    cruxKeyMissing,
     launcherActionHint,
   }
 }
@@ -202,8 +181,6 @@ export function useLauncherModel({
   runManifest,
   topN,
   resumeMode,
-  useCrux,
-  cruxApiKey,
   dashboardLocked,
   outDir,
 }: {
@@ -215,8 +192,6 @@ export function useLauncherModel({
   runManifest: RunManifest | null
   topN: string
   resumeMode: boolean
-  useCrux: boolean
-  cruxApiKey: string
   dashboardLocked: boolean
   outDir: string
 }): {
@@ -234,11 +209,9 @@ export function useLauncherModel({
     datasetState,
     topN,
     resumeMode,
-    useCrux,
-    cruxApiKey,
     dashboardLocked,
     outDir,
-  }), [cruxApiKey, dashboardLocked, datasetState, outDir, resumeMode, topN, useCrux])
+  }), [dashboardLocked, datasetState, outDir, resumeMode, topN])
 
   return {
     resultsMetrics,

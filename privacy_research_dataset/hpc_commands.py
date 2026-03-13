@@ -8,7 +8,6 @@ from .hpc_runtime import Paths, utc_now
 
 
 SAFE_SCRAPER_CONCURRENCY = 6
-SAFE_CRUX_CONCURRENCY = 4
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20
 
@@ -126,7 +125,6 @@ def build_default_paths(repo_root: Path, out_dir: str | None) -> Paths:
         explorer_jsonl=root / "explorer.jsonl",
         artifacts_dir=root / "artifacts",
         artifacts_ok_dir=root / "artifacts_ok",
-        crux_cache_json=repo_root / "results.crux_cache.json",
     )
 
 
@@ -154,8 +152,6 @@ def build_scraper_args(
         str(paths.explorer_jsonl),
         "--concurrency",
         str(SAFE_SCRAPER_CONCURRENCY),
-        "--crux-concurrency",
-        str(SAFE_CRUX_CONCURRENCY),
         "--policy-cache-max-entries",
         str(SAFE_POLICY_CACHE_MAX),
         "--tp-cache-flush-entries",
@@ -168,9 +164,7 @@ def build_scraper_args(
             if trimmed:
                 args.extend(["--site", trimmed])
     elif options.get("topN"):
-        args.extend(["--tranco-top", str(options["topN"])])
-    if options.get("trancoDate"):
-        args.extend(["--tranco-date", str(options["trancoDate"])])
+        args.extend(["--top-n", str(options["topN"])])
     if options.get("resumeAfterRank") is not None:
         args.extend(["--resume-after-rank", str(options["resumeAfterRank"])])
     if options.get("expectedTotalSites") is not None:
@@ -183,11 +177,6 @@ def build_scraper_args(
         args.extend(["--run-id", str(options["runId"])])
     if options.get("upsertBySite"):
         args.append("--upsert-by-site")
-    args.extend(["--crux-cache-file", str(paths.crux_cache_json)])
-    if options.get("cruxFilter"):
-        args.append("--crux-filter")
-        if options.get("cruxApiKey"):
-            args.extend(["--crux-api-key", str(options["cruxApiKey"])])
     if options.get("skipHomeFailed"):
         args.append("--skip-home-fetch-failed")
     if options.get("excludeSameEntity"):
@@ -200,14 +189,12 @@ def build_scraper_args(
     manifest = {
         "version": 1,
         "status": "running",
-        "mode": "append_sites" if sites else "tranco",
+        "mode": "append_sites" if sites else "dataset",
         "runId": options.get("runId"),
         "topN": manifest_top_n,
-        "trancoDate": options.get("trancoDate"),
         "resumeAfterRank": options.get("resumeAfterRank"),
         "expectedTotalSites": options.get("expectedTotalSites"),
         "requestedSites": [str(site).strip() for site in sites if str(site).strip()],
-        "cruxFilter": bool(options.get("cruxFilter")),
         "startedAt": now,
         "updatedAt": now,
     }

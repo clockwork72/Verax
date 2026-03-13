@@ -85,7 +85,6 @@ export type PathsPayload = {
   explorerJsonl: string
   artifactsDir: string
   artifactsOkDir: string
-  cruxCacheJson: string
 }
 
 export type PathsResponse = {
@@ -155,6 +154,7 @@ export type RunSummary = {
   status_counts: RunSummaryStatusCounts
   third_party: RunThirdPartySummary
   english_policy_count?: number
+  site_categories?: RunSummaryCategory[]
   mapping: RunMappingSummary
   categories: RunSummaryCategory[]
   entities: RunSummaryEntity[]
@@ -176,14 +176,12 @@ export type RunState = {
 export type RunManifest = {
   version: 1
   status: 'running' | 'completed' | 'interrupted'
-  mode: 'tranco' | 'append_sites'
+  mode: 'dataset' | 'append_sites' | 'tranco'
   runId?: string
   topN?: number
-  trancoDate?: string
   resumeAfterRank?: number
   expectedTotalSites?: number
   requestedSites?: string[]
-  cruxFilter?: boolean
   updatedAt: string
   startedAt?: string
   completedAt?: string
@@ -232,6 +230,7 @@ export type ResultRecord = {
   input?: string
   site?: string
   site_etld1?: string
+  main_category?: string | null
   status?: string
   final_url?: string
   first_party_policy?: FirstPartyPolicyRecord | null
@@ -312,15 +311,6 @@ export type ArtifactCountResponse = {
   count: number
   sites: string[]
   path: string
-}
-
-export type CruxCacheStatsResponse = {
-  ok: boolean
-  count: number
-  present: number
-  absent: number
-  path: string
-  error?: string
 }
 
 export type WriteAuditStateResponse = {

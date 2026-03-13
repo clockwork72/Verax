@@ -21,12 +21,11 @@ type ResultsViewProps = {
   hasRun: boolean
   progress: number
   topN: string
-  lastTrancoRank?: number | null
+  lastDatasetRank?: number | null
   metrics: ResultsMetrics
   summary?: RunSummary | null
   records?: ResultRecord[]
   sites?: ExplorerSite[]
-  useCrux?: boolean
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
   annotationStats?: AnnotationStats | null
 }
@@ -79,12 +78,11 @@ export function ResultsView({
   hasRun,
   progress,
   topN,
-  lastTrancoRank = null,
+  lastDatasetRank = null,
   metrics,
   summary,
   records,
   sites,
-  useCrux,
   mappingMode,
   annotationStats,
 }: ResultsViewProps) {
@@ -116,6 +114,7 @@ export function ResultsView({
   const uniqueWithPolicy = thirdParty.unique_with_policy ?? null
   const radarNoPolicy = thirdParty.no_policy_url ?? 0
   const englishPolicyCount = effectiveSummary?.english_policy_count ?? null
+  const siteCategories: RunSummaryCategory[] = effectiveSummary?.site_categories ?? []
 
   const rawCategories: RunSummaryCategory[] = effectiveSummary?.categories ?? []
   const summaryCategories = (() => {
@@ -132,6 +131,7 @@ export function ResultsView({
       })
   })()
   const summaryEntities: RunSummaryEntity[] = effectiveSummary?.entities ?? []
+  const siteCategoryMax = siteCategories.reduce((max: number, cat: RunSummaryCategory) => Math.max(max, cat.count || 0), 1)
   const categoryMax = summaryCategories.reduce((max: number, cat: RunSummaryCategory) => Math.max(max, cat.count || 0), 1)
   const entityMax = summaryEntities.reduce((max: number, e: RunSummaryEntity) => {
     return Math.max(max, e.prevalence_max ?? e.prevalence_avg ?? e.prevalence ?? 0)
@@ -206,10 +206,9 @@ export function ResultsView({
           {progress < 100 ? `${progress.toFixed(0)}% complete` : 'Completed'}
         </span>
         <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Target {topN} sites</span>
-        {lastTrancoRank
-          ? <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Last Tranco rank #{lastTrancoRank}</span>
+        {lastDatasetRank
+          ? <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Last dataset rank #{lastDatasetRank}</span>
           : null}
-        {useCrux && <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">CrUX filter</span>}
         <span className="theme-chip rounded-full px-2.5 py-0.5 text-[11px]">Mapping: {mappingLabel}</span>
         <StatusPill variant={progress >= 100 ? 'ok' : 'running'} label={progress >= 100 ? 'done' : 'in progress'} />
       </div>
@@ -299,8 +298,35 @@ export function ResultsView({
         </BentoCard>
       </BentoGrid>
 
-      {/* ── Row 3: Categories + Entities ────────────────────────── */}
+      {/* ── Row 3: Dataset categories + 3P categories ───────────── */}
       <BentoGrid className="grid-cols-1 lg:grid-cols-[1fr_1fr]">
+        <BentoCard>
+          <p className="mb-1 text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Scraped site categories</p>
+          <p className="mb-3 text-[10px] text-[var(--muted-text)]">Distribution by dataset `main_category`</p>
+          <div className="space-y-2.5 text-[12px]">
+            {siteCategories.map((cat: RunSummaryCategory, i) => {
+              const count = cat.count ?? 0
+              const pct = Math.min(100, (count / Math.max(1, siteCategoryMax)) * 100)
+              return (
+                <motion.div
+                  key={cat.name}
+                  className="flex items-center gap-3"
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.04, duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <span className="w-40 truncate text-[var(--muted-text)]">{cat.name}</span>
+                  <AnimBar pct={pct} color="var(--color-success)" />
+                  <span className="w-8 text-right text-[var(--muted-text)]">{count.toLocaleString()}</span>
+                </motion.div>
+              )
+            })}
+            {siteCategories.length === 0 && (
+              <p className="text-[12px] text-[var(--muted-text)]">No category metadata available for this run yet.</p>
+            )}
+          </div>
+        </BentoCard>
+
         {/* Categories */}
         <BentoCard>
           <p className="mb-1 text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">3P categories</p>
@@ -325,8 +351,10 @@ export function ResultsView({
             })}
           </div>
         </BentoCard>
+      </BentoGrid>
 
-        {/* Entities */}
+      {/* ── Row 4: Entities ─────────────────────────────────────── */}
+      <BentoGrid className="grid-cols-1">
         <BentoCard>
           <p className="mb-3 text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Entity prevalence</p>
           <div className="space-y-3 text-[12px]">
@@ -357,7 +385,7 @@ export function ResultsView({
         </BentoCard>
       </BentoGrid>
 
-      {/* ── Row 4: Annotation coverage (optional) ────────────────── */}
+      {/* ── Row 5: Annotation coverage (optional) ────────────────── */}
       {annotationStats && (
         <BentoCard>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

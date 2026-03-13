@@ -1,15 +1,11 @@
-import { useMemo } from 'react'
-import ReactFlow, { Background, BackgroundVariant, Controls, Node, Edge, NodeProps, MarkerType, Handle, Position } from 'reactflow'
+import { useMemo, type ReactNode } from 'react'
+import ReactFlow, { Background, BackgroundVariant, Controls, Edge, Handle, MarkerType, Node, NodeProps, Position } from 'reactflow'
 
 type FlowChartModalProps = {
   open: boolean
   onClose: () => void
   topN: string
   onTopNChange: (value: string) => void
-  useCrux?: boolean
-  onToggleCrux?: (next: boolean) => void
-  cruxApiKey?: string
-  onCruxKeyChange?: (value: string) => void
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
   onMappingModeChange?: (mode: 'radar' | 'trackerdb' | 'mixed') => void
   excludeSameEntity?: boolean
@@ -24,10 +20,6 @@ type NodeData = {
   width?: number
   topN?: string
   onTopNChange?: (value: string) => void
-  useCrux?: boolean
-  onToggleCrux?: (next: boolean) => void
-  cruxApiKey?: string
-  onCruxKeyChange?: (value: string) => void
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
   onMappingModeChange?: (mode: 'radar' | 'trackerdb' | 'mixed') => void
   excludeSameEntity?: boolean
@@ -46,7 +38,7 @@ function NodeShell({
 }: {
   title: string
   subtitle?: string
-  children?: React.ReactNode
+  children?: ReactNode
   width?: number
   source?: boolean
   target?: boolean
@@ -69,7 +61,7 @@ function NodeShell({
 
 function InputNode({ data }: NodeProps<NodeData>) {
   return (
-    <NodeShell title="Input" subtitle="Number of sites to scrape" width={220} source>
+    <NodeShell title="Input" subtitle="Target rows from the categorized CSV" width={240} source>
       <input
         type="number"
         min={1}
@@ -78,30 +70,6 @@ function InputNode({ data }: NodeProps<NodeData>) {
         className="focusable w-full rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-xs text-white"
         placeholder="1000"
       />
-    </NodeShell>
-  )
-}
-
-function CruxNode({ data }: NodeProps<NodeData>) {
-  return (
-    <NodeShell title="CrUX Filter" subtitle="Keep browsable origins only" width={240} source target>
-      <button
-        className={`focusable rounded-full border px-3 py-1 text-xs ${
-          data.useCrux ? 'border-[var(--color-danger)] text-white' : 'border-[var(--border-soft)] text-[var(--muted-text)]'
-        }`}
-        onClick={() => data.onToggleCrux?.(!data.useCrux)}
-      >
-        CrUX {data.useCrux ? 'on' : 'off'}
-      </button>
-      {data.useCrux && (
-        <input
-          type="password"
-          className="focusable w-full rounded-xl border border-[var(--border-soft)] bg-black/20 px-3 py-2 text-xs text-white"
-          placeholder="CrUX API key"
-          value={data.cruxApiKey || ''}
-          onChange={(event) => data.onCruxKeyChange?.(event.target.value)}
-        />
-      )}
     </NodeShell>
   )
 }
@@ -145,7 +113,7 @@ function ExcludeNode({ data }: NodeProps<NodeData>) {
         }`}
         onClick={() => data.onToggleExcludeSameEntity?.(!data.excludeSameEntity)}
       >
-        Exclude same‑entity {data.excludeSameEntity ? 'on' : 'off'}
+        Exclude same-entity {data.excludeSameEntity ? 'on' : 'off'}
       </button>
     </NodeShell>
   )
@@ -185,10 +153,6 @@ export function FlowChartModal({
   onClose,
   topN,
   onTopNChange,
-  useCrux,
-  onToggleCrux,
-  cruxApiKey,
-  onCruxKeyChange,
   mappingMode,
   onMappingModeChange,
   excludeSameEntity,
@@ -205,21 +169,15 @@ export function FlowChartModal({
         data: { title: 'Input', topN, onTopNChange },
       },
       {
-        id: 'crux',
-        type: 'cruxNode',
-        position: { x: 300, y: 40 },
-        data: { title: 'CrUX', useCrux, onToggleCrux, cruxApiKey, onCruxKeyChange },
-      },
-      {
         id: 'mapping',
         type: 'mappingNode',
-        position: { x: 580, y: 40 },
+        position: { x: 320, y: 40 },
         data: { title: 'Mapping', mappingMode, onMappingModeChange },
       },
       {
         id: 'exclude',
         type: 'excludeNode',
-        position: { x: 860, y: 40 },
+        position: { x: 620, y: 40 },
         data: { title: 'Filter', excludeSameEntity, onToggleExcludeSameEntity },
       },
       {
@@ -231,25 +189,25 @@ export function FlowChartModal({
       {
         id: 'policy',
         type: 'infoNode',
-        position: { x: 300, y: 220 },
+        position: { x: 320, y: 220 },
         data: { title: 'Policy discovery', subtitle: 'Score links + fetch best policy page' },
       },
       {
         id: 'thirdparty',
         type: 'infoNode',
-        position: { x: 580, y: 220 },
+        position: { x: 620, y: 220 },
         data: { title: '3P extraction', subtitle: 'Derive third-party eTLD+1 from requests' },
       },
       {
-        id: 'mapfetch',
+        id: 'dataset',
         type: 'infoNode',
-        position: { x: 860, y: 220 },
-        data: { title: 'Map + policy fetch', subtitle: 'Entity/category mapping + optional policy text' },
+        position: { x: 900, y: 220 },
+        data: { title: 'Dataset metadata', subtitle: 'Carry main_category into results and summaries' },
       },
       {
         id: 'outputs',
         type: 'outputNode',
-        position: { x: 580, y: 420 },
+        position: { x: 620, y: 420 },
         data: { title: 'Outputs' },
       },
       {
@@ -262,10 +220,6 @@ export function FlowChartModal({
     [
       topN,
       onTopNChange,
-      useCrux,
-      onToggleCrux,
-      cruxApiKey,
-      onCruxKeyChange,
       mappingMode,
       onMappingModeChange,
       excludeSameEntity,
@@ -277,15 +231,14 @@ export function FlowChartModal({
 
   const edges = useMemo<Edge[]>(
     () => [
-      { id: 'e1', source: 'input', target: 'crux', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e2', source: 'crux', target: 'mapping', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e3', source: 'mapping', target: 'exclude', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e4', source: 'exclude', target: 'crawl', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e5', source: 'crawl', target: 'policy', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e6', source: 'policy', target: 'thirdparty', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e7', source: 'thirdparty', target: 'mapfetch', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e8', source: 'mapfetch', target: 'outputs', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e9', source: 'launch', target: 'crawl', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e1', source: 'input', target: 'mapping', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e2', source: 'mapping', target: 'exclude', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e3', source: 'exclude', target: 'crawl', type: 'smoothstep', animated: true, markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e4', source: 'crawl', target: 'policy', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e5', source: 'policy', target: 'thirdparty', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e6', source: 'thirdparty', target: 'dataset', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e7', source: 'dataset', target: 'outputs', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
+      { id: 'e8', source: 'launch', target: 'crawl', type: 'smoothstep', markerEnd: { type: MarkerType.ArrowClosed } },
     ],
     [],
   )
@@ -318,7 +271,6 @@ export function FlowChartModal({
             nodesConnectable={false}
             nodeTypes={{
               inputNode: InputNode,
-              cruxNode: CruxNode,
               mappingNode: MappingNode,
               excludeNode: ExcludeNode,
               infoNode: InfoNode,

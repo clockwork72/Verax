@@ -22,7 +22,7 @@ describe('useWorkspaceController helpers', () => {
       totalSites: 1200,
       processedSites: 1000,
       missingOutputDir: false,
-      runManifest: { version: 1, status: 'running', mode: 'tranco', topN: 999, expectedTotalSites: 999, updatedAt: '2026-03-12T05:00:00+00:00' },
+      runManifest: { version: 1, status: 'running', mode: 'dataset', topN: 999, expectedTotalSites: 999, updatedAt: '2026-03-12T05:00:00+00:00' },
     })).toBe(1200)
   })
 
@@ -35,7 +35,7 @@ describe('useWorkspaceController helpers', () => {
       totalSites: 0,
       processedSites: 0,
       missingOutputDir: false,
-      runManifest: { version: 1, status: 'running', mode: 'tranco', expectedTotalSites: 850, updatedAt: '2026-03-12T05:00:00+00:00' },
+      runManifest: { version: 1, status: 'running', mode: 'dataset', expectedTotalSites: 850, updatedAt: '2026-03-12T05:00:00+00:00' },
     })).toBe(850)
   })
 })

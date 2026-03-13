@@ -16,6 +16,7 @@ export type LiveRunSummary = {
   status_counts: RunSummaryStatusCounts
   third_party: RunThirdPartySummary
   mapping: RunMappingSummary
+  site_categories: RunSummaryCategory[]
   categories: RunSummaryCategory[]
   entities: RunSummaryEntity[]
   english_policy_count: number
@@ -159,6 +160,7 @@ export function deriveLiveRunSummary(
   const uniqueRadarDomains = new Set<string>()
   const uniqueTrackerdbDomains = new Set<string>()
   const uniqueUnmappedDomains = new Set<string>()
+  const siteCategoryCounts = new Map<string, number>()
   const categoryCounts = new Map<string, number>()
   const categoryServicePairs = new Set<string>()
   const entityCounts = new Map<string, number>()
@@ -193,6 +195,12 @@ export function deriveLiveRunSummary(
     if (status === 'ok') okSites += 1
     if ('policy_is_english' in site && (site as ResultRecord).policy_is_english) {
       englishPolicyCount += 1
+    }
+    const mainCategory = finalResultRecords.size > 0
+      ? (typeof (site as ResultRecord).main_category === 'string' ? (site as ResultRecord).main_category : null)
+      : (typeof (site as ExplorerSite).mainCategory === 'string' ? (site as ExplorerSite).mainCategory : null)
+    if (mainCategory && mainCategory.trim()) {
+      siteCategoryCounts.set(mainCategory, (siteCategoryCounts.get(mainCategory) ?? 0) + 1)
     }
 
     const thirdParties = finalResultRecords.size > 0
@@ -278,6 +286,10 @@ export function deriveLiveRunSummary(
       unique_trackerdb_mapped: uniqueTrackerdbDomains.size,
       unique_unmapped: uniqueUnmappedDomains.size,
     },
+    site_categories: [...siteCategoryCounts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20),
     categories: finalizeCategories(categoryCounts),
     entities: finalizeEntities(entityCounts, entityPrevalenceSums, entityPrevalenceMax, entityCategories),
     english_policy_count: englishPolicyCount,

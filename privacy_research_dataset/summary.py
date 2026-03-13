@@ -119,6 +119,7 @@ class SummaryBuilder:
     third_party_unique_trackerdb_domains: set = field(default_factory=set)
     third_party_unique_unmapped_domains: set = field(default_factory=set)
     english_policy_count: int = 0
+    site_category_counts: Counter = field(default_factory=Counter)
     category_counts: Counter = field(default_factory=Counter)
     category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
     entity_counts: Counter = field(default_factory=Counter)
@@ -213,6 +214,9 @@ class SummaryBuilder:
 
         if result.get("policy_is_english"):
             self.english_policy_count += 1
+        main_category = result.get("main_category")
+        if isinstance(main_category, str) and main_category.strip():
+            self.site_category_counts[main_category.strip()] += 1
 
         self.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -223,6 +227,10 @@ class SummaryBuilder:
         categories = [
             {"name": name, "count": count}
             for name, count in self.category_counts.most_common(20)
+        ]
+        site_categories = [
+            {"name": name, "count": count}
+            for name, count in self.site_category_counts.most_common(20)
         ]
 
         entities = []
@@ -259,6 +267,7 @@ class SummaryBuilder:
                 "no_policy_url": self.third_party_no_policy_url,
             },
             "english_policy_count": self.english_policy_count,
+            "site_categories": site_categories,
             "mapping": {
                 "mode": self.mapping_mode,
                 "radar_mapped": self.third_party_radar_mapped,
@@ -304,6 +313,7 @@ def site_to_explorer_record(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "rank": result.get("rank"),
         "site": result.get("site_etld1") or result.get("input"),
+        "mainCategory": result.get("main_category"),
         "status": result.get("status"),
         "policyUrl": first_party_policy.get("url"),
         "extractionMethod": first_party_policy.get("extraction_method"),

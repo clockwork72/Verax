@@ -47,7 +47,6 @@ class _FakeService:
             explorer_jsonl=root / "explorer.jsonl",
             artifacts_dir=root / "artifacts",
             artifacts_ok_dir=root / "artifacts_ok",
-            crux_cache_json=self.repo_root / "results.crux_cache.json",
         )
 
 
@@ -113,4 +112,3 @@ def test_build_paths_response_uses_existing_path_keys():
     assert payload["data"]["explorerJsonl"].endswith("/outputs/run_1/explorer.jsonl")
     assert payload["data"]["artifactsDir"].endswith("/outputs/run_1/artifacts")
     assert payload["data"]["artifactsOkDir"].endswith("/outputs/run_1/artifacts_ok")
-    assert payload["data"]["cruxCacheJson"].endswith("/results.crux_cache.json")

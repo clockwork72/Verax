@@ -3,7 +3,6 @@ import type {
   AnnotationStats,
   BridgeScriptResult,
   ClearResultsResponse,
-  CruxCacheStatsResponse,
   DeleteOutputResponse,
   HpcBridgeStatus,
   JsonPathResponse,
@@ -125,6 +124,11 @@ function sanitizeExplorer(records: unknown): ExplorerSite[] {
     normalized.push({
       site,
       rank: typeof row.rank === 'number' ? row.rank : null,
+      mainCategory: typeof row.mainCategory === 'string'
+        ? row.mainCategory
+        : typeof row.main_category === 'string'
+          ? row.main_category
+          : null,
       status: typeof row.status === 'string' ? row.status : 'exception',
       policyUrl: typeof row.policyUrl === 'string'
         ? row.policyUrl
@@ -189,6 +193,13 @@ function normalizeRunSummary(raw: unknown): RunSummary | null {
       no_policy_url: asNumber(asObject(summary.third_party)?.no_policy_url),
     },
     english_policy_count: asNumber(summary.english_policy_count, 0),
+    site_categories: Array.isArray(summary.site_categories)
+      ? summary.site_categories
+          .map((item) => asObject(item))
+          .filter((item): item is Record<string, unknown> => Boolean(item))
+          .map((item) => ({ name: String(item.name || ''), count: asNumber(item.count) }))
+          .filter((item) => item.name)
+      : [],
     mapping: {
       mode: (asObject(summary.mapping)?.mode as RunSummary['mapping']['mode']) ?? null,
       radar_mapped: asNumber(asObject(summary.mapping)?.radar_mapped),
@@ -262,14 +273,12 @@ function normalizeRunManifest(raw: unknown): RunManifest | null {
   return {
     version: manifest.version === 1 ? 1 : 1,
     status: manifest.status === 'completed' || manifest.status === 'interrupted' ? manifest.status : 'running',
-    mode: manifest.mode === 'append_sites' ? 'append_sites' : 'tranco',
+    mode: manifest.mode === 'append_sites' ? 'append_sites' : 'dataset',
     runId: asString(manifest.runId),
     topN: typeof manifest.topN === 'number' ? manifest.topN : undefined,
-    trancoDate: asString(manifest.trancoDate),
     resumeAfterRank: typeof manifest.resumeAfterRank === 'number' ? manifest.resumeAfterRank : undefined,
     expectedTotalSites: typeof manifest.expectedTotalSites === 'number' ? manifest.expectedTotalSites : undefined,
     requestedSites: asStringArray(manifest.requestedSites),
-    cruxFilter: typeof manifest.cruxFilter === 'boolean' ? manifest.cruxFilter : undefined,
     updatedAt: manifest.updatedAt,
     startedAt: asString(manifest.startedAt),
     completedAt: asString(manifest.completedAt),
@@ -345,13 +354,6 @@ export async function countOkArtifactSites(outDir?: string): Promise<string[]> {
   if (!scraper?.countOkArtifacts) return []
   const result = await scraper.countOkArtifacts(outDir)
   return result?.ok && Array.isArray(result.sites) ? result.sites : []
-}
-
-export async function readCruxCacheStats(outDir?: string): Promise<CruxCacheStatsResponse | null> {
-  const scraper = getScraperBridge()
-  if (!scraper?.cruxCacheStats) return null
-  const result = await scraper.cruxCacheStats(outDir)
-  return result?.ok ? result : null
 }
 
 export async function openEmbeddedPolicyWindow(url: string): Promise<boolean> {

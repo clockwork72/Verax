@@ -9,7 +9,6 @@ import {
   listRunRecords,
   openEmbeddedPolicyWindow,
   openLogWindow,
-  readCruxCacheStats,
   readFolderSize,
   readRunManifest,
   readWorkspaceSnapshot,
@@ -52,9 +51,10 @@ const baseSummary = {
     unique_radar_mapped: 0,
     unique_trackerdb_mapped: 0,
     unique_unmapped: 0,
-  },
-  categories: [],
-  entities: [],
+    },
+    site_categories: [],
+    categories: [],
+    entities: [],
 }
 
 const baseState = {
@@ -113,7 +113,6 @@ function installScraperMock(overrides: Partial<NonNullable<Window['scraper']>>) 
     openLogWindow: async () => ({ ok: true }),
     countOkArtifacts: async () => ({ ok: true, count: 0, sites: [], path: 'outputs/unified/artifacts_ok' }),
     readTpCache: async () => ({ ok: true, total: 0, fetched: 0, failed: 0, by_status: {} }),
-    cruxCacheStats: async () => ({ ok: true, count: 0, present: 0, absent: 0, path: 'results.crux_cache.json' }),
     openPolicyWindow: async () => ({ ok: true }),
     onEvent: () => {},
     onActivitySnapshot: () => {},
@@ -178,7 +177,7 @@ describe('scraperClient', () => {
       }),
       readRunManifest: async () => ({
         ok: true,
-        data: { mode: 'tranco', expectedTotalSites: 10, updatedAt: '2026-03-12T05:00:00+00:00', version: 1, status: 'running' },
+        data: { mode: 'dataset', expectedTotalSites: 10, updatedAt: '2026-03-12T05:00:00+00:00', version: 1, status: 'running' },
       }),
       annotationStats: async () => ({
         ok: true,
@@ -219,6 +218,7 @@ describe('scraperClient', () => {
       {
         site: 'docker.com',
         rank: null,
+        mainCategory: null,
         status: 'exception',
         policyUrl: null,
         extractionMethod: null,
@@ -227,6 +227,7 @@ describe('scraperClient', () => {
       {
         site: 'openai.com',
         rank: null,
+        mainCategory: null,
         status: 'exception',
         policyUrl: null,
         extractionMethod: null,
@@ -297,7 +298,7 @@ describe('scraperClient', () => {
     await expect(readFolderSize('outputs/run-1')).resolves.toEqual({ ok: true, bytes: 4096 })
   })
 
-  it('routes helper calls for artifact counts, crux cache stats, and policy windows through the client layer', async () => {
+  it('routes helper calls for artifact counts and policy windows through the client layer', async () => {
     installScraperMock({
       countOkArtifacts: async () => ({
         ok: true,
@@ -305,24 +306,10 @@ describe('scraperClient', () => {
         sites: ['docker.com', 'openai.com'],
         path: 'outputs/unified/artifacts_ok',
       }),
-      cruxCacheStats: async () => ({
-        ok: true,
-        count: 12,
-        present: 10,
-        absent: 2,
-        path: 'results.crux_cache.json',
-      }),
       openPolicyWindow: async () => ({ ok: true }),
     })
 
     await expect(countOkArtifactSites('outputs/unified')).resolves.toEqual(['docker.com', 'openai.com'])
-    await expect(readCruxCacheStats('outputs/unified')).resolves.toEqual({
-      ok: true,
-      count: 12,
-      present: 10,
-      absent: 2,
-      path: 'results.crux_cache.json',
-    })
     await expect(openEmbeddedPolicyWindow('https://example.com/privacy')).resolves.toBe(true)
   })
 
@@ -340,7 +327,7 @@ describe('scraperClient', () => {
         },
       }),
       startRun: async () => ({ ok: true, paths: { outDir: 'outputs/run-2', resultsJsonl: 'r.jsonl', summaryJson: 's.json', stateJson: 'state.json', explorerJsonl: 'e.jsonl', artifactsDir: 'artifacts', artifactsOkDir: 'artifacts_ok' } }),
-      readRunManifest: async () => ({ ok: true, data: { version: 1, status: 'running', mode: 'tranco', updatedAt: '2026-03-12T05:00:00+00:00' } }),
+      readRunManifest: async () => ({ ok: true, data: { version: 1, status: 'running', mode: 'dataset', updatedAt: '2026-03-12T05:00:00+00:00' } }),
       rerunSite: async (options) => ({ ok: true, site: options.site }),
       annotateSite: async (options) => ({ ok: true, site: options.site }),
       startAnnotate: async () => ({ ok: true }),
@@ -384,7 +371,7 @@ describe('scraperClient', () => {
     }))
     await expect(readRunManifest('outputs/run-2')).resolves.toEqual({
       ok: true,
-      data: { version: 1, status: 'running', mode: 'tranco', updatedAt: '2026-03-12T05:00:00+00:00' },
+      data: { version: 1, status: 'running', mode: 'dataset', updatedAt: '2026-03-12T05:00:00+00:00' },
     })
     await expect(requestRerunSite({ site: 'docker.com', outDir: 'outputs/run-1' })).resolves.toEqual({
       ok: true,

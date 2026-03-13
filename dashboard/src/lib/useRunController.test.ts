@@ -9,7 +9,6 @@ describe('useRunController helpers', () => {
     const plan = buildStartRunPlan({
       scraperActive: false,
       dashboardLocked: false,
-      cruxKeyMissing: false,
       launcherMode: 'continue',
       topN: '1000',
       currentTargetTotal: 1000,
@@ -28,8 +27,6 @@ describe('useRunController helpers', () => {
         lastSuccessfulRank: null,
         manifestTopN: null,
       },
-      useCrux: true,
-      cruxApiKey: 'secret',
       excludeSameEntity: true,
     })
 
@@ -54,7 +51,6 @@ describe('useRunController helpers', () => {
     const plan = buildStartRunPlan({
       scraperActive: false,
       dashboardLocked: false,
-      cruxKeyMissing: false,
       launcherMode: 'extend',
       topN: '1200',
       currentTargetTotal: 1000,
@@ -65,33 +61,26 @@ describe('useRunController helpers', () => {
       outDir: 'outputs/unified',
       datasetState: {
         isIncomplete: false,
-        manifestMode: 'tranco',
+        manifestMode: 'dataset',
         pendingManifestSites: [],
         totalSites: 1000,
         processedSites: 1000,
         uniqueSiteCount: 990,
         lastSuccessfulRank: 1500,
         manifestTopN: 1000,
-        manifestTrancoDate: '2026-03-11',
-        manifestCruxFilter: true,
       },
-      useCrux: true,
-      cruxApiKey: 'secret',
       excludeSameEntity: false,
     })
 
     expect(plan.blocked).toBe(false)
     expect(plan.startOptions).toMatchObject({
       topN: 200,
-      trancoDate: '2026-03-11',
       outDir: 'outputs/unified',
       artifactsDir: 'outputs/unified/artifacts',
       runId: '22222222-2222-2222-2222-222222222222',
       resumeAfterRank: 1500,
       expectedTotalSites: 1200,
       upsertBySite: true,
-      cruxFilter: true,
-      cruxApiKey: 'secret',
       trackerRadarIndex: 'tracker_radar_index.json',
       trackerDbIndex: undefined,
       excludeSameEntity: false,
@@ -104,7 +93,6 @@ describe('useRunController helpers', () => {
     const plan = buildStartRunPlan({
       scraperActive: false,
       dashboardLocked: false,
-      cruxKeyMissing: false,
       launcherMode: 'start',
       topN: '250',
       currentTargetTotal: 0,
@@ -122,8 +110,6 @@ describe('useRunController helpers', () => {
         lastSuccessfulRank: null,
         manifestTopN: null,
       },
-      useCrux: false,
-      cruxApiKey: '',
       excludeSameEntity: true,
     })
 
@@ -135,8 +121,6 @@ describe('useRunController helpers', () => {
       artifactsDir: 'outputs/output_33333333-3333-3333-3333-333333333333/artifacts',
       runId: '33333333-3333-3333-3333-333333333333',
       expectedTotalSites: 250,
-      cruxFilter: false,
-      cruxApiKey: undefined,
       trackerRadarIndex: undefined,
       trackerDbIndex: 'trackerdb_index.json',
       excludeSameEntity: true,

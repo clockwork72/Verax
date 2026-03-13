@@ -29,7 +29,6 @@ class Paths:
     explorer_jsonl: Path
     artifacts_dir: Path
     artifacts_ok_dir: Path
-    crux_cache_json: Path
 
 
 class EventBuffer:

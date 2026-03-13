@@ -19,7 +19,6 @@ from .hpc_contracts import (
     AnnotationSiteRecord,
     AnnotationStatsResponse,
     ArtifactCountResponse,
-    CruxCacheStatsResponse,
     FolderSizeResponse,
     JsonPathResponse,
     RunListResponse,
@@ -306,24 +305,6 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
             ).to_dict()
         )
 
-    async def handle_crux_cache_stats(request: web.Request) -> web.Response:
-        cache_path = service.default_paths(request.query.get("outDir")).crux_cache_json
-        if not cache_path.exists():
-            return web.json_response(CruxCacheStatsResponse(ok=True, count=0, present=0, absent=0, path=str(cache_path)).to_dict())
-        raw = json.loads(await read_text_file(cache_path))
-        values = list(raw.values())
-        present = sum(1 for value in values if value)
-        absent = len(values) - present
-        return web.json_response(
-            CruxCacheStatsResponse(
-                ok=True,
-                count=len(values),
-                present=present,
-                absent=absent,
-                path=str(cache_path),
-            ).to_dict()
-        )
-
     async def handle_annotation_stats(request: web.Request) -> web.Response:
         response = await asyncio.to_thread(build_annotation_stats_response, service, request.query.get("artifactsDir"))
         return web.json_response(response.to_dict())
@@ -340,6 +321,5 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         web.get("/api/annotation-stats", handle_annotation_stats),
         web.get("/api/count-ok-artifacts", handle_count_ok_artifacts),
         web.get("/api/read-tp-cache", handle_read_tp_cache),
-        web.get("/api/crux-cache-stats", handle_crux_cache_stats),
         web.post("/api/artifact-text", handle_read_artifact_text),
     ]

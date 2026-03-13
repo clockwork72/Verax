@@ -65,10 +65,6 @@ type LauncherViewProps = {
   logs?: string[]
   errorMessage?: string
   etaText?: string
-  useCrux?: boolean
-  onToggleCrux?: (next: boolean) => void
-  cruxApiKey?: string
-  onCruxKeyChange?: (value: string) => void
   excludeSameEntity?: boolean
   onToggleExcludeSameEntity?: (next: boolean) => void
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
@@ -103,7 +99,7 @@ type LauncherViewProps = {
   resumeMode?: boolean
   onToggleResumeMode?: (next: boolean) => void
   topNLocked?: boolean
-  lastTrancoRank?: number | null
+  lastDatasetRank?: number | null
 }
 
 export function LauncherView({
@@ -124,10 +120,6 @@ export function LauncherView({
   logs,
   errorMessage,
   etaText,
-  useCrux,
-  onToggleCrux,
-  cruxApiKey,
-  onCruxKeyChange,
   excludeSameEntity,
   onToggleExcludeSameEntity,
   mappingMode = 'radar',
@@ -162,7 +154,7 @@ export function LauncherView({
   resumeMode = false,
   onToggleResumeMode,
   topNLocked = false,
-  lastTrancoRank = null,
+  lastDatasetRank = null,
 }: LauncherViewProps) {
   const logRef = useRef<HTMLDivElement | null>(null)
   const annotateLogRef = useRef<HTMLDivElement | null>(null)
@@ -236,10 +228,6 @@ export function LauncherView({
         onClose={() => setShowFlow(false)}
         topN={topN}
         onTopNChange={onTopNChange}
-        useCrux={useCrux}
-        onToggleCrux={onToggleCrux}
-        cruxApiKey={cruxApiKey}
-        onCruxKeyChange={onCruxKeyChange}
         mappingMode={mappingMode}
         onMappingModeChange={onMappingModeChange}
         excludeSameEntity={excludeSameEntity}
@@ -384,14 +372,9 @@ export function LauncherView({
               </span>
 
               <div className="ml-2 flex flex-wrap items-center gap-1.5">
-                <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] ${useCrux ? 'border-[var(--color-primary)] text-[var(--color-primary)]' : 'border-[var(--border-soft)] text-[var(--muted-text)]'}`} title="Configure in Settings">
-                  CrUX {useCrux ? 'on' : 'off'}
+                <span className="inline-flex items-center rounded-full border border-[var(--color-primary)] px-2.5 py-0.5 text-[11px] text-[var(--color-primary)]">
+                  Categorized CSV
                 </span>
-                {useCrux && !cruxApiKey?.trim() && (
-                  <span className="inline-flex items-center rounded-full border border-[rgba(255,92,138,0.3)] bg-[rgba(255,92,138,0.08)] px-2.5 py-0.5 text-[11px] text-[var(--color-danger)]">
-                    key required
-                  </span>
-                )}
                 <span className="inline-flex items-center rounded-full border border-[var(--border-soft)] px-2.5 py-0.5 text-[11px] text-[var(--muted-text)]" title="Configure in Settings">
                   {mappingMode === 'mixed' ? 'Mixed mapping' : mappingMode === 'trackerdb' ? 'TrackerDB' : 'Tracker Radar'}
                 </span>
@@ -455,7 +438,7 @@ export function LauncherView({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[var(--muted-text)]">
-                    {progress.toFixed(0)}% · {topN} sites{lastTrancoRank ? ` · Tranco rank #${lastTrancoRank}` : ''} · {etaText ? `ETA ${etaText}` : 'ETA --'}
+                    {progress.toFixed(0)}% · {topN} sites{lastDatasetRank ? ` · Dataset rank #${lastDatasetRank}` : ''} · {etaText ? `ETA ${etaText}` : 'ETA --'}
                   </span>
                   {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
                     <span className="text-[12px] text-[var(--color-primary)]">

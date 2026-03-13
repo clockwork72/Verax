@@ -44,9 +44,8 @@ def _build_args(tmp_path: Path, *, emit_events: bool, tp_cache_flush_entries: in
     return Namespace(
         site=["alpha.example"],
         input=None,
-        tranco_top=1,
-        tranco_date=None,
-        tranco_cache_dir=str(tmp_path / ".tranco_cache"),
+        top_n=1,
+        dataset_csv=None,
         resume_after_rank=None,
         max_sites=None,
         out=str(out_path),
@@ -68,12 +67,6 @@ def _build_args(tmp_path: Path, *, emit_events: bool, tp_cache_flush_entries: in
         no_third_party_policy_fetch=False,
         third_party_policy_max=5,
         exclude_same_entity=False,
-        crux_filter=True,
-        crux_api_key=None,
-        crux_timeout_ms=1000,
-        crux_concurrency=2,
-        crux_allow_http=False,
-        crux_cache_file=None,
         llm_model="openai/local",
         no_llm_clean=True,
         skip_home_fetch_failed=False,
@@ -107,17 +100,11 @@ def _install_pipeline_mocks(
     monkeypatch,
     sites: list[dict[str, object]],
     tmp_path: Path,
-    *,
-    crux_sites: list[dict[str, object]] | None = None,
 ) -> dict[str, list[str]]:
     state = {
         "filters": [],
         "site_stages": [],
     }
-
-    async def fake_crux_filter(args, records):
-        state["filters"].append("crux")
-        return list(crux_sites if crux_sites is not None else records)
 
     async def fake_prefilter(args, records):
         state["filters"].append("prefilter")
@@ -144,6 +131,7 @@ def _install_pipeline_mocks(
             "rank": kwargs["rank"],
             "input": site,
             "site_etld1": site,
+            "main_category": "Technology",
             "status": "ok",
             "policy_url": policy_url,
             "third_parties": [
@@ -159,7 +147,6 @@ def _install_pipeline_mocks(
 
     FakeCrawl4AIClient.instances.clear()
     monkeypatch.setattr(cli, "_load_input_sites", lambda args: list(sites))
-    monkeypatch.setattr(cli, "_crux_filter_sites", fake_crux_filter)
     monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
     monkeypatch.setattr(cli, "Crawl4AIClient", FakeCrawl4AIClient)
     monkeypatch.setattr(cli, "process_site", fake_process_site)
@@ -181,10 +168,10 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
     events = [json.loads(line) for line in event_lines]
 
     stage_events = [evt["stage"] for evt in events if evt.get("type") == "run_stage"]
-    assert stage_events == ["input_loaded", "crux_filtered", "prefilter_done", "crawl_started"]
+    assert stage_events == ["input_loaded", "prefilter_done", "crawl_started"]
     assert any(evt.get("type") == "site_stage" and evt.get("stage") == "policy_fetch" for evt in events)
     assert any(evt.get("type") == "run_completed" for evt in events)
-    assert state["filters"] == ["crux", "prefilter"]
+    assert state["filters"] == ["prefilter"]
     assert state["site_stages"] == ["alpha.example"]
 
     assert len(FakeCrawl4AIClient.instances) == 1
@@ -198,6 +185,7 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
 
     summary = json.loads(Path(args.summary_out).read_text(encoding="utf-8"))
     assert summary["status_counts"] == {"ok": 1}
+    assert summary["site_categories"] == [{"name": "Technology", "count": 1}]
 
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["processed_sites"] == 1
@@ -228,17 +216,32 @@ def test_run_pipeline_flushes_tp_cache_on_shutdown(tmp_path, monkeypatch):
     )
 
 
-def test_run_pipeline_uses_post_crux_total_sites(tmp_path, monkeypatch, capsys):
+def test_run_pipeline_uses_post_prefilter_total_sites(tmp_path, monkeypatch, capsys):
     _install_pipeline_mocks(
         monkeypatch,
         sites=[
             {"rank": 1, "site": "alpha.example"},
             {"rank": 2, "site": "beta.example"},
         ],
-        crux_sites=[{"rank": 2, "site": "beta.example"}],
         tmp_path=tmp_path,
     )
     args = _build_args(tmp_path, emit_events=True, tp_cache_flush_entries=1)
+    args.prefilter_websites = True
+
+    async def fake_prefilter(args, records):
+        return [record for record in records if record["site"] == "beta.example"]
+
+    async def fake_resolve_input_sites(args):
+        return (
+            [
+                {"rank": 1, "site": "alpha.example"},
+                {"rank": 2, "site": "beta.example"},
+            ],
+            False,
+        )
+
+    monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
+    monkeypatch.setattr(cli, "_resolve_input_sites", fake_resolve_input_sites)
 
     asyncio.run(cli._run(args))
 
@@ -263,54 +266,3 @@ def test_run_pipeline_uses_post_crux_total_sites(tmp_path, monkeypatch, capsys):
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["total_sites"] == 1
     assert state_payload["started_at"] == summary["started_at"]
-
-
-def test_crux_filter_caches_only_present_origins(tmp_path, monkeypatch):
-    call_counts: dict[str, int] = {}
-
-    async def fake_crux_has_record(session, *, api_key, origin, timeout_ms):
-        call_counts[origin] = call_counts.get(origin, 0) + 1
-        outcomes = {
-            "https://present.example": (True, 200, None),
-            "https://fallback.example": (False, 200, None),
-            "http://fallback.example": (True, 200, None),
-            "https://missing.example": (False, 200, None),
-            "http://missing.example": (False, 200, None),
-        }
-        return outcomes.get(origin, (False, 200, None))
-
-    monkeypatch.setattr(cli, "_crux_has_record", fake_crux_has_record)
-
-    out_path = tmp_path / "results.jsonl"
-    args = Namespace(
-        crux_api_key="test-key",
-        out=str(out_path),
-        crux_cache_file=str(tmp_path / "results.crux_cache.json"),
-        crux_timeout_ms=1000,
-        crux_concurrency=4,
-        crux_allow_http=True,
-    )
-    sites = [
-        {"rank": 1, "site": "present.example"},
-        {"rank": 2, "site": "fallback.example"},
-        {"rank": 3, "site": "missing.example"},
-    ]
-
-    kept = asyncio.run(cli._crux_filter_sites(args, sites))
-    assert [rec["site"] for rec in kept] == ["present.example", "fallback.example"]
-
-    cache_path = Path(args.crux_cache_file)
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert cache == {
-        "http://fallback.example": True,
-        "https://present.example": True,
-    }
-
-    first_pass_calls = dict(call_counts)
-    kept_second_pass = asyncio.run(cli._crux_filter_sites(args, sites))
-    assert [rec["site"] for rec in kept_second_pass] == ["present.example", "fallback.example"]
-    assert call_counts["https://missing.example"] == first_pass_calls["https://missing.example"] + 1
-    assert call_counts["http://missing.example"] == first_pass_calls["http://missing.example"] + 1
-    assert call_counts["https://present.example"] == first_pass_calls["https://present.example"]
-    assert call_counts["https://fallback.example"] == first_pass_calls["https://fallback.example"]
-    assert call_counts["http://fallback.example"] == first_pass_calls["http://fallback.example"]

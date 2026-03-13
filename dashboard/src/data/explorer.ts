@@ -12,6 +12,7 @@ export type ExplorerThirdParty = {
 export type ExplorerSite = {
   site: string
   rank?: number | null
+  mainCategory?: string | null
   status: ScraperSiteStatus
   policyUrl: string | null
   extractionMethod?: string | null

@@ -25,6 +25,7 @@ describe('useLauncherModel helpers', () => {
           trackerdb_mapped: 0,
           unmapped: 0,
         },
+        site_categories: [],
         categories: [],
         entities: [],
       },
@@ -52,7 +53,7 @@ describe('useLauncherModel helpers', () => {
     expect(datasetState.pendingManifestSites).toEqual(['example.com'])
   })
 
-  it('builds launcher state for extend mode and prioritizes the CrUX key gate', () => {
+  it('builds launcher state for extend mode on dataset-backed runs', () => {
     const launcherState = buildLauncherState({
       datasetState: {
         hasDataset: true,
@@ -65,15 +66,11 @@ describe('useLauncherModel helpers', () => {
         lastSuccessfulRank: 1000,
         lastSuccessfulSite: 'site1000.com',
         pendingManifestSites: [],
-        manifestMode: 'tranco',
+        manifestMode: 'dataset',
         manifestTopN: 1000,
-        manifestTrancoDate: '2026-03-11',
-        manifestCruxFilter: true,
       },
       topN: '1200',
       resumeMode: true,
-      useCrux: true,
-      cruxApiKey: '',
       dashboardLocked: false,
       outDir: 'outputs/unified',
     })
@@ -82,37 +79,32 @@ describe('useLauncherModel helpers', () => {
     expect(launcherState.currentTargetTotal).toBe(1000)
     expect(launcherState.requestedTargetTotal).toBe(1200)
     expect(launcherState.extensionDelta).toBe(200)
-    expect(launcherState.cruxKeyMissing).toBe(true)
-    expect(launcherState.launcherActionHint).toContain('Enter a CrUX API key')
+    expect(launcherState.launcherActionHint).toContain('Extend outputs/unified from 1000 to 1200')
   })
 
-  it('shows the extend-run hint once the CrUX requirement is satisfied', () => {
+  it('describes fresh runs as CSV-backed', () => {
     const launcherState = buildLauncherState({
       datasetState: {
-        hasDataset: true,
-        totalSites: 1000,
-        processedSites: 1000,
-        uniqueSiteCount: 998,
-        isComplete: true,
+        hasDataset: false,
+        totalSites: 0,
+        processedSites: 0,
+        uniqueSiteCount: 0,
+        isComplete: false,
         isIncomplete: false,
-        progressPct: 100,
-        lastSuccessfulRank: 1000,
-        lastSuccessfulSite: 'site1000.com',
+        progressPct: 0,
+        lastSuccessfulRank: null,
+        lastSuccessfulSite: null,
         pendingManifestSites: [],
-        manifestMode: 'tranco',
-        manifestTopN: 1000,
-        manifestTrancoDate: '2026-03-11',
-        manifestCruxFilter: true,
+        manifestMode: undefined,
+        manifestTopN: null,
       },
-      topN: '1200',
+      topN: '250',
       resumeMode: true,
-      useCrux: true,
-      cruxApiKey: 'secret',
       dashboardLocked: false,
       outDir: 'outputs/unified',
     })
 
-    expect(launcherState.cruxKeyMissing).toBe(false)
-    expect(launcherState.launcherActionHint).toContain('Extend outputs/unified from 1000 to 1200')
+    expect(launcherState.launcherMode).toBe('start')
+    expect(launcherState.launcherActionHint).toContain('scrapable_websites_categorized.csv')
   })
 })

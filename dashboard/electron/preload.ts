@@ -69,7 +69,6 @@ contextBridge.exposeInMainWorld('scraper', {
   annotationStats: (artifactsDir?: string) => ipcRenderer.invoke('scraper:annotation-stats', artifactsDir),
   countOkArtifacts: (outDir?: string) => ipcRenderer.invoke('scraper:count-ok-artifacts', outDir),
   readTpCache: (outDir?: string) => ipcRenderer.invoke('scraper:read-tp-cache', outDir),
-  cruxCacheStats: (outDir?: string) => ipcRenderer.invoke('scraper:crux-cache-stats', outDir),
   onAnnotatorLog: (callback: (event: any) => void) => {
     ipcRenderer.removeAllListeners('annotator:log')
     ipcRenderer.on('annotator:log', (_evt, data) => callback(data))

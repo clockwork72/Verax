@@ -793,10 +793,6 @@ ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
   return hpcRequest(`/api/read-tp-cache?outDir=${encode(outDir)}`)
 })
 
-ipcMain.handle('scraper:crux-cache-stats', async (_event, outDir?: string) => {
-  return hpcRequest(`/api/crux-cache-stats?outDir=${encode(outDir)}`)
-})
-
 app.on('window-all-closed', () => {
   stopHpcPoller()
   if (process.platform !== 'darwin') {

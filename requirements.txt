@@ -1,5 +1,4 @@
 crawl4ai>=0.7.0
-tranco>=0.8.0
 tldextract>=5.1.0
 beautifulsoup4>=4.12.3
 lxml>=5.2.2

@@ -193,7 +193,6 @@ class PathsPayload:
     explorerJsonl: str
     artifactsDir: str
     artifactsOkDir: str
-    cruxCacheJson: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -267,16 +266,6 @@ class ThirdPartyCacheStatsResponse:
         return asdict(self)
 
 
-@dataclass(slots=True)
-class CruxCacheStatsResponse:
-    ok: bool
-    count: int
-    present: int
-    absent: int
-    path: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(slots=True)

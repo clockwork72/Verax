@@ -24,8 +24,6 @@ export type RunDatasetState = {
   uniqueSiteCount: number
   lastSuccessfulRank: number | null
   manifestTopN: number | null
-  manifestTrancoDate?: string
-  manifestCruxFilter?: boolean
 }
 
 type StartRunOptions = Parameters<NonNullable<Window['scraper']>['startRun']>[0]
@@ -35,14 +33,11 @@ type UseRunControllerArgs = {
   runsRoot: string
   topN: string
   resumeMode: boolean
-  useCrux: boolean
-  cruxApiKey: string
   excludeSameEntity: boolean
   mappingMode: 'radar' | 'trackerdb' | 'mixed'
   llmModel: string
   scraperActive: boolean
   dashboardLocked: boolean
-  cruxKeyMissing: boolean
   launcherMode: LauncherMode
   currentTargetTotal: number
   requestedTargetTotal: number
@@ -73,7 +68,6 @@ type UseRunControllerArgs = {
 type BuildStartRunPlanArgs = {
   scraperActive: boolean
   dashboardLocked: boolean
-  cruxKeyMissing: boolean
   launcherMode: LauncherMode
   topN: string
   currentTargetTotal: number
@@ -83,8 +77,6 @@ type BuildStartRunPlanArgs = {
   resumeMode: boolean
   outDir: string
   datasetState: RunDatasetState
-  useCrux: boolean
-  cruxApiKey: string
   excludeSameEntity: boolean
 }
 
@@ -138,7 +130,6 @@ export function buildAnnotationBlock({
 export function buildStartRunPlan({
   scraperActive,
   dashboardLocked,
-  cruxKeyMissing,
   launcherMode,
   topN,
   currentTargetTotal,
@@ -148,8 +139,6 @@ export function buildStartRunPlan({
   resumeMode,
   outDir,
   datasetState,
-  useCrux,
-  cruxApiKey,
   excludeSameEntity,
 }: BuildStartRunPlanArgs): StartRunPlan {
   if (scraperActive) {
@@ -165,15 +154,6 @@ export function buildStartRunPlan({
     return {
       blocked: true,
       errorMessage: 'Cluster bridge is offline. Start the remote orchestrator and port 8910 tunnel first.',
-      resetWorkspace: false,
-      runOutDir: null,
-      startOptions: null,
-    }
-  }
-  if (cruxKeyMissing) {
-    return {
-      blocked: true,
-      errorMessage: 'CrUX is enabled for this run. Enter a CrUX API key in Settings before starting the scraper.',
       resetWorkspace: false,
       runOutDir: null,
       startOptions: null,
@@ -226,15 +206,12 @@ export function buildStartRunPlan({
       startOptions = {
         ...startOptions,
         topN: remainingSiteCount || datasetState.manifestTopN || datasetState.totalSites,
-        trancoDate: datasetState.manifestTrancoDate,
         outDir: runOutDir,
         artifactsDir: `${runOutDir}/artifacts`,
         runId,
         resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
         expectedTotalSites: datasetState.totalSites,
         upsertBySite: true,
-        cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
-        cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
       }
     }
   } else if (launcherMode === 'extend') {
@@ -242,15 +219,12 @@ export function buildStartRunPlan({
     startOptions = {
       ...startOptions,
       topN: Math.max(0, requestedTargetTotal - currentTargetTotal),
-      trancoDate: datasetState.manifestTrancoDate,
       outDir: runOutDir,
       artifactsDir: `${runOutDir}/artifacts`,
       runId,
       resumeAfterRank: datasetState.lastSuccessfulRank ?? undefined,
       expectedTotalSites: requestedTargetTotal,
       upsertBySite: true,
-      cruxFilter: datasetState.manifestCruxFilter ?? useCrux,
-      cruxApiKey: (datasetState.manifestCruxFilter ?? useCrux) ? cruxApiKey : undefined,
     }
   } else {
     startOptions = {
@@ -260,8 +234,6 @@ export function buildStartRunPlan({
       artifactsDir: `${freshOutDir}/artifacts`,
       runId: resumeMode ? undefined : runId,
       expectedTotalSites: Number(topN),
-      cruxFilter: useCrux,
-      cruxApiKey: useCrux ? cruxApiKey : undefined,
     }
   }
 
@@ -279,14 +251,11 @@ export function useRunController({
   runsRoot,
   topN,
   resumeMode,
-  useCrux,
-  cruxApiKey,
   excludeSameEntity,
   mappingMode,
   llmModel,
   scraperActive,
   dashboardLocked,
-  cruxKeyMissing,
   launcherMode,
   currentTargetTotal,
   requestedTargetTotal,
@@ -487,7 +456,6 @@ export function useRunController({
     const plan = buildStartRunPlan({
       scraperActive,
       dashboardLocked,
-      cruxKeyMissing,
       launcherMode,
       topN,
       currentTargetTotal,
@@ -497,8 +465,6 @@ export function useRunController({
       resumeMode,
       outDir,
       datasetState,
-      useCrux,
-      cruxApiKey,
       excludeSameEntity,
     })
 
@@ -546,8 +512,6 @@ export function useRunController({
       updateWorkspaceData({ runManifest: manifestRes?.ok ? (manifestRes.data ?? null) : null })
     }
   }, [
-    cruxApiKey,
-    cruxKeyMissing,
     currentTargetTotal,
     dashboardLocked,
     datasetState,
@@ -568,7 +532,6 @@ export function useRunController({
     setScraperActivity,
     topN,
     updateWorkspaceData,
-    useCrux,
   ])
 
   return {

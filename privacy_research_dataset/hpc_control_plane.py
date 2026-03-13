@@ -99,7 +99,6 @@ def build_paths_response(service: ControlPlaneService, out_dir: str | None) -> P
             explorerJsonl=str(paths.explorer_jsonl),
             artifactsDir=str(paths.artifacts_dir),
             artifactsOkDir=str(paths.artifacts_ok_dir),
-            cruxCacheJson=str(paths.crux_cache_json),
         ),
     )
 

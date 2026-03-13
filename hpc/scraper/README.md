@@ -168,11 +168,11 @@ ssh "${SCRAPER_SSH_HOST}" "find \${SCRAPER_REPO_ROOT}/outputs/<run_dir> -name an
 
 ### Via the dashboard
 
-Use the **Resume** control in the dashboard (Operations panel → resume after rank N). The dashboard passes `resume_after_rank` to the orchestrator, which starts the Tranco list from rank N+1.
+Use the **Resume** control in the dashboard (Operations panel → resume after rank N). The dashboard passes `resume_after_rank` to the orchestrator, which resumes the categorized dataset CSV from rank `N + 1`.
 
 ### Via CLI
 
-If the run was started with a Tranco list:
+If the run was started from the default categorized dataset:
 
 ```bash
 # Check the last completed rank in the output summary
@@ -182,7 +182,7 @@ cat outputs/<run_dir>/summary.json | python3 -c 'import json,sys; s=json.load(sy
 ssh "${SCRAPER_SSH_HOST}" "bash -lc '
   cd \${SCRAPER_REPO_ROOT}
   .venv/bin/python -m privacy_research_dataset.cli \
-    --tranco-top 10000 \
+    --top-n 10000 \
     --resume-after-rank <N> \
     --out-dir outputs/<run_dir> \
     <other flags>

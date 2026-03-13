@@ -53,7 +53,6 @@ class _FakeOperationsService:
             explorer_jsonl=root / "explorer.jsonl",
             artifacts_dir=root / "artifacts",
             artifacts_ok_dir=root / "artifacts_ok",
-            crux_cache_json=self.repo_root / "results.crux_cache.json",
         )
 
     def manifest_path(self, out_dir: str | None) -> Path:

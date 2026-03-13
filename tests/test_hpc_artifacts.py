@@ -25,7 +25,6 @@ class _FakeArtifactService:
             explorer_jsonl=root / "explorer.jsonl",
             artifacts_dir=root / "artifacts",
             artifacts_ok_dir=root / "artifacts_ok",
-            crux_cache_json=self.repo_root / "results.crux_cache.json",
         )
 def test_build_annotation_stats_response_preserves_site_and_tp_state(tmp_path):
     service = _FakeArtifactService(tmp_path)

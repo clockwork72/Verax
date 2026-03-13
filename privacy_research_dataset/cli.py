@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import re
@@ -21,7 +22,6 @@ from .crawl4ai_client import Crawl4AIClient, Crawl4AIResult
 from .crawler import process_site
 from .tracker_radar import TrackerRadarIndex
 from .trackerdb import TrackerDbIndex
-from .tranco_list import get_tranco_sites
 from .annotation_state import has_completed_annotation_output
 from .utils.io import append_jsonl, write_json
 from .utils.logging import log, warn
@@ -98,6 +98,7 @@ DEFAULT_EXCLUDE_SUFFIXES: set[str] = {
 _HTML_MARKER = re.compile(r"(?is)<\s*!doctype\s+html|<\s*html\b|<\s*head\b|<\s*body\b")
 _LINK_MARKER = re.compile(r"(?is)<\s*a\b")
 _CRUX_ENDPOINT = "https://chromeuxreport.googleapis.com/v1/records:queryRecord"
+DEFAULT_DATASET_CSV = Path(__file__).resolve().parents[1] / "scrapable_websites_categorized.csv"
 
 
 def _rss_bytes(process: Any | None = None) -> int | None:
@@ -388,21 +389,27 @@ def _parse_args() -> argparse.Namespace:
         description="Build Step-1 dataset: websites -> first-party privacy policy + observed third-party tools (+ their policies via Tracker Radar / Ghostery TrackerDB).",
     )
     src = p.add_argument_group("Input source")
-    src.add_argument("--site", action="append", default=None, help="Single site/domain/URL to process (repeatable). If set, overrides --input/Tranco.")
-    src.add_argument("--input", type=str, default=None, help="Path to a newline-delimited list of domains/URLs. If omitted, uses Tranco.")
+    src.add_argument("--site", action="append", default=None, help="Single site/domain/URL to process (repeatable). If set, overrides --input/dataset CSV.")
+    src.add_argument("--input", type=str, default=None, help="Path to a newline-delimited list of domains/URLs. If omitted, uses the categorized dataset CSV.")
     src.add_argument(
+        "--top-n",
         "--tranco-top",
+        dest="top_n",
         type=int,
         default=100,
-        help="How many unique registrable Tranco domains to include (if --input not set).",
+        help="How many dataset rows/domains to include from the categorized CSV (if --input not set).",
     )
-    src.add_argument("--tranco-date", type=str, default=None, help="Tranco snapshot date YYYY-MM-DD (recommended for reproducibility).")
-    src.add_argument("--tranco-cache-dir", type=str, default=".tranco_cache", help="Tranco cache directory.")
+    src.add_argument(
+        "--dataset-csv",
+        type=str,
+        default=None,
+        help="Path to scrapable_websites_categorized.csv. Defaults to the bundled dataset file in the repo root.",
+    )
     src.add_argument(
         "--resume-after-rank",
         type=int,
         default=None,
-        help="When using Tranco input, skip ranks up to and including this value.",
+        help="When using the categorized dataset CSV, skip ranks up to and including this value.",
     )
 
     out = p.add_argument_group("Output")
@@ -441,21 +448,6 @@ def _parse_args() -> argparse.Namespace:
     scale.add_argument("--no-third-party-policy-fetch", action="store_true", help="Do not fetch third-party policy texts (still records mappings).")
     scale.add_argument("--third-party-policy-max", type=int, default=30, help="Max number of third-party policies to fetch per site (ranked by prevalence when available).")
     scale.add_argument("--exclude-same-entity", action="store_true", help="Exclude third-party domains owned by the same entity as the first-party site (requires a mapping index).")
-
-    crux = p.add_argument_group("CrUX filter (browsable origins)")
-    crux.add_argument("--crux-filter", action="store_true", help="Filter input sites to those present in the Chrome UX Report dataset.")
-    crux.add_argument("--crux-api-key", type=str, default=None, help="Chrome UX Report API key (or set CRUX_API_KEY env var).")
-    crux.add_argument("--crux-timeout-ms", type=int, default=7000, help="Timeout for CrUX API requests (ms).")
-    crux.add_argument("--crux-concurrency", type=int, default=20, help="Concurrent CrUX API requests.")
-    crux.add_argument("--crux-allow-http", action="store_true", help="Fallback to http origin if https isn't found.")
-    crux.add_argument(
-        "--crux-cache-file", type=str, default=None,
-        help=(
-            "Persistent JSON cache for CrUX origin lookups (origin → bool). "
-            "Hits are served from this file without hitting the API. "
-            "Defaults to <out>.crux_cache.json alongside --out."
-        ),
-    )
 
     llm = p.add_argument_group("LLM semantic cleaning (DeepSeek via HPC tunnel)")
     llm.add_argument(
@@ -593,6 +585,59 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _dataset_csv_path(args: argparse.Namespace) -> Path:
+    if getattr(args, "dataset_csv", None):
+        return Path(str(args.dataset_csv)).expanduser().resolve()
+    return DEFAULT_DATASET_CSV
+
+
+def _dataset_target_count(args: argparse.Namespace) -> int:
+    desired = max(0, int(getattr(args, "top_n", 0) or 0))
+    if getattr(args, "max_sites", None):
+        desired = min(desired, max(0, int(args.max_sites)))
+    return desired
+
+
+def _load_dataset_sites(
+    args: argparse.Namespace,
+    *,
+    start_rank_exclusive: int = 0,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    dataset_path = _dataset_csv_path(args)
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset CSV not found: {dataset_path}")
+
+    sites: list[dict[str, Any]] = []
+    seen_domains: set[str] = set()
+    with dataset_path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row_index, row in enumerate(reader, start=1):
+            domain = str(row.get("domain") or "").strip()
+            if not domain:
+                continue
+            domain_key = domain.lower()
+            if domain_key in seen_domains:
+                continue
+            raw_rank = row.get("tranco_id")
+            try:
+                rank = int(str(raw_rank).strip()) if raw_rank not in (None, "") else row_index
+            except ValueError:
+                rank = row_index
+            if rank <= start_rank_exclusive:
+                continue
+            seen_domains.add(domain_key)
+            main_category = str(row.get("main_category") or "").strip() or None
+            sites.append({
+                "rank": rank,
+                "site": domain,
+                "main_category": main_category,
+            })
+            if limit is not None and len(sites) >= limit:
+                break
+    return sites
+
+
 def _load_input_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
     if getattr(args, "site", None):
         raw = [str(s).strip() for s in (args.site or [])]
@@ -603,27 +648,23 @@ def _load_input_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
         lines = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.strip().startswith("#")]
         sites = [{"rank": None, "site": ln} for ln in lines]
     else:
-        tranco = get_tranco_sites(
-            args.tranco_top,
-            args.tranco_date,
-            args.tranco_cache_dir,
+        sites = _load_dataset_sites(
+            args,
             start_rank_exclusive=max(0, int(getattr(args, "resume_after_rank", None) or 0)),
+            limit=_dataset_target_count(args),
         )
-        sites = [{"rank": s.rank, "site": s.domain} for s in tranco]
 
     if args.max_sites:
         sites = sites[: args.max_sites]
     return sites
 
 
-def _uses_tranco_source(args: argparse.Namespace) -> bool:
+def _uses_dataset_source(args: argparse.Namespace) -> bool:
     return not getattr(args, "site", None) and not getattr(args, "input", None)
 
 
-async def _resolve_exact_tranco_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
-    desired_site_count = max(0, int(getattr(args, "tranco_top", 0) or 0))
-    if getattr(args, "max_sites", None):
-        desired_site_count = min(desired_site_count, max(0, int(args.max_sites)))
+async def _resolve_exact_dataset_sites(args: argparse.Namespace) -> list[dict[str, Any]]:
+    desired_site_count = _dataset_target_count(args)
     if desired_site_count <= 0:
         return []
 
@@ -633,21 +674,17 @@ async def _resolve_exact_tranco_sites(args: argparse.Namespace) -> list[dict[str
     requested_candidates = desired_site_count
 
     while len(resolved) < desired_site_count:
-        tranco = get_tranco_sites(
-            requested_candidates,
-            args.tranco_date,
-            args.tranco_cache_dir,
+        candidates = _load_dataset_sites(
+            args,
             start_rank_exclusive=max(0, int(getattr(args, "resume_after_rank", None) or 0)),
+            limit=requested_candidates,
         )
-        candidates = [{"rank": s.rank, "site": s.domain} for s in tranco]
         if len(candidates) <= len(previous_candidates):
             break
 
         batch = candidates[len(previous_candidates):]
         previous_candidates = candidates
 
-        if args.crux_filter:
-            batch = await _crux_filter_sites(args, batch)
         if args.prefilter_websites:
             batch = await _prefilter_sites(args, batch)
 
@@ -667,15 +704,15 @@ async def _resolve_exact_tranco_sites(args: argparse.Namespace) -> list[dict[str
 
     if len(resolved) < desired_site_count:
         warn(
-            f"Tranco selection resolved only {len(resolved)} site(s) for requested target {desired_site_count}. "
+            f"Dataset selection resolved only {len(resolved)} site(s) for requested target {desired_site_count}. "
             "The available filtered candidate set was exhausted."
         )
     return resolved[:desired_site_count]
 
 
 async def _resolve_input_sites(args: argparse.Namespace) -> tuple[list[dict[str, Any]], bool]:
-    if _uses_tranco_source(args) and (args.crux_filter or args.prefilter_websites):
-        return await _resolve_exact_tranco_sites(args), True
+    if _uses_dataset_source(args) and args.prefilter_websites:
+        return await _resolve_exact_dataset_sites(args), True
     return _load_input_sites(args), False
 
 
@@ -1283,21 +1320,6 @@ async def _run(args: argparse.Namespace) -> None:
         out_path=getattr(args, "resource_monitor_out", None),
         with_tracemalloc=bool(getattr(args, "resource_tracemalloc", False)),
     ):
-        if args.crux_filter and not filters_applied_during_resolution:
-            current_stage = "crux_filter"
-            try:
-                sites = await _crux_filter_sites(args, sites)
-                target_total_sites = len(sites)
-                emit_event({
-                    "type": "run_stage",
-                    "run_id": run_id,
-                    "stage": "crux_filtered",
-                    "kept_sites": len(sites),
-                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                })
-            except Exception as e:
-                warn(f"CrUX filter failed unexpectedly; continuing without it. Error: {e}")
-
         if args.prefilter_websites and not filters_applied_during_resolution:
             current_stage = "prefilter"
             try:
@@ -1582,7 +1604,10 @@ async def _run(args: argparse.Namespace) -> None:
                 if cached_result is not None:
                     log(f"[cache] {site} — already scraped, reusing cached result.")
                     async with write_lock:
-                        summary.update(cached_result)
+                        summary.update({
+                            **cached_result,
+                            "main_category": rec.get("main_category") or cached_result.get("main_category"),
+                        })
                         summary_payload = summary.to_summary()
                         if args.upsert_by_site:
                             summary_payload = _build_summary_from_results(
@@ -1616,7 +1641,13 @@ async def _run(args: argparse.Namespace) -> None:
                 if site in scraped_sites:
                     log(f"[scraped] {site} — scrape_complete.json exists, skipping re-scrape.")
                     async with write_lock:
-                        summary.update({"status": "ok", "input": site, "rank": rank, "site_etld1": site})
+                        summary.update({
+                            "status": "ok",
+                            "input": site,
+                            "rank": rank,
+                            "site_etld1": site,
+                            "main_category": rec.get("main_category"),
+                        })
                         summary_payload = summary.to_summary()
                         if args.upsert_by_site:
                             summary_payload = _build_summary_from_results(
@@ -1703,10 +1734,14 @@ async def _run(args: argparse.Namespace) -> None:
                     result = {
                         "rank": rank,
                         "input": site,
+                        "main_category": rec.get("main_category"),
                         "status": "exception",
                         "error_message": str(e),
                         "run_id": run_id,
                     }
+
+                if rec.get("main_category") and not result.get("main_category"):
+                    result["main_category"] = rec.get("main_category")
 
                 if result.get("status") == "ok" and args.artifacts_dir:
                     _site_key_pre = result.get("site_etld1") or site

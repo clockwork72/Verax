@@ -7,7 +7,6 @@ import type {
   BridgeScriptResult,
   ClearResultsResponse,
   CompletedSiteInfo,
-  CruxCacheStatsResponse,
   DeleteOutputResponse,
   FolderSizeResponse,
   HpcBridgeStatus,
@@ -34,7 +33,6 @@ import type {
 type ScraperStartOptions = {
   topN?: number
   sites?: string[]
-  trancoDate?: string
   trackerRadarIndex?: string
   trackerDbIndex?: string
   outDir?: string
@@ -43,8 +41,6 @@ type ScraperStartOptions = {
   resumeAfterRank?: number
   expectedTotalSites?: number
   upsertBySite?: boolean
-  cruxFilter?: boolean
-  cruxApiKey?: string
   excludeSameEntity?: boolean
 }
 
@@ -102,7 +98,6 @@ declare global {
       annotationStats: (artifactsDir?: string) => Promise<AnnotationStats>
       countOkArtifacts: (outDir?: string) => Promise<ArtifactCountResponse>
       readTpCache: (outDir?: string) => Promise<ThirdPartyCacheStats>
-      cruxCacheStats: (outDir?: string) => Promise<CruxCacheStatsResponse>
       onAnnotatorLog: (callback: (event: { message?: string | null }) => void) => void
       onAnnotatorExit: (callback: (event: { code?: number | null; signal?: string | null; stop_requested?: boolean }) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void
