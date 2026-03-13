@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import signal
-import time
 import uuid
 from collections import deque
 from contextlib import suppress
@@ -41,6 +40,8 @@ class EventBuffer:
         self._items: deque[dict[str, Any]] = deque()
         self._cursor = 0
         self._log_path: Path | None = None
+        self._pending_log_lines: deque[str] = deque()
+        self._flush_task: asyncio.Task[None] | None = None
 
     def set_log_path(self, path: Path) -> None:
         """Attach a persistent JSONL log. All future push() calls will append to it."""
@@ -55,8 +56,10 @@ class EventBuffer:
         while len(self._items) > self._max_items:
             self._items.popleft()
         if self._log_path is not None:
-            with self._log_path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            self._pending_log_lines.append(json.dumps(item, ensure_ascii=False) + "\n")
+            if self._flush_task is None or self._flush_task.done():
+                with suppress(RuntimeError):
+                    self._flush_task = asyncio.create_task(self._flush_log())
 
     def poll(self, after: int) -> tuple[int, list[dict[str, Any]]]:
         if after == 0 and self._log_path is not None and self._log_path.exists():
@@ -89,6 +92,24 @@ class EventBuffer:
                 pass
         return result
 
+    async def _flush_log(self) -> None:
+        while self._pending_log_lines:
+            batch: list[str] = []
+            while self._pending_log_lines and len(batch) < 200:
+                batch.append(self._pending_log_lines.popleft())
+            if not batch or self._log_path is None:
+                continue
+            path = self._log_path
+            payload = "".join(batch)
+            await asyncio.to_thread(self._append_log_lines, path, payload)
+            # Yield so HTTP handlers are not starved during heavy event bursts.
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def _append_log_lines(path: Path, payload: str) -> None:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(payload)
+
 
 class ProcessHandle:
     def __init__(
@@ -112,6 +133,8 @@ class ProcessHandle:
         self.completed = False
         self.last_error: str | None = None
         self.stop_requested = False
+        self._stdout_lines_since_yield = 0
+        self._stderr_lines_since_yield = 0
 
     @property
     def running(self) -> bool:
@@ -225,6 +248,10 @@ class ProcessHandle:
                         self.bus.push("annotator:log", {"message": text})
                 else:
                     self.bus.push("annotator:log", {"message": text})
+            self._stdout_lines_since_yield += 1
+            if self._stdout_lines_since_yield >= 50:
+                self._stdout_lines_since_yield = 0
+                await asyncio.sleep(0)
 
     async def _read_stderr(self) -> None:
         assert self.proc and self.proc.stderr
@@ -239,6 +266,10 @@ class ProcessHandle:
             self.bus.push(channel, {"message": text})
             if self.label == "scraper":
                 self.last_error = text
+            self._stderr_lines_since_yield += 1
+            if self._stderr_lines_since_yield >= 50:
+                self._stderr_lines_since_yield = 0
+                await asyncio.sleep(0)
 
     async def _wait_for_exit(self) -> None:
         assert self.proc is not None
