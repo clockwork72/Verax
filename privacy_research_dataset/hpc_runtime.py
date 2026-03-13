@@ -43,6 +43,7 @@ class EventBuffer:
         self._log_path: Path | None = None
         self._pending_log_lines: deque[str] = deque()
         self._flush_task: asyncio.Task[None] | None = None
+        self._flush_delay_sec = 0.05
 
     def set_log_path(self, path: Path) -> None:
         """Attach a persistent JSONL log. All future push() calls will append to it."""
@@ -57,21 +58,25 @@ class EventBuffer:
         while len(self._items) > self._max_items:
             self._items.popleft()
         if self._log_path is not None:
-            self._pending_log_lines.append(json.dumps(item, ensure_ascii=False) + "\n")
-            if self._flush_task is None or self._flush_task.done():
-                with suppress(RuntimeError):
-                    self._flush_task = asyncio.create_task(self._flush_log())
+            line = json.dumps(item, ensure_ascii=False) + "\n"
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._append_log_lines(self._log_path, line)
+            else:
+                self._pending_log_lines.append(line)
+                if self._flush_task is None or self._flush_task.done():
+                    self._flush_task = loop.create_task(self._flush_log())
 
     def poll(self, after: int) -> tuple[int, list[dict[str, Any]]]:
+        if after == 0 and self._items:
+            # When the live service already has events in memory, avoid replaying
+            # the entire persistent log from Lustre on every reconnect.
+            return self._cursor, list(self._items)
         if after == 0 and self._log_path is not None and self._log_path.exists():
             # On fresh-connect or reconnect, seed from the persistent log so the
             # dashboard can reconstruct recent event history without full replay.
-            file_events = self._load_recent_events(self.REPLAY_LIMIT)
-            in_memory_ids = {item["id"] for item in self._items}
-            combined = [e for e in file_events if e["id"] not in in_memory_ids]
-            combined.extend(self._items)
-            combined.sort(key=lambda e: e["id"])
-            return self._cursor, combined
+            return self._cursor, self._load_recent_events(self.REPLAY_LIMIT)
         return self._cursor, [item for item in self._items if item["id"] > after]
 
     def _load_recent_events(self, n: int) -> list[dict[str, Any]]:
@@ -94,17 +99,19 @@ class EventBuffer:
         return result
 
     async def _flush_log(self) -> None:
-        while self._pending_log_lines:
+        await asyncio.sleep(self._flush_delay_sec)
+        while True:
             batch: list[str] = []
             while self._pending_log_lines and len(batch) < 200:
                 batch.append(self._pending_log_lines.popleft())
-            if not batch or self._log_path is None:
-                continue
-            path = self._log_path
-            payload = "".join(batch)
-            await asyncio.to_thread(self._append_log_lines, path, payload)
-            # Yield so HTTP handlers are not starved during heavy event bursts.
-            await asyncio.sleep(0)
+            if batch and self._log_path is not None:
+                path = self._log_path
+                payload = "".join(batch)
+                await asyncio.to_thread(self._append_log_lines, path, payload)
+                # Yield so HTTP handlers are not starved during heavy event bursts.
+                await asyncio.sleep(0)
+            if not self._pending_log_lines:
+                break
 
     @staticmethod
     def _append_log_lines(path: Path, payload: str) -> None:
