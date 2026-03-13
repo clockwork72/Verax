@@ -372,6 +372,4 @@ Host- and cluster-specific variables intentionally use placeholders in the track
 | `pull_run.sh` | List or rsync a run from the remote to local storage |
 
 Branch automation:
-- pushes to `main` trigger [sync-main-into-hpc.yml](../../.github/workflows/sync-main-into-hpc.yml)
-- clean merges are pushed automatically into `hpc-v`
-- `main` is the default branch to deploy; treat `hpc-v` as optional if your team still keeps a separate cluster branch
+- `main` is the default branch to deploy

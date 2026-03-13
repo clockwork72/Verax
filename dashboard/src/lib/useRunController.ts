@@ -125,7 +125,7 @@ export function buildAnnotationBlock({
   if (!remoteCodeOutdated) return null
   if (remoteCodeLegacy) {
     return {
-      message: 'Annotation blocked: the connected remote orchestrator is older than the current hpc-v code. Run hpc/scraper/launch_remote.sh and reconnect.',
+      message: 'Annotation blocked: the connected remote orchestrator is older than the current local code. Run hpc/scraper/launch_remote.sh and reconnect.',
       error: 'Remote orchestrator is outdated. Relaunch it with hpc/scraper/launch_remote.sh before annotating.',
     }
   }

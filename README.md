@@ -54,7 +54,7 @@ You should treat local code as authoritative and remote code as disposable.
 
 Use `main` as the primary deployable branch.
 
-If you choose to keep a separate cluster-specific branch such as `hpc-v`, treat it as optional and synchronize it deliberately. The repository still includes [`scripts/sync_main_to_hpc.sh`](/mnt/storage/projects/scripts/sync_main_to_hpc.sh) and [sync-main-into-hpc.yml](/mnt/storage/projects/.github/workflows/sync-main-into-hpc.yml) for teams that want that workflow, but the default assumption in this guide is that you deploy from `main`.
+Use `main` as the single deployable branch for this workflow.
 
 ## Architecture
 
@@ -433,16 +433,9 @@ hpc/scraper/push_code.sh
 
 Then restart the orchestrator if needed.
 
-### A change exists on `main` but is missing from an optional HPC branch
+### A change exists on GitHub but is missing locally
 
-Check the branch sync workflow.
-
-If the automatic merge failed, there is likely a real conflict that needs review.
-Run this locally to reproduce the sync behavior:
-
-```bash
-bash scripts/sync_main_to_hpc.sh
-```
+Fetch the latest `main` changes and redeploy from `main`.
 
 ## Quick Reference
 
