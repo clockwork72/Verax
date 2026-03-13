@@ -36,6 +36,25 @@ function formatAgeLabel(timestamp: number | null) {
   return `${hours}h ago`
 }
 
+export function buildDisabledNavs({
+  bridgeReady,
+  hasWorkspaceContent,
+}: {
+  bridgeReady: boolean
+  hasWorkspaceContent: boolean
+}): Record<NavId, boolean> {
+  return {
+    launcher: false,
+    settings: false,
+    database: !bridgeReady,
+    results: !hasWorkspaceContent,
+    audit: !hasWorkspaceContent,
+    explorer: !hasWorkspaceContent,
+    annotations: !hasWorkspaceContent,
+    consistency: !hasWorkspaceContent,
+  }
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
   const [showExtractionMethod, setShowExtractionMethod] = useState<boolean>(() => {
@@ -196,7 +215,7 @@ function App() {
     scraperActive: localScraperActive,
   })
   const scraperActive = localScraperActive || Boolean(backendStatus?.active_run || backendStatus?.running)
-  const workspaceUnlocked = bridgeReady && workspaceReady
+  const hasWorkspaceContent = workspaceReady
 
   const launcherState = useMemo(() => buildLauncherState({
     datasetState,
@@ -217,22 +236,10 @@ function App() {
     launcherActionHint,
   } = launcherState
 
-  useEffect(() => {
-    if (dashboardLocked && activeNav !== 'launcher') {
-      setActiveNav('launcher')
-    }
-  }, [activeNav, dashboardLocked])
-
-  const disabledNavs = {
-    launcher: false,
-    settings: false,
-    database: !bridgeReady,
-    results: !workspaceUnlocked,
-    audit: !workspaceUnlocked,
-    explorer: !workspaceUnlocked,
-    annotations: !workspaceUnlocked,
-    consistency: !workspaceUnlocked,
-  } satisfies Record<NavId, boolean>
+  const disabledNavs = buildDisabledNavs({
+    bridgeReady,
+    hasWorkspaceContent,
+  })
 
   const handleSelectNav = useCallback((next: NavId) => {
     if (!disabledNavs[next]) {
@@ -248,9 +255,10 @@ function App() {
   }, [disabledNavs])
 
   useEffect(() => {
+    if (hasWorkspaceContent) return
     if (!disabledNavs[activeNav]) return
     setActiveNav('launcher')
-  }, [activeNav, disabledNavs])
+  }, [activeNav, disabledNavs, hasWorkspaceContent])
 
   const {
     markAuditVerified,
@@ -469,6 +477,7 @@ function App() {
             records={resultsData || []}
             verifiedSites={auditVerifiedSites}
             urlOverrides={auditUrlOverrides}
+            bridgeReady={bridgeReady}
             running={running}
             busySite={auditBusySite}
             annotatingSite={auditAnnotatingSite}

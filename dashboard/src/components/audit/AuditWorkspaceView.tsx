@@ -14,6 +14,7 @@ type AuditWorkspaceViewProps = {
   records: ResultRecord[]
   verifiedSites: string[]
   urlOverrides: Record<string, string>
+  bridgeReady?: boolean
   running: boolean
   busySite: string | null
   annotatingSite: string | null
@@ -78,6 +79,7 @@ export function AuditWorkspaceView({
   records,
   verifiedSites,
   urlOverrides,
+  bridgeReady = true,
   running,
   busySite,
   annotatingSite,
@@ -204,6 +206,7 @@ export function AuditWorkspaceView({
   const selectedActiveInfo = selectedSiteKey ? findActiveInfo(selectedSiteKey, activeSites) : null
   const selectedRerunBusy = !!selectedSiteKey && (busySite === selectedSiteKey || !!selectedActiveInfo)
   const selectedAnnotateBusy = !!selectedSiteKey && annotatingSite === selectedSiteKey
+  const actionsDisabled = !bridgeReady || running
 
   const handleMarkVerified = async () => {
     if (!selectedSiteKey) return
@@ -399,6 +402,7 @@ export function AuditWorkspaceView({
                 <button
                   className="focusable rounded-full border border-[rgba(57,255,20,0.3)] px-3 py-1.5 text-[11px] text-[var(--color-success)] transition-colors hover:bg-[rgba(57,255,20,0.08)]"
                   onClick={() => void handleMarkVerified()}
+                  disabled={actionsDisabled}
                 >
                   Mark verified
                 </button>
@@ -412,37 +416,45 @@ export function AuditWorkspaceView({
                 value={overrideInput}
                 onChange={(event) => setOverrideInput(event.target.value)}
                 placeholder="https://example.com/privacy"
+                disabled={!bridgeReady}
               />
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button
                   className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-[11px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
                   onClick={() => void handleSaveOverride()}
+                  disabled={!bridgeReady}
                 >
                   Save override
                 </button>
                 <button
                   className="focusable rounded-full border border-[rgba(255,209,102,0.3)] px-3 py-1.5 text-[11px] text-[var(--color-warn)] transition-colors hover:bg-[rgba(255,209,102,0.08)] disabled:opacity-50"
                   onClick={() => void handleRerun()}
-                  disabled={running || selectedRerunBusy}
+                  disabled={actionsDisabled || selectedRerunBusy}
                 >
-                  {selectedRerunBusy || running ? 'Rerun active…' : 'Rerun site'}
+                  {selectedRerunBusy || running ? 'Rerun active…' : !bridgeReady ? 'Bridge offline' : 'Rerun site'}
                 </button>
                 <button
                   className="focusable rounded-full border border-[var(--glass-border)] px-3 py-1.5 text-[11px] text-[var(--color-primary)] transition-colors hover:bg-[rgba(0,230,255,0.08)] disabled:opacity-50"
                   onClick={() => void handleAnnotate()}
-                  disabled={selectedAnnotateBusy || running}
+                  disabled={actionsDisabled || selectedAnnotateBusy}
                 >
-                  {selectedAnnotateBusy ? 'Annotating…' : 'Annotate'}
+                  {selectedAnnotateBusy ? 'Annotating…' : !bridgeReady ? 'Bridge offline' : 'Annotate'}
                 </button>
                 <button
                   className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1.5 text-[11px] text-[var(--muted-text)] transition-colors hover:border-[var(--glass-border)] hover:text-[var(--color-text)]"
                   onClick={() => void onReload()}
-                  disabled={running || selectedRerunBusy}
+                  disabled={actionsDisabled || selectedRerunBusy}
                 >
                   Reload
                 </button>
               </div>
+
+              {!bridgeReady && (
+                <p className="mt-3 text-[11px] text-[var(--color-warn)]">
+                  Bridge unavailable. Loaded audit data remains visible, but remote actions are paused until the orchestrator answers on /health.
+                </p>
+              )}
 
               {selectedRerunBusy && (
                 <div className="mt-4 rounded-xl border border-[rgba(0,230,255,0.18)] bg-[rgba(0,230,255,0.05)] px-3 py-3">
