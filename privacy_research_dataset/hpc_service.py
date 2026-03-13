@@ -107,7 +107,8 @@ class HpcService:
     async def read_json_file(self, path: Path) -> Any:
         for attempt in range(3):
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                return json.loads(raw)
             except json.JSONDecodeError:
                 if attempt >= 2:
                     raise

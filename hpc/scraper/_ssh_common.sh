@@ -3,11 +3,21 @@
 # and SSH_OPTS without repeating them across scripts.
 # Not intended to be executed directly.
 
-SSH_HOST="${SCRAPER_SSH_HOST:-soufiane.essahli@toubkal.hpc.um6p.ma}"
+SCRAPER_SSH_HOST_PLACEHOLDER="your-user@login.your-hpc.example"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_config_common.sh"
+
+SSH_HOST="${SCRAPER_SSH_HOST:-${SCRAPER_SSH_HOST_PLACEHOLDER}}"
 SERVICE_PORT="${SCRAPER_SERVICE_PORT:-8910}"
 JOB_NAME="${SCRAPER_ORCH_JOB_NAME:-scraper-orch}"
 DEFAULT_SSH_SOCKET="${SCRAPER_SSH_SOCKET:-/tmp/scraper-ssh-${USER}.sock}"
 FORWARD_STATE="${SCRAPER_SSH_FORWARD_STATE:-/tmp/scraper-ssh-forward-${USER}-${SERVICE_PORT}.target}"
+
+require_scraper_ssh_host() {
+  if [ "${SSH_HOST}" = "${SCRAPER_SSH_HOST_PLACEHOLDER}" ]; then
+    echo "Set SCRAPER_SSH_HOST to your HPC login host before using the bridge scripts." >&2
+    exit 1
+  fi
+}
 
 resolve_ssh_socket() {
   local configured_socket="${SCRAPER_SSH_SOCKET:-}"

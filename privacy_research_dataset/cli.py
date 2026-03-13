@@ -1112,6 +1112,7 @@ def _state_from_summary(summary: dict[str, Any], *, run_id: str, total_sites: in
             "unmapped": int(third_party.get("unmapped") or 0),
             "no_policy_url": int(third_party.get("no_policy_url") or 0),
         },
+        "started_at": summary.get("started_at"),
         "updated_at": summary.get("updated_at"),
     }
 

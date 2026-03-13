@@ -37,6 +37,7 @@ const policyWindows = new Set<BrowserWindow>()
 const logWindows = new Set<BrowserWindow>()
 let hpcPollCursor = 0
 let hpcPollTimer: NodeJS.Timeout | null = null
+let hpcPollInFlight = false
 let scraperActivitySnapshot: {
   activeSites: Record<string, { label: string; stepIndex: number; rank: number }>
   recentCompleted: Array<{ site: string; status: string; cached: boolean; annotated?: boolean }>
@@ -176,22 +177,28 @@ function ensureHpcPoller() {
   if (hpcPollTimer) return
   hpcPollTimer = setInterval(async () => {
     if (!win || win.isDestroyed()) return
-    const res = await hpcRequest(`/api/poll?cursor=${hpcPollCursor}`)
-    if (!res?.ok) return
-    hpcPollCursor = Number(res.cursor || hpcPollCursor)
-    for (const item of res.items || []) {
-      if (item?.channel === 'scraper:event') {
-        applyScraperActivityPayload(item.payload)
+    if (hpcPollInFlight) return
+    hpcPollInFlight = true
+    try {
+      const res = await hpcRequest(`/api/poll?cursor=${hpcPollCursor}`)
+      if (!res?.ok) return
+      hpcPollCursor = Number(res.cursor || hpcPollCursor)
+      for (const item of res.items || []) {
+        if (item?.channel === 'scraper:event') {
+          applyScraperActivityPayload(item.payload)
+        }
+        sendToRenderer('pipeline:event', item)
+        if (item?.channel) {
+          sendToRenderer(item.channel, item.payload)
+        }
       }
-      sendToRenderer('pipeline:event', item)
-      if (item?.channel) {
-        sendToRenderer(item.channel, item.payload)
+      if (!res.running) {
+        scraperActivitySnapshot.activeSites = {}
       }
+      pushScraperActivitySnapshot(Boolean(res.running), typeof res.currentOutDir === 'string' ? res.currentOutDir : undefined)
+    } finally {
+      hpcPollInFlight = false
     }
-    if (!res.running) {
-      scraperActivitySnapshot.activeSites = {}
-    }
-    pushScraperActivitySnapshot(Boolean(res.running), typeof res.currentOutDir === 'string' ? res.currentOutDir : undefined)
   }, 1500)
 }
 
@@ -464,6 +471,7 @@ function stopHpcPoller() {
   if (!hpcPollTimer) return
   clearInterval(hpcPollTimer)
   hpcPollTimer = null
+  hpcPollInFlight = false
 }
 
 function createWindow() {

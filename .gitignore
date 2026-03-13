@@ -70,3 +70,5 @@ playwright/.cache/
 
 # Secrets
 *.env
+!hpc/scraper/local.env.example
+hpc/scraper/local.env

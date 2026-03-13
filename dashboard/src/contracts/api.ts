@@ -169,6 +169,7 @@ export type RunState = {
   processed_sites: number
   status_counts: RunSummaryStatusCounts
   third_party: Pick<RunThirdPartySummary, 'total' | 'mapped' | 'unmapped' | 'no_policy_url'>
+  started_at?: string
   updated_at?: string
 }
 

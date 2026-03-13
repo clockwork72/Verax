@@ -268,7 +268,13 @@ describe('scraperClient', () => {
           folder: 'output_run-1',
           outDir: 'outputs/run-1',
           summary: { ...baseSummary, processed_sites: 2, total_sites: 5, status_counts: { ok: 1 }, success_rate: 50 },
-          state: { ...baseState, processed_sites: 2, total_sites: 5, status_counts: { ok: 1 } },
+          state: {
+            ...baseState,
+            processed_sites: 2,
+            total_sites: 5,
+            status_counts: { ok: 1 },
+            started_at: '2026-03-12T04:00:00+00:00',
+          },
           updated_at: '2026-03-12T05:00:00+00:00',
         }],
       }),
@@ -280,7 +286,11 @@ describe('scraperClient', () => {
       folder: 'output_run-1',
       outDir: 'outputs/run-1',
       summary: expect.objectContaining({ processed_sites: 2, total_sites: 5 }),
-      state: expect.objectContaining({ processed_sites: 2, total_sites: 5 }),
+      state: expect.objectContaining({
+        processed_sites: 2,
+        total_sites: 5,
+        started_at: '2026-03-12T04:00:00+00:00',
+      }),
       updated_at: '2026-03-12T05:00:00+00:00',
       started_at: undefined,
     }])

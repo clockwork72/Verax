@@ -251,6 +251,7 @@ function normalizeRunState(raw: unknown): RunState | null {
       unmapped: asNumber(asObject(state.third_party)?.unmapped),
       no_policy_url: asNumber(asObject(state.third_party)?.no_policy_url),
     },
+    started_at: asString(state.started_at),
     updated_at: asString(state.updated_at),
   }
 }

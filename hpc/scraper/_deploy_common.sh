@@ -4,12 +4,17 @@
 # and defines discover_remote_model_node and retire_other_orchestrators.
 # Not intended to be executed directly.
 
-REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper}"
+# shellcheck source=_config_common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_config_common.sh"
+
+REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/path/to/your/hpc/scraper}"
 REMOTE_REPO="${SCRAPER_REPO_ROOT:-${REMOTE_ROOT}/repo}"
 # shellcheck source=_ssh_common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ssh_common.sh"
+require_scraper_ssh_host
 SOURCE_REV="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 SBATCH_EXPORTS="SCRAPER_REMOTE_ROOT=${REMOTE_ROOT},SCRAPER_REPO_ROOT=${REMOTE_REPO},SCRAPER_RUNTIME_ROOT=${REMOTE_ROOT}/runtime,SCRAPER_OUTPUTS_ROOT=${REMOTE_REPO}/outputs,SCRAPER_PYTHON=${REMOTE_ROOT}/.venv/bin/python,SCRAPER_SERVICE_PORT=${SERVICE_PORT},SCRAPER_SOURCE_REV=${SOURCE_REV}"
+SBATCH_EXTRA_ARGS="${SCRAPER_SBATCH_EXTRA_ARGS:-}"
 
 discover_remote_model_node() {
   ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc '
@@ -69,7 +74,7 @@ deploy_remote() {
 # Submit the orchestrator job and wait for the compute node to become RUNNING.
 # Prints the resolved node to stdout and cancels stale duplicate jobs.
 submit_and_wait() {
-  JOB_ID="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'sbatch --parsable --export=${SBATCH_EXPORTS} ${REMOTE_REPO}/hpc/scraper/orchestrator.slurm'")"
+  JOB_ID="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'sbatch --parsable ${SBATCH_EXTRA_ARGS} --export=${SBATCH_EXPORTS} ${REMOTE_REPO}/hpc/scraper/orchestrator.slurm'")"
   echo "Submitted orchestrator job ${JOB_ID}" >&2
 
   NODE=""

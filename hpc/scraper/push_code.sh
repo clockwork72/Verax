@@ -2,10 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper}"
+# shellcheck source=_config_common.sh
+source "${ROOT_DIR}/hpc/scraper/_config_common.sh"
+REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/path/to/your/hpc/scraper}"
 REMOTE_REPO="${SCRAPER_REPO_ROOT:-${REMOTE_ROOT}/repo}"
 # shellcheck source=_ssh_common.sh
 source "${ROOT_DIR}/hpc/scraper/_ssh_common.sh"
+require_scraper_ssh_host
 CREATED_SSH_MASTER=0
 
 SYNC_DIRS=(

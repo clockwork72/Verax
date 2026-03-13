@@ -62,6 +62,6 @@ cd dashboard && npm run build
 bash hpc/scraper/check_bridge.sh
 curl -fsS http://127.0.0.1:8910/health
 curl -fsS http://127.0.0.1:8910/api/status
-ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/scraper-ssh-${USER}.sock toubkal 'squeue -u "$USER" -o "%.10i %.10T %.20j %.25N"'
+ssh -o ControlMaster=auto -o ControlPersist=10m -o ControlPath=/tmp/scraper-ssh-${USER}.sock "${SCRAPER_SSH_HOST}" 'squeue -u "$USER" -o "%.10i %.10T %.20j %.25N"'
 bash hpc/scraper/validate_cpu_bridge.sh
 ```

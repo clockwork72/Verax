@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 
-import type { RunState, TunnelStatus } from '../contracts/api'
+import type { RunState, RunSummary, TunnelStatus } from '../contracts/api'
 import type { NavId } from '../types'
 import type { AnnotatorStreamEvent } from '../vite-env'
 import { applyAnnotationProgressEvent, annotationRunStateFromStats } from './annotationRunState'
+import {
+  estimateRemainingMs,
+  formatEtaDuration,
+  parseEtaTimestamp,
+  recordEtaProgress,
+  type EtaProgressSample,
+} from './runEta'
 import {
   hasScraperBridge,
   readAnnotationStats,
@@ -33,17 +40,6 @@ const SITE_STAGE_LABELS: Record<string, { label: string; index: number }> = {
   third_party_policy_fetch: { label: '3P policies',      index: 3 },
 }
 
-function formatDuration(ms: number) {
-  if (!Number.isFinite(ms) || ms <= 0) return '0s'
-  const totalSeconds = Math.round(ms / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
-  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
-  return `${seconds}s`
-}
-
 type UseAppRuntimeArgs = {
   activeNav: NavId
   annotateRunning: boolean
@@ -55,6 +51,7 @@ type UseAppRuntimeArgs = {
   running: boolean
   runStartedAt: number | null
   stateData: RunState | null
+  summaryData: RunSummary | null
   stopRunPending: boolean
   tunnelStatus: TunnelStatus
   launchStartingProgress: number
@@ -91,6 +88,7 @@ export function useAppRuntime({
   running,
   runStartedAt,
   stateData,
+  summaryData,
   stopRunPending,
   tunnelStatus,
   launchStartingProgress,
@@ -118,6 +116,16 @@ export function useAppRuntime({
   const [latestStreamEvent, setLatestStreamEvent] = useState<AnnotatorStreamEvent | null>(null)
   const stopRunPendingRef = useRef(false)
   const prevTunnelStatusRef = useRef<TunnelStatus | null>(null)
+  const etaSamplesRef = useRef<EtaProgressSample[]>([])
+
+  const pushEtaSample = (processedSites: number, totalSites: number, timestampMs: number | null) => {
+    if (!timestampMs || totalSites <= 0) return
+    etaSamplesRef.current = recordEtaProgress(etaSamplesRef.current, {
+      processedSites,
+      totalSites,
+      timestampMs,
+    })
+  }
 
   useEffect(() => {
     const unsubscribeScraper = subscribeScraperEvents({
@@ -125,13 +133,16 @@ export function useAppRuntime({
         const event = normalizeScraperRuntimeEvent(rawEvent)
         if (!event) return
         if (event.type === 'run_started') {
+          const startedAtMs = parseEtaTimestamp(event.timestamp) ?? Date.now()
           updateWorkspaceData({ hasRun: true })
           setRunning(true)
           setAutoAnnotatePending(false)
           updateWorkspaceData({ progress: launchStartingProgress })
           setErrorMessage(null)
-          setRunStartedAt(Date.now())
+          setRunStartedAt(startedAtMs)
           setEtaText('')
+          etaSamplesRef.current = []
+          pushEtaSample(0, Number(event.total_sites || 0), startedAtMs)
           setScraperActivity(emptyScraperSiteActivityState())
         }
         if (event.type === 'run_progress') {
@@ -139,6 +150,7 @@ export function useAppRuntime({
           const total = Number(event.total || 0)
           if (total > 0) {
             updateWorkspaceData({ progress: Math.min(100, (processed / total) * 100) })
+            pushEtaSample(processed, total, parseEtaTimestamp(event.timestamp) ?? Date.now())
           }
         }
         if (event.type === 'site_started' || event.type === 'site_stage' || event.type === 'site_finished') {
@@ -153,6 +165,7 @@ export function useAppRuntime({
           setAutoAnnotatePending(autoAnnotate)
           updateWorkspaceData({ progress: 100 })
           setEtaText('0s')
+          etaSamplesRef.current = []
           setAuditBusySite(null)
           setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
           void syncLoadedRunState(outDir)
@@ -174,6 +187,7 @@ export function useAppRuntime({
         setRunning(false)
         setAutoAnnotatePending(false)
         setStopRunPending(false)
+        etaSamplesRef.current = []
         setAuditBusySite(null)
         setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
@@ -192,6 +206,7 @@ export function useAppRuntime({
         setRunning(false)
         setAutoAnnotatePending(false)
         setStopRunPending(false)
+        etaSamplesRef.current = []
         setAuditBusySite(null)
         setScraperActivity((prev) => ({ ...prev, activeSites: {} }))
         void syncLoadedRunState(outDir)
@@ -204,7 +219,11 @@ export function useAppRuntime({
       if (snapshot.running) {
         updateWorkspaceData({ hasRun: true })
         if (!runStartedAt) {
-          setRunStartedAt(Date.now())
+          setRunStartedAt(
+            parseEtaTimestamp(summaryData?.started_at)
+            ?? parseEtaTimestamp(stateData?.started_at)
+            ?? Date.now(),
+          )
         }
       }
     })
@@ -273,6 +292,8 @@ export function useAppRuntime({
     outDir,
     refreshRuns,
     runStartedAt,
+    stateData?.started_at,
+    summaryData?.started_at,
     setAnnotateLogs,
     setAnnotateRunning,
     setAuditAnnotatingSite,
@@ -312,21 +333,66 @@ export function useAppRuntime({
       if (!running) setEtaText('')
       return
     }
-    const effectiveProgress = (
-      stateData?.total_sites && stateData?.processed_sites
-        ? (stateData.processed_sites / Math.max(1, stateData.total_sites)) * 100
-        : progress
+    const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? 0)
+    const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+    if (totalSites <= 0) {
+      setEtaText('')
+      return
+    }
+    const startedAtMs = (
+      parseEtaTimestamp(summaryData?.started_at)
+      ?? parseEtaTimestamp(stateData?.started_at)
+      ?? runStartedAt
     )
-    if (effectiveProgress <= 0) return
-    const elapsedMs = Date.now() - runStartedAt
-    const totalMs = elapsedMs / (effectiveProgress / 100)
-    const remainingMs = Math.max(0, totalMs - elapsedMs)
-    setEtaText(formatDuration(remainingMs))
-  }, [progress, runStartedAt, running, setEtaText, stateData])
+    const remainingMs = estimateRemainingMs({
+      processedSites,
+      totalSites,
+      samples: etaSamplesRef.current,
+      startedAtMs,
+      nowMs: Date.now(),
+    })
+    setEtaText(remainingMs === null ? '' : formatEtaDuration(remainingMs))
+  }, [progress, runStartedAt, running, setEtaText, stateData, summaryData])
+
+  useEffect(() => {
+    if (!running) return
+    const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? 0)
+    if (totalSites <= 0) return
+    const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+    const timestampMs = (
+      parseEtaTimestamp(summaryData?.updated_at)
+      ?? parseEtaTimestamp(stateData?.updated_at)
+      ?? Date.now()
+    )
+    pushEtaSample(processedSites, totalSites, timestampMs)
+  }, [
+    running,
+    stateData?.processed_sites,
+    stateData?.total_sites,
+    stateData?.updated_at,
+    summaryData?.processed_sites,
+    summaryData?.total_sites,
+    summaryData?.updated_at,
+  ])
+
+  useEffect(() => {
+    if (!running || runStartedAt) return
+    const startedAtMs = (
+      parseEtaTimestamp(summaryData?.started_at)
+      ?? parseEtaTimestamp(stateData?.started_at)
+      ?? null
+    )
+    if (startedAtMs) {
+      setRunStartedAt(startedAtMs)
+    }
+  }, [runStartedAt, running, setRunStartedAt, stateData?.started_at, summaryData?.started_at])
 
   useEffect(() => {
     if (!hasScraperBridge() || !hasRun) return
-    const interval = setInterval(async () => {
+    let inFlight = false
+    const refreshSnapshot = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const needsExplorerData = (
           activeNav === 'results'
@@ -335,16 +401,12 @@ export function useAppRuntime({
           || activeNav === 'consistency'
         )
         const needsResultsData = (
-          running
-          || activeNav === 'results'
-          || activeNav === 'explorer'
-          || activeNav === 'annotations'
-          || activeNav === 'consistency'
+          activeNav === 'results'
           || activeNav === 'audit'
         )
         const snapshot = await readWorkspaceSnapshot({
           outDir,
-          includeFolderSize: true,
+          includeFolderSize: false,
           includeExplorer: needsExplorerData,
           includeResults: needsResultsData,
           includeAudit: activeNav === 'audit',
@@ -360,13 +422,24 @@ export function useAppRuntime({
           mergeProgress: running,
         })
         if (!runStartedAt && snapshot.processedSites) {
-          setRunStartedAt(Date.now())
+          setRunStartedAt(
+            parseEtaTimestamp(snapshot.summary?.started_at)
+            ?? parseEtaTimestamp(snapshot.state?.started_at)
+            ?? Date.now(),
+          )
         }
       } catch (error) {
         setErrorMessage(String(error))
+      } finally {
+        inFlight = false
       }
-    }, 2000)
-    return () => clearInterval(interval)
+    }
+    void refreshSnapshot()
+    const interval = setInterval(() => { void refreshSnapshot() }, 2000)
+    return () => {
+      inFlight = false
+      clearInterval(interval)
+    }
   }, [
     activeNav,
     annotateRunning,
@@ -384,13 +457,20 @@ export function useAppRuntime({
     if (!hasScraperBridge() || activeNav !== 'database') return
 
     let cancelled = false
+    let inFlight = false
     const refreshSize = async () => {
+      if (inFlight) return
+      inFlight = true
       const size = await readFolderSize(outDir)
-      if (!cancelled && size.ok && typeof size.bytes === 'number') {
-        updateWorkspaceData({ folderBytes: size.bytes })
-      } else if (!cancelled && size.error === 'not_found') {
-        updateWorkspaceData({ folderBytes: null })
-        await handleMissingOutputDir(outDir)
+      try {
+        if (!cancelled && size.ok && typeof size.bytes === 'number') {
+          updateWorkspaceData({ folderBytes: size.bytes })
+        } else if (!cancelled && size.error === 'not_found') {
+          updateWorkspaceData({ folderBytes: null })
+          await handleMissingOutputDir(outDir)
+        }
+      } finally {
+        inFlight = false
       }
     }
 
@@ -415,10 +495,23 @@ export function useAppRuntime({
 
   useEffect(() => {
     if (activeNav !== 'database') return
+    let inFlight = false
+    const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        await refreshRuns()
+      } finally {
+        inFlight = false
+      }
+    }
     const interval = setInterval(() => {
-      void refreshRuns()
+      void refresh()
     }, 15_000)
-    return () => clearInterval(interval)
+    return () => {
+      inFlight = false
+      clearInterval(interval)
+    }
   }, [activeNav, refreshRuns])
 
   useEffect(() => {

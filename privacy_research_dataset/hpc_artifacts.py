@@ -26,6 +26,9 @@ from .hpc_contracts import (
     ThirdPartyCacheStatsResponse,
 )
 
+MAX_CONCURRENT_FILE_READS = 8
+_FILE_READ_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_FILE_READS)
+
 
 def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
     out: list[Any] = []
@@ -40,6 +43,15 @@ def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
         if limit and len(out) >= limit:
             break
     return out
+
+
+async def read_text_file(path: Path) -> str:
+    async with _FILE_READ_SEMAPHORE:
+        return await asyncio.to_thread(path.read_text, encoding="utf-8")
+
+
+async def read_jsonl_file(path: Path, limit: int | None = None) -> list[Any]:
+    return parse_jsonl(await read_text_file(path), limit)
 
 
 class ArtifactService(Protocol):
@@ -207,7 +219,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         limit = int(request.query.get("limit", "0") or "0") or None
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        data = parse_jsonl(target.read_text(encoding="utf-8"), limit) if target.suffix == ".jsonl" else await service.read_json_file(target)
+        data = await read_jsonl_file(target, limit) if target.suffix == ".jsonl" else await service.read_json_file(target)
         return web.json_response(JsonPathResponse(ok=True, data=data, path=str(target)).to_dict())
 
     async def handle_read_results(request: web.Request) -> web.Response:
@@ -216,7 +228,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
         return web.json_response(
-            JsonPathResponse(ok=True, data=parse_jsonl(target.read_text(encoding="utf-8"), limit), path=str(target)).to_dict()
+            JsonPathResponse(ok=True, data=await read_jsonl_file(target, limit), path=str(target)).to_dict()
         )
 
     async def handle_read_artifact_text(request: web.Request) -> web.Response:
@@ -227,7 +239,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         target = service.safe_resolve(payload.get("outDir"), relative_path)
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        return web.json_response(JsonPathResponse(ok=True, data=target.read_text(encoding="utf-8"), path=str(target)).to_dict())
+        return web.json_response(JsonPathResponse(ok=True, data=await read_text_file(target), path=str(target)).to_dict())
 
     async def handle_read_run_manifest(request: web.Request) -> web.Response:
         target = service.manifest_path(request.query.get("outDir"))
@@ -271,7 +283,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         cache_path = service.default_paths(request.query.get("outDir")).out_dir / "results.tp_cache.json"
         if not cache_path.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(cache_path)).to_dict())
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(await read_text_file(cache_path))
         total = 0
         fetched = 0
         failed = 0
@@ -298,7 +310,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         cache_path = service.default_paths(request.query.get("outDir")).crux_cache_json
         if not cache_path.exists():
             return web.json_response(CruxCacheStatsResponse(ok=True, count=0, present=0, absent=0, path=str(cache_path)).to_dict())
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(await read_text_file(cache_path))
         values = list(raw.values())
         present = sum(1 for value in values if value)
         absent = len(values) - present

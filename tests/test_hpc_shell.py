@@ -52,6 +52,10 @@ exit 255
 
 
 def _source_ssh_common(env: dict[str, str]) -> tuple[str, str]:
+    env = {
+        **env,
+        "SCRAPER_LOCAL_ENV_FILE": env.get("SCRAPER_LOCAL_ENV_FILE", str(REPO_ROOT / "hpc" / "scraper" / ".missing.local.env")),
+    }
     cmd = f"source {SSH_COMMON} && printf '%s\\n%s\\n' \"$SSH_HOST\" \"$SSH_SOCKET\""
     result = subprocess.run(
         ["bash", "-lc", cmd],
@@ -65,6 +69,10 @@ def _source_ssh_common(env: dict[str, str]) -> tuple[str, str]:
 
 
 def _run_bash(script: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = {
+        **env,
+        "SCRAPER_LOCAL_ENV_FILE": env.get("SCRAPER_LOCAL_ENV_FILE", str(REPO_ROOT / "hpc" / "scraper" / ".missing.local.env")),
+    }
     return subprocess.run(
         ["bash", "-lc", script],
         check=True,
@@ -83,13 +91,13 @@ def test_ssh_common_prefers_explicit_socket_override(tmp_path):
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "SCRAPER_SSH_HOST": "soufiane.essahli@toubkal.hpc.um6p.ma",
+        "SCRAPER_SSH_HOST": "researcher@login.cluster.example",
         "SCRAPER_SSH_SOCKET": explicit_socket,
     }
 
     host, socket = _source_ssh_common(env)
 
-    assert host == "soufiane.essahli@toubkal.hpc.um6p.ma"
+    assert host == "researcher@login.cluster.example"
     assert socket == explicit_socket
 
 
@@ -107,9 +115,9 @@ def test_ssh_common_reuses_any_live_matching_control_socket(tmp_path):
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "USER": "pytest-missing",
-        "SCRAPER_SSH_HOST": "soufiane.essahli@toubkal.hpc.um6p.ma",
+        "SCRAPER_SSH_HOST": "researcher@login.cluster.example",
         "LIVE_SSH_SOCKET": fallback_socket,
-        "EXPECTED_SSH_HOST": "soufiane.essahli@toubkal.hpc.um6p.ma",
+        "EXPECTED_SSH_HOST": "researcher@login.cluster.example",
         "SSH_LOG_PATH": str(log_path),
     }
 
@@ -118,7 +126,7 @@ def test_ssh_common_reuses_any_live_matching_control_socket(tmp_path):
     finally:
         Path(fallback_socket).unlink(missing_ok=True)
 
-    assert host == "soufiane.essahli@toubkal.hpc.um6p.ma"
+    assert host == "researcher@login.cluster.example"
     assert socket == fallback_socket
     assert default_socket in log_path.read_text(encoding="utf-8")
     assert fallback_socket in log_path.read_text(encoding="utf-8")
@@ -170,7 +178,7 @@ esac
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "SCRAPER_SSH_HOST": "soufiane.essahli@toubkal.hpc.um6p.ma",
+        "SCRAPER_SSH_HOST": "researcher@login.cluster.example",
         "SCRAPER_SSH_SOCKET": "/tmp/scraper-ssh-explicit-pytest.sock",
         "SCRAPER_REMOTE_ROOT": "/srv/test-scraper",
         "SCRAPER_REPO_ROOT": "/srv/test-scraper/repo",
@@ -265,7 +273,7 @@ exit 1
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "SCRAPER_SSH_HOST": "soufiane.essahli@toubkal.hpc.um6p.ma",
+        "SCRAPER_SSH_HOST": "researcher@login.cluster.example",
         "SCRAPER_SSH_SOCKET": "/tmp/scraper-ssh-explicit-pytest.sock",
         "SCRAPER_SSH_FORWARD_STATE": str(forward_state),
         "SSH_LOG_PATH": str(ssh_log),

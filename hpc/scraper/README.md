@@ -1,6 +1,13 @@
 # HPC Scraper Operator Runbook
 
-Target cluster: **Toubkal** (`toubkal` / `soufiane.essahli@toubkal.hpc.um6p.ma`)
+This runbook assumes you already have access to a Slurm-based HPC cluster.
+Before using these scripts, set at least:
+
+- `SCRAPER_SSH_HOST` to your cluster login host
+- `SCRAPER_REMOTE_ROOT` to your writable remote project directory
+- any cluster-specific Slurm options your site requires
+
+Recommended: copy `hpc/scraper/local.env.example` to `hpc/scraper/local.env`. That file is gitignored and sourced automatically by the helper scripts.
 
 ---
 
@@ -22,8 +29,8 @@ Target cluster: **Toubkal** (`toubkal` / `soufiane.essahli@toubkal.hpc.um6p.ma`)
 ## 1. Architecture overview
 
 ```
-Local machine                         Toubkal login node        Compute node (GPU)
-─────────────────────────             ──────────────────        ──────────────────
+Local machine                         HPC login node            Compute node (GPU)
+─────────────────────────             ──────────────            ──────────────────
 Electron dashboard (port 8910)
   │ HTTP over SSH tunnel
   └─── SSH -L 8910:NODE:8910 ───────> sshd ──────────────────> orchestrator.slurm
@@ -46,14 +53,14 @@ Electron dashboard (port 8910)
 This is only needed once, or after a full environment wipe.
 
 ```bash
-# 1. Ensure the remote Lustre directory exists (adjust path if needed)
-ssh toubkal 'mkdir -p /srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper'
+# 1. Ensure the remote project directory exists (adjust path if needed)
+ssh "${SCRAPER_SSH_HOST}" "mkdir -p \"${SCRAPER_REMOTE_ROOT}\""
 
 # 2. Push code + install the remote Python venv
 hpc/scraper/push_code.sh
-ssh toubkal "bash -lc '
-  SCRAPER_REMOTE_ROOT=/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper
-  SCRAPER_REPO_ROOT=\${SCRAPER_REMOTE_ROOT}/repo
+ssh "${SCRAPER_SSH_HOST}" "bash -lc '
+  SCRAPER_REMOTE_ROOT=\${SCRAPER_REMOTE_ROOT}
+  SCRAPER_REPO_ROOT=\${SCRAPER_REPO_ROOT:-\${SCRAPER_REMOTE_ROOT}/repo}
   \${SCRAPER_REPO_ROOT}/hpc/scraper/install_remote.sh
 '"
 
@@ -132,7 +139,7 @@ When the orchestrator job has died (e.g. Slurm wall-time, OOM, node failure):
 
 ```bash
 # Confirm job is gone
-ssh toubkal 'squeue -u "$USER" -o "%.10i %.10T %.20j %.25N"'
+ssh "${SCRAPER_SSH_HOST}" 'squeue -u "$USER" -o "%.10i %.10T %.20j %.25N"'
 
 # Redeploy (no code changes needed — just resubmit)
 hpc/scraper/refresh_remote.sh
@@ -150,7 +157,7 @@ If you want to retry previously-failed sites:
 
 ```bash
 # On the cluster, remove failed status files for the target run
-ssh toubkal "find \${SCRAPER_REPO_ROOT}/outputs/<run_dir> -name annotation_status.json \
+ssh "${SCRAPER_SSH_HOST}" "find \${SCRAPER_REPO_ROOT}/outputs/<run_dir> -name annotation_status.json \
   -exec grep -l '\"status\": \"failed\"' {} \\; \
   | xargs rm -f"
 ```
@@ -172,7 +179,7 @@ If the run was started with a Tranco list:
 cat outputs/<run_dir>/summary.json | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s.get("last_rank","?"))'
 
 # Resubmit with resume_after_rank
-ssh toubkal "bash -lc '
+ssh "${SCRAPER_SSH_HOST}" "bash -lc '
   cd \${SCRAPER_REPO_ROOT}
   .venv/bin/python -m privacy_research_dataset.cli \
     --tranco-top 10000 \
@@ -195,7 +202,7 @@ Valid terminal statuses (will not be re-processed): `completed`, `failed`, `stop
 
 To force a specific site to be re-annotated:
 ```bash
-ssh toubkal "rm outputs/<run_dir>/<site>/annotation_status.json"
+ssh "${SCRAPER_SSH_HOST}" "rm outputs/<run_dir>/<site>/annotation_status.json"
 ```
 
 ---
@@ -237,7 +244,7 @@ hpc/scraper/validate_cpu_bridge.sh --json
 | `Rev match: NO` | Remote running an old code version | `refresh_remote.sh` |
 | `/api/status` returns `idle` when a run should be active | Run finished or orchestrator restarted | Check `outputs/<run>/summary.json`; resubmit if needed |
 | Annotation model `/health` unreachable locally (step 5 skipped) | Model is on a different node — this is normal | Export `SCRAPER_LLM_BASE_URL` if you need to override |
-| `remote python runtime fail` | venv missing or broken | `ssh toubkal 'hpc/scraper/install_remote.sh'` |
+| `remote python runtime fail` | venv missing or broken | `ssh "${SCRAPER_SSH_HOST}" 'hpc/scraper/install_remote.sh'` |
 | Slurm job in `PENDING` forever | No GPU partition slots | Check `squeue` on cluster; wait or contact cluster admin |
 | Dashboard stuck after tunnel reconnect | Bridge reconnect re-seeding not triggered | Refresh the dashboard page |
 
@@ -261,13 +268,13 @@ curl 'http://127.0.0.1:8910/api/poll?after=0' | python3 -m json.tool
 
 ```bash
 # Find the most recent Slurm output file
-ssh toubkal 'ls -lt ~/slurm-*.out | head -5'
+ssh "${SCRAPER_SSH_HOST}" 'ls -lt ~/slurm-*.out | head -5'
 
 # Tail it
-ssh toubkal 'tail -100 ~/slurm-<job_id>.out'
+ssh "${SCRAPER_SSH_HOST}" 'tail -100 ~/slurm-<job_id>.out'
 
 # Or follow live
-ssh toubkal 'tail -f ~/slurm-<job_id>.out'
+ssh "${SCRAPER_SSH_HOST}" 'tail -f ~/slurm-<job_id>.out'
 ```
 
 ---
@@ -328,16 +335,16 @@ print(f"Total: {p[\"total_sites\"]}  Annotated: {p[\"annotated_sites\"]}  Statem
 
 ## 9. Environment variable reference
 
-All variables have sane defaults for the standard Toubkal deployment. Override only when needed.
+Host- and cluster-specific variables intentionally use placeholders in the tracked repo. Set them explicitly for your environment before deploying, preferably through `hpc/scraper/local.env`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SCRAPER_SSH_HOST` | `toubkal` | SSH hostname / alias |
+| `SCRAPER_SSH_HOST` | `your-user@login.your-hpc.example` | SSH hostname / alias |
 | `SCRAPER_SERVICE_PORT` | `8910` | Local + remote orchestrator port |
 | `SCRAPER_ORCH_JOB_NAME` | `scraper-orch` | Slurm job name for the orchestrator |
 | `SCRAPER_SSH_SOCKET` | `/tmp/scraper-ssh-$USER.sock` | SSH ControlPath multiplexer socket |
 | `SCRAPER_SSH_FORWARD_STATE` | `/tmp/scraper-ssh-forward-$USER-8910.target` | Last-known tunnel target node (persisted) |
-| `SCRAPER_REMOTE_ROOT` | `/srv/lustre01/.../scraper` | Base directory on Lustre |
+| `SCRAPER_REMOTE_ROOT` | `/path/to/your/hpc/scraper` | Base directory on the cluster |
 | `SCRAPER_REPO_ROOT` | `${SCRAPER_REMOTE_ROOT}/repo` | Cloned repo root on the remote |
 | `SCRAPER_OUTPUTS_ROOT` | `${SCRAPER_REPO_ROOT}/outputs` | Remote outputs root |
 | `SCRAPER_LOCAL_OUTPUTS_ROOT` | `${ROOT_DIR}/outputs/hpc` | Local destination for `pull_run.sh` |
@@ -367,4 +374,4 @@ All variables have sane defaults for the standard Toubkal deployment. Override o
 Branch automation:
 - pushes to `main` trigger [sync-main-into-hpc.yml](../../.github/workflows/sync-main-into-hpc.yml)
 - clean merges are pushed automatically into `hpc-v`
-- **`hpc-v` is the branch deployed to Toubkal** — always deploy from `hpc-v`
+- `main` is the default branch to deploy; treat `hpc-v` as optional if your team still keeps a separate cluster branch

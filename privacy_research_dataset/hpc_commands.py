@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from .hpc_runtime import Paths, utc_now
 
 
-SAFE_SCRAPER_CONCURRENCY = 2
+SAFE_SCRAPER_CONCURRENCY = 6
 SAFE_CRUX_CONCURRENCY = 4
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20

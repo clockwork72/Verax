@@ -201,6 +201,7 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
 
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["processed_sites"] == 1
+    assert state_payload["started_at"] == summary["started_at"]
 
     artifacts_ok_link = tmp_path / "artifacts_ok" / "alpha.example"
     assert artifacts_ok_link.is_symlink()
@@ -261,6 +262,7 @@ def test_run_pipeline_uses_post_crux_total_sites(tmp_path, monkeypatch, capsys):
 
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["total_sites"] == 1
+    assert state_payload["started_at"] == summary["started_at"]
 
 
 def test_crux_filter_caches_only_present_origins(tmp_path, monkeypatch):

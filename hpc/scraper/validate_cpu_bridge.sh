@@ -5,14 +5,18 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=_config_common.sh
+source "${ROOT_DIR}/hpc/scraper/_config_common.sh"
 # shellcheck source=_ssh_common.sh
 source "${ROOT_DIR}/hpc/scraper/_ssh_common.sh"
 HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/health"
 STATUS_URL="http://127.0.0.1:${SERVICE_PORT}/api/status"
 STATS_URL="http://127.0.0.1:${SERVICE_PORT}/api/annotation-stats?outDir=outputs/unified"
-REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper}"
+REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/path/to/your/hpc/scraper}"
 MODEL_PORT="${SCRAPER_LLM_MODEL_PORT:-8901}"
 JSON_MODE=0
+
+require_scraper_ssh_host
 
 if [ "${1:-}" = "--json" ]; then
   JSON_MODE=1

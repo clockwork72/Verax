@@ -88,14 +88,15 @@ export function DatabaseView({
 }: DatabaseViewProps) {
   const processed = summary?.processed_sites ?? state?.processed_sites ?? 0
   const total = summary?.total_sites ?? state?.total_sites ?? 0
-  const thirdParty = summary?.third_party ?? { total: 0, mapped: 0, unmapped: 0, no_policy_url: 0 }
+  const thirdParty = summary?.third_party ?? { total: 0, unique: 0, mapped: 0, unmapped: 0, no_policy_url: 0 }
+  const thirdPartyUnique = thirdParty.unique ?? thirdParty.total ?? 0
   const outputsRoot = runsRoot || 'outputs'
   const activeRunId = runs.find((run) => run.outDir === outDir)?.runId
 
   const metricCards = [
     { label: 'Run folders', value: runs.length, detail: 'Persisted output directories detected in the workspace.' },
     { label: 'Processed sites', value: processed, detail: total ? `of ${total}` : 'current loaded run' },
-    { label: '3P observed', value: thirdParty.total ?? 0, detail: 'Third-party records in the loaded dataset.' },
+    { label: '3P observed', value: thirdPartyUnique, detail: 'Unique third-party services in the loaded dataset.' },
     { label: 'Footprint', value: formatBytes(folderBytes), detail: 'Local size of the selected output folder.' },
   ]
 

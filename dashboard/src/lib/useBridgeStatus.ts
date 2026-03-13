@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { HpcBridgeStatus, TunnelStatus } from '../contracts/api'
 import { readBridgeStatus } from './scraperClient'
@@ -89,28 +89,35 @@ export function useBridgeStatus({
   const [bridgeFailures, setBridgeFailures] = useState(0)
   const [bridgeCheckedAt, setBridgeCheckedAt] = useState<number | null>(null)
   const [bridgeHealthyAt, setBridgeHealthyAt] = useState<number | null>(null)
+  const refreshInFlightRef = useRef(false)
 
   const refreshBridgeStatus = useCallback(async () => {
+    if (refreshInFlightRef.current) return
+    refreshInFlightRef.current = true
     const checkedAt = Date.now()
-    const res = await readBridgeStatus()
-    setBridgeCheckedAt(checkedAt)
-    if (res.ok) {
-      setBackendStatus(res.data || null)
-      setTunnelStatus('online')
-      setBridgeFailures(0)
-      setBridgeHealthyAt(checkedAt)
-      return
-    }
-    setBackendStatus(res?.data || null)
-    setBridgeFailures((prev) => {
-      const next = prev + 1
-      if (res?.data?.local_port_listening) {
-        setTunnelStatus('degraded')
-        return next
+    try {
+      const res = await readBridgeStatus()
+      setBridgeCheckedAt(checkedAt)
+      if (res.ok) {
+        setBackendStatus(res.data || null)
+        setTunnelStatus('online')
+        setBridgeFailures(0)
+        setBridgeHealthyAt(checkedAt)
+        return
       }
-      setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
-      return next
-    })
+      setBackendStatus(res?.data || null)
+      setBridgeFailures((prev) => {
+        const next = prev + 1
+        if (res?.data?.local_port_listening) {
+          setTunnelStatus('degraded')
+          return next
+        }
+        setTunnelStatus(bridgeHealthyAt && next < 2 ? 'degraded' : 'offline')
+        return next
+      })
+    } finally {
+      refreshInFlightRef.current = false
+    }
   }, [bridgeHealthyAt])
 
   useEffect(() => {

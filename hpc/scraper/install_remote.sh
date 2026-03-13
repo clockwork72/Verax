@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper}"
+# shellcheck source=_config_common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_config_common.sh"
+
+REMOTE_ROOT="${SCRAPER_REMOTE_ROOT:-/path/to/your/hpc/scraper}"
 REPO_ROOT="${SCRAPER_REPO_ROOT:-${REMOTE_ROOT}/repo}"
 VENV_DIR="${SCRAPER_VENV_DIR:-${REMOTE_ROOT}/.venv}"
 BROWSERS_DIR="${SCRAPER_PLAYWRIGHT_BROWSERS:-${REMOTE_ROOT}/runtime/playwright-browsers}"

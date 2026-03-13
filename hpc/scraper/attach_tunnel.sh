@@ -4,6 +4,7 @@ set -euo pipefail
 # shellcheck source=_ssh_common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ssh_common.sh"
 HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/health"
+require_scraper_ssh_host
 
 usage() {
   cat <<'EOF'

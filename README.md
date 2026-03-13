@@ -1,6 +1,8 @@
 # Privacy Research Dataset: HPC Workflow Guide
 
-This branch is meant to run the scraper on Toubkal.
+This branch is meant to run the scraper on a Slurm-based HPC cluster.
+
+Prerequisite: you need your own HPC account, SSH access to the cluster login host, and a writable remote project directory. The tracked scripts use placeholder defaults for host- and cluster-specific values, so copy [local.env.example](/mnt/storage/projects/hpc/scraper/local.env.example) to `hpc/scraper/local.env` and set `SCRAPER_SSH_HOST`, `SCRAPER_REMOTE_ROOT`, and any site-specific Slurm options for your environment before deploying.
 
 The key idea is simple:
 
@@ -29,13 +31,13 @@ Important local paths:
 - [`hpc/scraper/`](/mnt/storage/projects/hpc/scraper)
 - local repo root: `/mnt/storage/projects`
 
-### 2. Toubkal HPC
+### 2. Your HPC cluster
 
 This is where the scraping runtime lives.
 
 The deployed remote root is:
 
-`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper`
+`${SCRAPER_REMOTE_ROOT}`
 
 Important remote paths:
 
@@ -48,43 +50,11 @@ Important remote paths:
 The remote repo is a deployment mirror, not the source of truth.
 You should treat local code as authoritative and remote code as disposable.
 
-## Branch Sync Strategy
+## Branch Strategy
 
-This repository now includes an automatic sync path from `main` into `hpc-v`.
+Use `main` as the primary deployable branch.
 
-The automation is:
-
-- [`scripts/sync_main_to_hpc.sh`](/mnt/storage/projects/scripts/sync_main_to_hpc.sh)
-  - fetches `main` and `hpc-v`
-  - checks out `hpc-v`
-  - merges `main` into it
-  - optionally pushes the updated branch
-- [sync-main-into-hpc.yml](/mnt/storage/projects/.github/workflows/sync-main-into-hpc.yml)
-  - runs on every push to `main`
-  - executes the sync script
-  - pushes `hpc-v` automatically if the merge is clean
-
-What this means operationally:
-
-- small changes merged into `main` will propagate to `hpc-v` automatically
-- no manual sync is needed for every minor update
-- if a real merge conflict happens, the workflow stops and you resolve that conflict once
-
-The most likely conflict zone is still the local dashboard bridge files, because `hpc-v` intentionally changes how the local UI connects to the remote runtime.
-So the automation removes routine sync work, but it does not make conflicting edits mathematically disappear.
-
-In practice:
-
-- application changes merged into `main` now flow into `hpc-v` automatically through GitHub Actions
-- `hpc-v` remains the branch you deploy to Toubkal
-- if the workflow cannot merge cleanly, it stops and you resolve the conflict in git once, then normal automation resumes
-- the sync script warns when `main` touched protected bridge files that should be reviewed manually on `hpc-v`
-
-Protected bridge files currently reviewed manually:
-
-- `dashboard/electron/main.ts`
-- `dashboard/src/App.tsx`
-- `dashboard/src/components/launcher/LauncherView.tsx`
+If you choose to keep a separate cluster-specific branch such as `hpc-v`, treat it as optional and synchronize it deliberately. The repository still includes [`scripts/sync_main_to_hpc.sh`](/mnt/storage/projects/scripts/sync_main_to_hpc.sh) and [sync-main-into-hpc.yml](/mnt/storage/projects/.github/workflows/sync-main-into-hpc.yml) for teams that want that workflow, but the default assumption in this guide is that you deploy from `main`.
 
 ## Architecture
 
@@ -112,7 +82,7 @@ Having a healthy scraper bridge on `8910` does not automatically mean an annotat
 ### Deployment and runtime
 
 - [`hpc/scraper/push_code.sh`](/mnt/storage/projects/hpc/scraper/push_code.sh)
-  - Pushes the scraper payload from local to Toubkal.
+  - Pushes the scraper payload from local to your HPC deployment mirror.
   - Prunes remote folders that should not live on the cluster.
   - Reuses a single SSH control connection so deployment usually needs only one MFA/TOTP challenge.
 - [`hpc/scraper/launch_remote.sh`](/mnt/storage/projects/hpc/scraper/launch_remote.sh)
@@ -136,7 +106,7 @@ Having a healthy scraper bridge on `8910` does not automatically mean an annotat
 - [`dashboard/electron/main.ts`](/mnt/storage/projects/dashboard/electron/main.ts)
   - Local bridge client that talks to `127.0.0.1:8910`.
 
-## What Gets Synced To Toubkal
+## What Gets Synced To The HPC Mirror
 
 Only the scraper payload is deployed remotely.
 
@@ -171,9 +141,9 @@ Make all code changes in your local repo:
 
 `/mnt/storage/projects`
 
-Do not use the remote repo on Toubkal as a second development checkout.
+Do not use the remote repo on the cluster as a second development checkout.
 
-### Step 2. Push code to Toubkal
+### Step 2. Push code to the HPC cluster
 
 From the local repo root:
 
@@ -219,7 +189,7 @@ The dashboard should stay on the launcher until the bridge is healthy.
 
 Use the dashboard launcher to start scrapes.
 Those actions do not start local scraper processes.
-They are sent through the bridge to the remote service on Toubkal.
+They are sent through the bridge to the remote service on the cluster.
 
 ### Step 6. Configure annotation model reachability if you want Stage 2
 
@@ -262,17 +232,17 @@ That pulls the run into:
 
 `outputs/hpc/<run_dir>/`
 
-## If You Launch The Slurm Job Directly On Toubkal
+## If You Launch The Slurm Job Directly On The Cluster
 
 Sometimes you may submit the orchestrator manually from the HPC side.
 That is fine, but the dashboard will still stay offline until your local machine opens the SSH tunnel.
 
 ### Remote-side commands
 
-On Toubkal:
+On the cluster:
 
 ```bash
-cd /srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo
+cd "${SCRAPER_REPO_ROOT}"
 bash hpc/scraper/install_remote.sh
 sbatch hpc/scraper/orchestrator.slurm
 ```
@@ -292,7 +262,7 @@ That script resolves the currently running `scraper-orch` node, kills stale loca
 If you need to target a specific node manually, you can still do it directly:
 
 ```bash
-ssh -fNT -L 8910:slurm-compute-h21c8-u30-svn1:8910 soufiane.essahli@toubkal.hpc.um6p.ma
+ssh -fNT -L 8910:<compute-node>:8910 "${SCRAPER_SSH_HOST}"
 ```
 
 Then verify locally:
@@ -319,13 +289,12 @@ Once the tunnel is back, the dashboard should recover automatically.
 The orchestrator job is intentionally lightweight so it can start quickly:
 
 - partition: `compute`
-- qos: `intr`
-- account: `vr_outsec-vh2sz1t4fks-default-cpu`
 - nodes: `1`
 - tasks: `1`
-- cpus per task: `2`
-- memory: `6G`
-- walltime: `00:10:00`
+- cpus per task: `24`
+- walltime: `02:00:00`
+
+If your cluster requires an account, QoS, memory limit, or different partition, set those according to local policy before submitting the job.
 
 The orchestrator is not the heavy crawler itself.
 It is a control-plane job that starts the database and launches remote subprocesses on demand.
@@ -334,7 +303,7 @@ It is a control-plane job that starts the database and launches remote subproces
 
 Remote outputs live under:
 
-`/srv/lustre01/project/vr_outsec-vh2sz1t4fks/users/soufiane.essahli/scraper/repo/outputs`
+`${SCRAPER_REPO_ROOT}/outputs`
 
 Typical run contents:
 
@@ -356,15 +325,14 @@ Follow these rules to avoid drift and confusion:
 - write code locally
 - commit code locally
 - merge feature work into `main`
-- push code to Toubkal with `push_code.sh`
+- push code to the cluster with `push_code.sh`
 - avoid editing remote code directly
 
 ### Branches
 
-- treat `main` as the upstream application branch
-- treat `hpc-v` as the HPC deployment branch
-- let the sync workflow pull `main` forward into `hpc-v`
-- keep HPC-specific logic isolated where possible so merges stay easy
+- treat `main` as the primary application and deployment branch
+- keep any optional HPC-only branch isolated and intentionally maintained
+- use the sync workflow only if your team actually keeps that split branch model
 
 ### Remote repo
 
@@ -381,7 +349,7 @@ Follow these rules to avoid drift and confusion:
 
 ### Results
 
-- leave large result sets on Toubkal
+- leave large result sets on the cluster
 - pull back only the runs you actually need
 
 ## How To Know The System Is Healthy
@@ -393,7 +361,7 @@ The bridge is healthy when all of the following are true:
 - `curl http://127.0.0.1:8910/health` returns JSON
 - the dashboard launcher shows the bridge as active
 - PostgreSQL is reported ready
-- the remote orchestrator was launched from the current `hpc-v` code revision
+- the remote orchestrator was launched from the current local code revision
 
 ## Troubleshooting
 
@@ -425,7 +393,7 @@ Fast repair:
 hpc/scraper/attach_tunnel.sh
 ```
 
-Inside the Electron dashboard on `hpc-v`, the Launcher and Settings bridge cards now expose `Diagnose` and `Repair bridge` buttons that run these same local helpers. If TOTP or another SSH verification step is required, the app opens a prompt for the code; if the flow still fails, the dashboard shows the failure output and hint instead of silently hanging.
+Inside the Electron dashboard, the Launcher and Settings bridge cards expose `Diagnose` and `Repair bridge` buttons that run these same local helpers. If TOTP or another SSH verification step is required, the app opens a prompt for the code; if the flow still fails, the dashboard shows the failure output and hint instead of silently hanging.
 
 ### Deployment keeps asking for TOTP multiple times
 
@@ -453,7 +421,7 @@ Check:
 - if the annotator is remote, set `SCRAPER_LLM_BASE_URL` and `SCRAPER_LLM_HEALTH_URL` before launching the orchestrator
 - if you intentionally use the default endpoint, confirm `http://localhost:8901/health` is valid in the annotator environment
 
-### I changed code locally, but Toubkal still behaves like the old version
+### I changed code locally, but the cluster still behaves like the old version
 
 You probably forgot to redeploy.
 
@@ -465,7 +433,7 @@ hpc/scraper/push_code.sh
 
 Then restart the orchestrator if needed.
 
-### A change exists on `main` but is missing from `hpc-v`
+### A change exists on `main` but is missing from an optional HPC branch
 
 Check the branch sync workflow.
 

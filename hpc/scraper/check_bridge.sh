@@ -8,6 +8,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCAL_REV="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 JSON_MODE=0
 
+require_scraper_ssh_host
+
 if [ "${1:-}" = "--json" ]; then
   JSON_MODE=1
 fi

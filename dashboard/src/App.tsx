@@ -353,6 +353,7 @@ function App() {
     running,
     runStartedAt,
     stateData,
+    summaryData,
     stopRunPending,
     tunnelStatus,
     launchStartingProgress,

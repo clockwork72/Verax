@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from privacy_research_dataset.hpc_commands import (
+    SAFE_CRUX_CONCURRENCY,
+    SAFE_SCRAPER_CONCURRENCY,
     annotator_rate_limit_args,
     build_annotator_args,
     build_default_paths,
@@ -57,6 +59,10 @@ def test_build_scraper_args_preserves_manifest_and_resume_flags(tmp_path):
     assert "--crux-api-key" in argv and "secret" in argv
     assert "--skip-home-fetch-failed" in argv
     assert "--exclude-same-entity" in argv
+    concurrency_index = argv.index("--concurrency")
+    assert argv[concurrency_index + 1] == str(SAFE_SCRAPER_CONCURRENCY)
+    crux_concurrency_index = argv.index("--crux-concurrency")
+    assert argv[crux_concurrency_index + 1] == str(SAFE_CRUX_CONCURRENCY)
     assert manifest["runId"] == "run-42"
     assert manifest["topN"] == 100
     assert manifest["resumeAfterRank"] == 50

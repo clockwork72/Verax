@@ -30,7 +30,7 @@ class _FakeService:
         self.scraper = _FakeProcess(running=True)
         self.annotator = _FakeProcess(running=False)
         self.bus = EventBuffer()
-        self.hostname = "slurm-compute-h21a5-u30-svn1"
+        self.hostname = "compute-node-1"
         self.started_at = "2026-03-12T04:07:16+00:00"
         self.remote_root = Path("/srv/scraper")
         self.repo_root = Path("/srv/scraper/repo")
@@ -65,7 +65,7 @@ def test_build_health_response_matches_dashboard_bridge_contract(monkeypatch):
         "dashboard_locked": False,
         "active_run": True,
         "annotator_running": False,
-        "node": "slurm-compute-h21a5-u30-svn1",
+        "node": "compute-node-1",
         "port": 8910,
         "db_port": 55432,
         "started_at": "2026-03-12T04:07:16+00:00",
