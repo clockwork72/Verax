@@ -107,4 +107,52 @@ describe('useLauncherModel helpers', () => {
     expect(launcherState.launcherMode).toBe('start')
     expect(launcherState.launcherActionHint).toContain('scrapable_websites_categorized.csv')
   })
+
+  it('uses the retained results set as a floor when persisted processed counts reset on resume', () => {
+    const datasetState = buildDatasetState({
+      summaryData: {
+        total_sites: 1000,
+        processed_sites: 270,
+        success_rate: 50,
+        status_counts: { ok: 135, policy_not_found: 135 },
+        third_party: {
+          total: 0,
+          unique: 0,
+          mapped: 0,
+          unique_mapped: 0,
+          unique_with_policy: 0,
+          unmapped: 0,
+          no_policy_url: 0,
+        },
+        mapping: {
+          mode: 'mixed',
+          radar_mapped: 0,
+          trackerdb_mapped: 0,
+          unmapped: 0,
+        },
+        site_categories: [],
+        categories: [],
+        entities: [],
+      },
+      stateData: null,
+      resultsData: [
+        ...Array.from({ length: 360 }, (_, index) => ({
+          site_etld1: `site-${index}.example`,
+          rank: index + 1,
+          status: index % 2 === 0 ? 'ok' : 'policy_not_found',
+        })),
+      ],
+      runManifest: {
+        version: 1,
+        status: 'running',
+        mode: 'dataset',
+        expectedTotalSites: 1000,
+        updatedAt: '2026-03-13T10:00:00+00:00',
+      },
+    })
+
+    expect(datasetState.processedSites).toBe(360)
+    expect(datasetState.uniqueSiteCount).toBe(360)
+    expect(datasetState.progressPct).toBe(36)
+  })
 })

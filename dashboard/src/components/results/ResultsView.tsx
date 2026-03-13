@@ -11,8 +11,9 @@ import type {
 } from '../../contracts/api'
 import type { ExplorerSite } from '../../data/explorer'
 import { ResultsMetrics } from '../../utils/results'
-import { deriveLiveRunSummary } from '../../utils/liveRunSummary'
+import { deriveLiveRunSummary, resolveRunSummary } from '../../utils/liveRunSummary'
 import { CATEGORY_ORDER } from '../../utils/trackerCategories'
+import { CategoryServiceHeatmap } from './CategoryServiceHeatmap'
 import { BentoCard, BentoGrid } from '../ui/BentoCard'
 import { AnimatedCounter } from '../ui/AnimatedCounter'
 import { StatusPill } from '../ui/StatusPill'
@@ -100,7 +101,10 @@ export function ResultsView({
   }
 
   const liveSummary = useMemo(() => deriveLiveRunSummary(records, sites), [records, sites])
-  const effectiveSummary = summary ?? liveSummary
+  const effectiveSummary = useMemo(
+    () => resolveRunSummary(summary, liveSummary, mappingMode),
+    [liveSummary, mappingMode, summary],
+  )
   const statusCounts = effectiveSummary?.status_counts || {}
   const statusOk = statusCounts.ok ?? (effectiveSummary ? 0 : metrics.statusOk)
   const statusPolicyNotFound = statusCounts.policy_not_found ?? (effectiveSummary ? 0 : metrics.statusPolicyNotFound)
@@ -353,35 +357,77 @@ export function ResultsView({
         </BentoCard>
       </BentoGrid>
 
-      {/* ── Row 4: Entities ─────────────────────────────────────── */}
-      <BentoGrid className="grid-cols-1">
-        <BentoCard>
-          <p className="mb-3 text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Entity prevalence</p>
-          <div className="space-y-3 text-[12px]">
-            {summaryEntities.map((entity: RunSummaryEntity, i) => {
-              const prevalence = entity.prevalence_max ?? entity.prevalence_avg ?? entity.prevalence ?? 0
-              const pct = Math.min(100, (prevalence / Math.max(0.0001, entityMax)) * 100)
-              return (
-                <motion.div
-                  key={entity.name}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.04, duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{entity.name}</span>
-                    <span className="text-[11px] text-[var(--muted-text)]">{(prevalence * 100).toFixed(2)}%</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <AnimBar pct={pct} />
-                    <span className="text-[10px] text-[var(--muted-text)]">
-                      {entity.domains ? `${entity.domains} domains` : entity.count ? `${entity.count}` : '—'}
-                    </span>
-                  </div>
-                </motion.div>
-              )
-            })}
+      {/* ── Row 4: Heatmap + Entities ───────────────────────────── */}
+      <BentoGrid className="grid-cols-1 xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]">
+        <CategoryServiceHeatmap
+          records={records || undefined}
+          sites={sites || undefined}
+        />
+
+        <BentoCard className="xl:min-h-[32rem]">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Entity prevalence</p>
+              <p className="mt-1 text-[12px] text-[var(--muted-text)]">
+                All mapped entities ranked by max observed prevalence.
+              </p>
+            </div>
+            <div className="grid shrink-0 grid-cols-2 gap-2 text-right text-[10px]">
+              <div className="rounded-lg border border-[var(--border-soft)] bg-black/15 px-2.5 py-2">
+                <p className="text-[var(--muted-text)]">Entities</p>
+                <p className="mt-0.5 text-sm font-semibold">{summaryEntities.length}</p>
+              </div>
+              <div className="rounded-lg border border-[var(--border-soft)] bg-black/15 px-2.5 py-2">
+                <p className="text-[var(--muted-text)]">Peak</p>
+                <p className="mt-0.5 text-sm font-semibold">
+                  {summaryEntities[0]
+                    ? `${((summaryEntities[0].prevalence_max ?? summaryEntities[0].prevalence_avg ?? summaryEntities[0].prevalence ?? 0) * 100).toFixed(2)}%`
+                    : '—'}
+                </p>
+              </div>
+            </div>
           </div>
+
+          {summaryEntities.length === 0 && (
+            <p className="text-[12px] text-[var(--muted-text)]">No mapped entity prevalence data is available yet.</p>
+          )}
+
+          {summaryEntities.length > 0 && (
+            <div className="space-y-2 overflow-y-auto pr-1 xl:max-h-[27rem]">
+              {summaryEntities.map((entity: RunSummaryEntity, i) => {
+                const prevalence = entity.prevalence_max ?? entity.prevalence_avg ?? entity.prevalence ?? 0
+                const pct = Math.min(100, (prevalence / Math.max(0.0001, entityMax)) * 100)
+                return (
+                  <motion.div
+                    key={entity.name}
+                    className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-3 py-2"
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: Math.min(i * 0.02, 0.2), duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                  >
+                    <div className="mb-1.5 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-[12px] font-medium">{entity.name}</p>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[var(--muted-text)]">
+                          <span>{entity.domains ? `${entity.domains} domains` : entity.count ? `${entity.count} records` : 'Mapped entity'}</span>
+                          {entity.categories.slice(0, 2).map((category) => (
+                            <span
+                              key={`${entity.name}-${category}`}
+                              className="rounded-full border border-[var(--border-soft)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5"
+                            >
+                              {category}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-[11px] font-semibold text-[var(--muted-text)]">{(prevalence * 100).toFixed(2)}%</span>
+                    </div>
+                    <AnimBar pct={pct} />
+                  </motion.div>
+                )
+              })}
+            </div>
+          )}
         </BentoCard>
       </BentoGrid>
 

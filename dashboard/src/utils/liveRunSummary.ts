@@ -1,5 +1,6 @@
 import type {
   ResultRecord,
+  RunSummary,
   RunMappingSummary,
   RunSummaryCategory,
   RunSummaryEntity,
@@ -20,6 +21,39 @@ export type LiveRunSummary = {
   categories: RunSummaryCategory[]
   entities: RunSummaryEntity[]
   english_policy_count: number
+}
+
+export function resolveRunSummary(
+  summary: RunSummary | null | undefined,
+  liveSummary: LiveRunSummary | null | undefined,
+  fallbackMode?: RunMappingSummary['mode'],
+): RunSummary | null {
+  if (!summary && !liveSummary) return null
+  if (!liveSummary) return summary ?? null
+
+  const persistedProcessedSites = Number(summary?.processed_sites ?? 0)
+  if (summary && persistedProcessedSites > liveSummary.processed_sites) {
+    return summary
+  }
+
+  return {
+    run_id: summary?.run_id,
+    total_sites: Number(summary?.total_sites ?? 0),
+    processed_sites: liveSummary.processed_sites,
+    success_rate: liveSummary.success_rate,
+    status_counts: liveSummary.status_counts,
+    third_party: liveSummary.third_party,
+    english_policy_count: liveSummary.english_policy_count,
+    site_categories: liveSummary.site_categories,
+    mapping: {
+      ...liveSummary.mapping,
+      mode: summary?.mapping?.mode ?? fallbackMode ?? liveSummary.mapping.mode ?? null,
+    },
+    categories: liveSummary.categories,
+    entities: liveSummary.entities,
+    started_at: summary?.started_at,
+    updated_at: summary?.updated_at,
+  }
 }
 
 type NormalizedThirdParty = {

@@ -56,7 +56,7 @@ export function buildDatasetState({
   runManifest: RunManifest | null
 }): DatasetState {
   const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? runManifest?.expectedTotalSites ?? 0)
-  const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+  const persistedProcessedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
   const siteKeys = new Set<string>()
   let lastSuccessfulRank: number | null = null
   let lastSuccessfulSite: string | null = null
@@ -73,6 +73,8 @@ export function buildDatasetState({
       }
     }
   }
+
+  const processedSites = Math.max(persistedProcessedSites, siteKeys.size)
 
   const pendingManifestSites = Array.isArray(runManifest?.requestedSites)
     ? runManifest.requestedSites

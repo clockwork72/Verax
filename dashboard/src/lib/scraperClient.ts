@@ -148,6 +148,26 @@ function sanitizeExplorer(records: unknown): ExplorerSite[] {
   return normalized
 }
 
+function countDerivedProcessedSites(results?: ResultRecord[], explorer?: ExplorerSite[]) {
+  const siteKeys = new Set<string>()
+  const resultRows = Array.isArray(results) ? results : []
+  const explorerRows = Array.isArray(explorer) ? explorer : []
+
+  if (resultRows.length > 0) {
+    for (const [index, record] of resultRows.entries()) {
+      const siteKey = asString(record.site_etld1) || asString(record.input) || asString(record.site) || `result:${index}`
+      siteKeys.add(siteKey.trim().toLowerCase())
+    }
+    return siteKeys.size
+  }
+
+  for (const [index, site] of explorerRows.entries()) {
+    const siteKey = asString(site.site) || `explorer:${index}`
+    siteKeys.add(siteKey.trim().toLowerCase())
+  }
+  return siteKeys.size
+}
+
 function asObject(raw: unknown): Record<string, unknown> | null {
   return raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
 }
@@ -302,8 +322,13 @@ function normalizeRunRecord(raw: unknown): RunRecord | null {
   }
 }
 
-function computeSnapshotProgress(summary: RunSummary | null, state: RunState | null, hasAnyResults: boolean) {
-  const processedSites = Number(summary?.processed_sites ?? state?.processed_sites ?? 0)
+function computeSnapshotProgress(
+  summary: RunSummary | null,
+  state: RunState | null,
+  hasAnyResults: boolean,
+  derivedProcessedSites = 0,
+) {
+  const processedSites = Math.max(Number(summary?.processed_sites ?? state?.processed_sites ?? 0), derivedProcessedSites)
   const totalSites = Number(summary?.total_sites ?? state?.total_sites ?? 0)
   const progress = totalSites > 0
     ? Math.min(100, (processedSites / Math.max(1, totalSites)) * 100)
@@ -580,7 +605,8 @@ export async function readWorkspaceSnapshot({
     snapshot.folderBytes = folderBytes ?? null
   }
 
-  const progressState = computeSnapshotProgress(summary, state, snapshot.hasAnyResults)
+  const derivedProcessedSites = countDerivedProcessedSites(snapshot.results, snapshot.explorer)
+  const progressState = computeSnapshotProgress(summary, state, snapshot.hasAnyResults, derivedProcessedSites)
   snapshot.processedSites = progressState.processedSites
   snapshot.totalSites = progressState.totalSites
   snapshot.progress = progressState.progress

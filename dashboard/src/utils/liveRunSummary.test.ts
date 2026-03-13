@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ExplorerSite } from '../data/explorer'
-import { deriveLiveRunSummary } from './liveRunSummary'
+import { deriveLiveRunSummary, resolveRunSummary } from './liveRunSummary'
 
 describe('deriveLiveRunSummary', () => {
   it('derives unique third-party and mapping metrics from result records', () => {
@@ -121,5 +121,51 @@ describe('deriveLiveRunSummary', () => {
       prevalence_max: 0.5,
       categories: ['Advertising'],
     })
+  })
+
+  it('prefers live result-derived counts when the persisted summary is stale after resume', () => {
+    const liveSummary = deriveLiveRunSummary([
+      { site_etld1: 'example.com', status: 'ok', third_parties: [] },
+      { site_etld1: 'example.org', status: 'policy_not_found', third_parties: [] },
+      { site_etld1: 'example.net', status: 'non_browsable', third_parties: [] },
+    ], null)
+
+    const resolved = resolveRunSummary({
+      run_id: 'run-1',
+      total_sites: 1000,
+      processed_sites: 2,
+      success_rate: 50,
+      status_counts: { ok: 1, policy_not_found: 1 },
+      third_party: {
+        total: 0,
+        unique: 0,
+        mapped: 0,
+        unique_mapped: 0,
+        unique_with_policy: 0,
+        unmapped: 0,
+        no_policy_url: 0,
+      },
+      mapping: {
+        mode: 'mixed',
+        radar_mapped: 0,
+        trackerdb_mapped: 0,
+        unmapped: 0,
+      },
+      site_categories: [],
+      categories: [],
+      entities: [],
+      started_at: '2026-03-13T10:00:00+00:00',
+      updated_at: '2026-03-13T10:05:00+00:00',
+    }, liveSummary, 'mixed')
+
+    expect(resolved).not.toBeNull()
+    expect(resolved?.processed_sites).toBe(3)
+    expect(resolved?.status_counts).toEqual({
+      ok: 1,
+      policy_not_found: 1,
+      non_browsable: 1,
+    })
+    expect(resolved?.total_sites).toBe(1000)
+    expect(resolved?.mapping.mode).toBe('mixed')
   })
 })

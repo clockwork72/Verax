@@ -260,6 +260,38 @@ describe('scraperClient', () => {
     expect(snapshot.progress).toBe(0)
   })
 
+  it('uses retained results rows as a progress floor when summary counters lag after resume', async () => {
+    installScraperMock({
+      readSummary: async () => ({
+        ok: true,
+        data: {
+          ...baseSummary,
+          processed_sites: 2,
+          total_sites: 10,
+        },
+      }),
+      readState: async () => ({ ok: true, data: { ...baseState, processed_sites: 2, total_sites: 10 } }),
+      readResults: async () => ({
+        ok: true,
+        data: [
+          { site_etld1: 'one.example' },
+          { site_etld1: 'two.example' },
+          { site_etld1: 'three.example' },
+          { site_etld1: 'four.example' },
+        ],
+      }),
+    })
+
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: 'outputs/unified',
+      includeResults: true,
+    })
+
+    expect(snapshot.processedSites).toBe(4)
+    expect(snapshot.totalSites).toBe(10)
+    expect(snapshot.progress).toBe(40)
+  })
+
   it('reads run listings and folder sizes through the client layer', async () => {
     installScraperMock({
       listRuns: async () => ({
