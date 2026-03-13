@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import suppress
@@ -244,11 +245,14 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         target = service.default_paths(request.query.get("outDir")).out_dir
         if not target.exists():
             return web.json_response(FolderSizeResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        size = 0
-        for path in target.rglob("*"):
-            if path.is_file():
-                with suppress(Exception):
-                    size += path.stat().st_size
+        def compute_folder_size() -> int:
+            size = 0
+            for path in target.rglob("*"):
+                if path.is_file():
+                    with suppress(Exception):
+                        size += path.stat().st_size
+            return size
+        size = await asyncio.to_thread(compute_folder_size)
         return web.json_response(FolderSizeResponse(ok=True, bytes=size, path=str(target)).to_dict())
 
     async def handle_list_runs(request: web.Request) -> web.Response:
@@ -258,7 +262,9 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         ok_dir = service.default_paths(request.query.get("outDir")).artifacts_ok_dir
         if not ok_dir.exists():
             return web.json_response(ArtifactCountResponse(ok=True, count=0, sites=[], path=str(ok_dir)).to_dict())
-        sites = [entry.name for entry in ok_dir.iterdir() if entry.is_dir() or entry.is_symlink()]
+        sites = await asyncio.to_thread(
+            lambda: [entry.name for entry in ok_dir.iterdir() if entry.is_dir() or entry.is_symlink()]
+        )
         return web.json_response(ArtifactCountResponse(ok=True, count=len(sites), sites=sites, path=str(ok_dir)).to_dict())
 
     async def handle_read_tp_cache(request: web.Request) -> web.Response:
@@ -307,7 +313,8 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         )
 
     async def handle_annotation_stats(request: web.Request) -> web.Response:
-        return web.json_response(build_annotation_stats_response(service, request.query.get("artifactsDir")).to_dict())
+        response = await asyncio.to_thread(build_annotation_stats_response, service, request.query.get("artifactsDir"))
+        return web.json_response(response.to_dict())
 
     return [
         web.get("/api/summary", handle_read_summary),
