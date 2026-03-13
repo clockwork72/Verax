@@ -497,6 +497,7 @@ function App() {
             lastTrancoRank={datasetState.lastSuccessfulRank}
             metrics={resultsMetrics}
             summary={summaryData}
+            records={resultsData || undefined}
             sites={explorerData || undefined}
             useCrux={useCrux}
             mappingMode={mappingMode}

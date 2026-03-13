@@ -1,15 +1,17 @@
 import { motion, useReducedMotion } from 'framer-motion'
-import { baseResults } from '../../data/results'
+import { useMemo } from 'react'
 import type {
   AnnotationSiteRecord,
-  AnnotationStats,
   ResultRecord,
+  AnnotationStats,
   RunMappingSummary,
   RunSummary,
   RunSummaryCategory,
   RunSummaryEntity,
 } from '../../contracts/api'
+import type { ExplorerSite } from '../../data/explorer'
 import { ResultsMetrics } from '../../utils/results'
+import { deriveLiveRunSummary } from '../../utils/liveRunSummary'
 import { CATEGORY_ORDER } from '../../utils/trackerCategories'
 import { BentoCard, BentoGrid } from '../ui/BentoCard'
 import { AnimatedCounter } from '../ui/AnimatedCounter'
@@ -22,7 +24,8 @@ type ResultsViewProps = {
   lastTrancoRank?: number | null
   metrics: ResultsMetrics
   summary?: RunSummary | null
-  sites?: ResultRecord[]
+  records?: ResultRecord[]
+  sites?: ExplorerSite[]
   useCrux?: boolean
   mappingMode?: 'radar' | 'trackerdb' | 'mixed'
   annotationStats?: AnnotationStats | null
@@ -79,6 +82,8 @@ export function ResultsView({
   lastTrancoRank = null,
   metrics,
   summary,
+  records,
+  sites,
   useCrux,
   mappingMode,
   annotationStats,
@@ -96,23 +101,23 @@ export function ResultsView({
     )
   }
 
-  const hasSummary = Boolean(summary)
-  const statusCounts = summary?.status_counts || {}
-  const statusOk = statusCounts.ok ?? (hasSummary ? 0 : metrics.statusOk)
-  const statusPolicyNotFound = statusCounts.policy_not_found ?? (hasSummary ? 0 : metrics.statusPolicyNotFound)
-  const statusNonBrowsable = statusCounts.non_browsable ?? (hasSummary ? 0 : metrics.statusNonBrowsable)
-  const statusHomeFailed = statusCounts.home_fetch_failed ?? (hasSummary ? 0 : metrics.statusHomeFailed)
+  const liveSummary = useMemo(() => deriveLiveRunSummary(records, sites), [records, sites])
+  const effectiveSummary = summary ?? liveSummary
+  const statusCounts = effectiveSummary?.status_counts || {}
+  const statusOk = statusCounts.ok ?? (effectiveSummary ? 0 : metrics.statusOk)
+  const statusPolicyNotFound = statusCounts.policy_not_found ?? (effectiveSummary ? 0 : metrics.statusPolicyNotFound)
+  const statusNonBrowsable = statusCounts.non_browsable ?? (effectiveSummary ? 0 : metrics.statusNonBrowsable)
+  const statusHomeFailed = statusCounts.home_fetch_failed ?? (effectiveSummary ? 0 : metrics.statusHomeFailed)
   const statusTotal = Math.max(1, statusOk + statusPolicyNotFound + statusNonBrowsable + statusHomeFailed)
 
-  const thirdParty = summary?.third_party ?? fallbackThirdParty
-  const thirdPartyDetected = thirdParty.unique ?? thirdParty.total ?? (hasSummary ? 0 : Math.max(0, metrics.radarMapped + metrics.radarUnmapped))
-  const uniqueMapped = thirdParty.unique_mapped ?? (hasSummary ? 0 : metrics.radarMapped)
+  const thirdParty = effectiveSummary?.third_party ?? fallbackThirdParty
+  const thirdPartyDetected = thirdParty.unique ?? thirdParty.total ?? 0
+  const uniqueMapped = thirdParty.unique_mapped ?? 0
   const uniqueWithPolicy = thirdParty.unique_with_policy ?? null
-  const _radarUnmapped = thirdParty.unmapped ?? (hasSummary ? 0 : metrics.radarUnmapped); void _radarUnmapped
-  const radarNoPolicy = thirdParty.no_policy_url ?? (hasSummary ? 0 : metrics.radarNoPolicy)
-  const englishPolicyCount = summary?.english_policy_count ?? null
+  const radarNoPolicy = thirdParty.no_policy_url ?? 0
+  const englishPolicyCount = effectiveSummary?.english_policy_count ?? null
 
-  const rawCategories: RunSummaryCategory[] = summary?.categories || (hasSummary ? [] : baseResults.categories)
+  const rawCategories: RunSummaryCategory[] = effectiveSummary?.categories ?? []
   const summaryCategories = (() => {
     const merged = new Map<string, number>()
     for (const { name, count } of rawCategories) merged.set(name, (merged.get(name) ?? 0) + (count || 0))
@@ -126,13 +131,13 @@ export function ResultsView({
         return b.count - a.count
       })
   })()
-  const summaryEntities: RunSummaryEntity[] = summary?.entities || (hasSummary ? [] : baseResults.entities)
+  const summaryEntities: RunSummaryEntity[] = effectiveSummary?.entities ?? []
   const categoryMax = summaryCategories.reduce((max: number, cat: RunSummaryCategory) => Math.max(max, cat.count || 0), 1)
   const entityMax = summaryEntities.reduce((max: number, e: RunSummaryEntity) => {
     return Math.max(max, e.prevalence_max ?? e.prevalence_avg ?? e.prevalence ?? 0)
   }, 0.0001)
 
-  const mapping = summary?.mapping ?? fallbackMapping
+  const mapping = effectiveSummary?.mapping ?? fallbackMapping
   const mappingLabel = mapping.mode === 'trackerdb' ? 'TrackerDB' : mapping.mode === 'mixed' ? 'Mixed' : mapping.mode === 'radar' ? 'Tracker Radar'
     : mappingMode === 'trackerdb' ? 'TrackerDB' : mappingMode === 'mixed' ? 'Mixed' : 'Tracker Radar'
 
@@ -167,13 +172,13 @@ export function ResultsView({
   const trackerdbPct = thirdPartyDetected ? Math.round((mappingDb / thirdPartyDetected) * 100) : 0
   const unmappedPct = Math.max(0, 100 - radarPct - trackerdbPct)
   const mappedPct = Math.max(0, 100 - unmappedPct)
-  const targetSites = typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || metrics.totalSitesProcessed
-  const processedForCoverage = summary?.processed_sites ?? 0
-  const successRate = summary?.success_rate ?? metrics.successRate
+  const targetSites = typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || effectiveSummary?.processed_sites || metrics.totalSitesProcessed
+  const processedForCoverage = effectiveSummary?.processed_sites ?? 0
+  const successRate = effectiveSummary?.success_rate ?? metrics.successRate
 
   // ── Key metric cards (top row) ──────────────────────────────────
   const keyMetrics = [
-    { label: 'Sites processed', value: summary?.processed_sites ?? metrics.totalSitesProcessed, suffix: '', info: 'Sites that finished processing (any final status).' },
+    { label: 'Sites processed', value: effectiveSummary?.processed_sites ?? metrics.totalSitesProcessed, suffix: '', info: 'Sites that finished processing (any final status).' },
     { label: '3P services', value: thirdPartyDetected, suffix: '', info: 'Unique third-party eTLD+1 domains observed.' },
     { label: 'Success rate', value: successRate, suffix: '%', info: 'Sites where a first-party policy was found.' },
     { label: 'Mapped 3P', value: uniqueMapped, suffix: '', info: 'Unique third-party domains matched in a mapping index.' },
@@ -236,7 +241,7 @@ export function ResultsView({
           </div>
           <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
             {[
-              { label: 'Sites processed', value: summary?.processed_sites ?? metrics.totalSitesProcessed, info: 'Count of sites that finished (any final status).' },
+              { label: 'Sites processed', value: effectiveSummary?.processed_sites ?? metrics.totalSitesProcessed, info: 'Count of sites that finished (any final status).' },
               { label: 'Target sites', value: targetSites, info: 'Sites scheduled for this run.' },
               { label: 'English policies', value: englishPolicyCount, info: 'Sites with English-language policy detected.' },
               { label: 'Success rate', value: null, display: `${successRate}%`, info: 'Policy found / processed.' },

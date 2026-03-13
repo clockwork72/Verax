@@ -105,7 +105,13 @@ class HpcService:
         return path if path.is_absolute() else (self.repo_root / path).resolve()
 
     async def read_json_file(self, path: Path) -> Any:
-        return json.loads(path.read_text(encoding="utf-8"))
+        for attempt in range(3):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                if attempt >= 2:
+                    raise
+                await asyncio.sleep(0.05 * (attempt + 1))
 
     def app(self) -> web.Application:
         app = web.Application()
