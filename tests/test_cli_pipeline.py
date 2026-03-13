@@ -66,6 +66,8 @@ def _build_args(tmp_path: Path, *, emit_events: bool, tp_cache_flush_entries: in
         third_party_engine="crawl4ai",
         no_third_party_policy_fetch=False,
         third_party_policy_max=5,
+        fetch_timeout_sec=60.0,
+        site_timeout_sec=300.0,
         exclude_same_entity=False,
         llm_model="openai/local",
         no_llm_clean=True,
@@ -216,6 +218,28 @@ def test_run_pipeline_flushes_tp_cache_on_shutdown(tmp_path, monkeypatch):
     )
 
 
+def test_run_pipeline_uses_site_scoped_crawl_clients(tmp_path, monkeypatch):
+    _install_pipeline_mocks(
+        monkeypatch,
+        sites=[
+            {"rank": 1, "site": "alpha.example"},
+            {"rank": 2, "site": "beta.example"},
+        ],
+        tmp_path=tmp_path,
+    )
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=1)
+    args.concurrency = 2
+
+    asyncio.run(cli._run(args))
+
+    assert len(FakeCrawl4AIClient.instances) == 2
+    fetch_call_sets = sorted((tuple(client.fetch_calls) for client in FakeCrawl4AIClient.instances), key=len)
+    assert fetch_call_sets == [
+        (),
+        ("https://shared.example/privacy",),
+    ]
+
+
 def test_run_pipeline_uses_post_prefilter_total_sites(tmp_path, monkeypatch, capsys):
     _install_pipeline_mocks(
         monkeypatch,
@@ -266,3 +290,88 @@ def test_run_pipeline_uses_post_prefilter_total_sites(tmp_path, monkeypatch, cap
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["total_sites"] == 1
     assert state_payload["started_at"] == summary["started_at"]
+
+
+def test_run_pipeline_times_out_shared_policy_fetch(tmp_path, monkeypatch):
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=1)
+    args.fetch_timeout_sec = 0.01
+
+    async def fake_prefilter(args, records):
+        return list(records)
+
+    async def slow_fetch(self, url: str, **kwargs) -> Crawl4AIResult:
+        self.fetch_calls.append(url)
+        await asyncio.sleep(0.05)
+        return Crawl4AIResult(
+            url=url,
+            success=True,
+            status_code=200,
+            raw_html="<html><body>policy</body></html>",
+            cleaned_html="<html><body>policy</body></html>",
+            text="Policy text",
+            network_requests=[],
+            error_message=None,
+            text_extraction_method="fake",
+        )
+
+    async def fake_process_site(client, site, **kwargs):
+        result = await kwargs["third_party_policy_fetcher"]("https://shared.example/privacy")
+        assert not result.success
+        assert "timed_out" in str(result.error_message)
+        site_dir = Path(kwargs["artifacts_dir"]) / site
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "policy.txt").write_text("Primary policy", encoding="utf-8")
+        return {
+            "rank": kwargs["rank"],
+            "input": site,
+            "site_etld1": site,
+            "main_category": "Technology",
+            "status": "ok",
+            "third_parties": [],
+            "run_id": "test-run",
+        }
+
+    FakeCrawl4AIClient.instances.clear()
+    monkeypatch.setattr(cli, "_load_input_sites", lambda args: [{"rank": 1, "site": "alpha.example"}])
+    monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
+    monkeypatch.setattr(cli, "Crawl4AIClient", FakeCrawl4AIClient)
+    monkeypatch.setattr(FakeCrawl4AIClient, "fetch", slow_fetch)
+    monkeypatch.setattr(cli, "process_site", fake_process_site)
+
+    asyncio.run(cli._run(args))
+
+    results = [json.loads(line) for line in Path(args.out).read_text(encoding="utf-8").splitlines()]
+    assert results[0]["status"] == "ok"
+
+
+def test_run_pipeline_times_out_site_worker(tmp_path, monkeypatch):
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=1)
+    args.site_timeout_sec = 0.01
+
+    async def fake_prefilter(args, records):
+        return list(records)
+
+    async def slow_process_site(client, site, **kwargs):
+        await asyncio.sleep(0.05)
+        return {
+            "rank": kwargs["rank"],
+            "input": site,
+            "site_etld1": site,
+            "status": "ok",
+            "run_id": "test-run",
+        }
+
+    FakeCrawl4AIClient.instances.clear()
+    monkeypatch.setattr(cli, "_load_input_sites", lambda args: [{"rank": 1, "site": "alpha.example"}])
+    monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
+    monkeypatch.setattr(cli, "Crawl4AIClient", FakeCrawl4AIClient)
+    monkeypatch.setattr(cli, "process_site", slow_process_site)
+
+    asyncio.run(cli._run(args))
+
+    results = [json.loads(line) for line in Path(args.out).read_text(encoding="utf-8").splitlines()]
+    assert results[0]["status"] == "exception"
+    assert "site_timed_out" in results[0]["error_message"]
+
+    summary = json.loads(Path(args.summary_out).read_text(encoding="utf-8"))
+    assert summary["status_counts"] == {"exception": 1}

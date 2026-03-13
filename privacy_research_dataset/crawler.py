@@ -213,11 +213,40 @@ def _combine_errors(*msgs: str | None) -> str | None:
     return " | ".join(parts)
 
 
+def _timeout_result(url: str, *, timeout_s: float, phase: str) -> Crawl4AIResult:
+    return Crawl4AIResult(
+        url=url,
+        success=False,
+        status_code=None,
+        raw_html=None,
+        cleaned_html=None,
+        text=None,
+        network_requests=None,
+        error_message=f"{phase}_timed_out_after_{timeout_s:.1f}s",
+        text_extraction_method=None,
+    )
+
+
+async def _await_crawl_result(
+    awaitable: Awaitable[Crawl4AIResult],
+    *,
+    url: str,
+    timeout_s: float,
+    phase: str,
+) -> Crawl4AIResult:
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_s)
+    except asyncio.TimeoutError:
+        warn(f"{phase} timed out after {timeout_s:.1f}s for {url}")
+        return _timeout_result(url, timeout_s=timeout_s, phase=phase)
+
+
 async def _fetch_home_with_retry(
     client: Crawl4AIClient,
     site_url: str,
     *,
     capture_network: bool,
+    fetch_timeout_sec: float,
     max_attempts: int = 3,
     retry_delay_s: float = 0.8,
 ) -> tuple[Crawl4AIResult | None, str, int, list[str]]:
@@ -226,12 +255,17 @@ async def _fetch_home_with_retry(
     home_fetch_mode = "crawl4ai"
     for attempt in range(1, max_attempts + 1):
         t_home = time.perf_counter()
-        home = await client.fetch(
-            site_url,
-            capture_network=capture_network,
-            remove_overlays=True,
-            magic=False,
-            scan_full_page=False,
+        home = await _await_crawl_result(
+            client.fetch(
+                site_url,
+                capture_network=capture_network,
+                remove_overlays=True,
+                magic=False,
+                scan_full_page=False,
+            ),
+            url=site_url,
+            timeout_s=fetch_timeout_sec,
+            phase="home_fetch",
         )
         total_ms += int((time.perf_counter() - t_home) * 1000)
 
@@ -363,6 +397,7 @@ async def _fetch_best_policy(
     *,
     max_candidates: int = 10,
     max_hub_pages: int = 2,
+    fetch_timeout_sec: float,
     policy_fetcher: Callable[[str], Awaitable[Crawl4AIResult]] | None = None,
 ) -> dict[str, Any]:
     site_et = etld1(site_url) or ""
@@ -374,17 +409,23 @@ async def _fetch_best_policy(
     best_key: tuple[float, int] | None = None
 
     async def try_candidate(c: LinkCandidate) -> dict[str, Any]:
-        if policy_fetcher is not None:
-            # Reuse previously fetched policy URLs across sites/third-parties.
-            res = await policy_fetcher(c.url)
-        else:
-            res = await client.fetch(
+        fetch_awaitable = (
+            policy_fetcher(c.url)
+            if policy_fetcher is not None
+            else client.fetch(
                 c.url,
                 capture_network=False,
                 remove_overlays=True,
                 magic=False,
                 scan_full_page=_should_scan_full_page_policy(c.url),
             )
+        )
+        res = await _await_crawl_result(
+            fetch_awaitable,
+            url=c.url,
+            timeout_s=fetch_timeout_sec,
+            phase="policy_fetch",
+        )
         rec = dict(
             url=c.url,
             anchor_text=c.anchor_text,
@@ -426,6 +467,22 @@ async def _fetch_best_policy(
             best_key = key
             best_fallback = rec
 
+    consecutive_timeouts = 0
+    max_consecutive_timeouts = 3
+
+    def _check_timeout(rec: dict[str, Any]) -> bool:
+        """Return True if we should bail out due to too many consecutive timeouts."""
+        nonlocal consecutive_timeouts
+        err = rec.get("error_message") or ""
+        if "timed_out" in err:
+            consecutive_timeouts += 1
+            if consecutive_timeouts >= max_consecutive_timeouts:
+                warn(f"[{site_et}] Bailing out of policy discovery after {consecutive_timeouts} consecutive timeouts")
+                return True
+        else:
+            consecutive_timeouts = 0
+        return False
+
     # 1) Try top candidates directly
     for c in candidates[:max_candidates]:
         rec = await try_candidate(c)
@@ -434,9 +491,11 @@ async def _fetch_best_policy(
         if is_policy_candidate(rec):
             chosen = rec
             break
+        if _check_timeout(rec):
+            break
 
     # 2) Fallback common paths
-    if chosen is None:
+    if chosen is None and consecutive_timeouts < max_consecutive_timeouts:
         for c in fallback_privacy_urls(site_url, site_et):
             rec = await try_candidate(c)
             tried.append({k: rec[k] for k in rec.keys() if k not in ("text", "cleaned_html", "raw_html")})
@@ -444,20 +503,30 @@ async def _fetch_best_policy(
             if is_policy_candidate(rec):
                 chosen = rec
                 break
+            if _check_timeout(rec):
+                break
 
     # 3) Legal hub expansion (depth 1): fetch 1-2 legal/terms pages and rescan for privacy links
-    if chosen is None and candidates:
+    if chosen is None and candidates and consecutive_timeouts < max_consecutive_timeouts:
         hub_urls = extract_legal_hub_urls(candidates, limit=max_hub_pages)
         for hub in hub_urls:
-            hub_res = await client.fetch(
-                hub,
-                capture_network=False,
-                remove_overlays=True,
-                magic=False,
-                scan_full_page=_should_scan_full_page_policy(hub),
+            hub_res = await _await_crawl_result(
+                client.fetch(
+                    hub,
+                    capture_network=False,
+                    remove_overlays=True,
+                    magic=False,
+                    scan_full_page=_should_scan_full_page_policy(hub),
+                ),
+                url=hub,
+                timeout_s=fetch_timeout_sec,
+                phase="policy_hub_fetch",
             )
             if not hub_res.success or not hub_res.cleaned_html:
+                if _check_timeout({"error_message": hub_res.error_message}):
+                    break
                 continue
+            consecutive_timeouts = 0  # hub fetch succeeded, reset
             hub_cands = extract_link_candidates(hub_res.cleaned_html, hub_res.url, site_et)
             for c in hub_cands[:max_candidates]:
                 # mark as hub source
@@ -470,6 +539,8 @@ async def _fetch_best_policy(
                 consider_best(rec)
                 if is_policy_candidate(rec):
                     chosen = rec
+                    break
+                if _check_timeout(rec):
                     break
             if chosen is not None:
                 break
@@ -577,6 +648,7 @@ async def process_site(
     llm_model: str = "gpt-4o-mini",
     policy_artifact_registry: dict[str, Path] | None = None,
     policy_artifact_lock: asyncio.Lock | None = None,
+    fetch_timeout_sec: float | None = None,
 ) -> dict[str, Any]:
     """
     Process a single website:
@@ -587,6 +659,7 @@ async def process_site(
     """
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     t_total = time.perf_counter()
+    fetch_timeout_sec = max(0.001, float(fetch_timeout_sec or max(60.0, client.page_timeout_ms / 1000 * 4.0)))
 
     site_url = domain_or_url.strip()
     if not site_url:
@@ -605,6 +678,7 @@ async def process_site(
         client,
         site_url,
         capture_network=capture_net,
+        fetch_timeout_sec=fetch_timeout_sec,
     )
 
     if not home:
@@ -636,14 +710,24 @@ async def process_site(
 
     if manual_policy_url_override:
         if first_party_policy_fetcher is not None:
-            override_res = await first_party_policy_fetcher(manual_policy_url_override)
+            override_res = await _await_crawl_result(
+                first_party_policy_fetcher(manual_policy_url_override),
+                url=manual_policy_url_override,
+                timeout_s=fetch_timeout_sec,
+                phase="manual_policy_fetch",
+            )
         else:
-            override_res = await client.fetch(
-                manual_policy_url_override,
-                capture_network=False,
-                remove_overlays=True,
-                magic=False,
-                scan_full_page=_should_scan_full_page_policy(manual_policy_url_override),
+            override_res = await _await_crawl_result(
+                client.fetch(
+                    manual_policy_url_override,
+                    capture_network=False,
+                    remove_overlays=True,
+                    magic=False,
+                    scan_full_page=_should_scan_full_page_policy(manual_policy_url_override),
+                ),
+                url=manual_policy_url_override,
+                timeout_s=fetch_timeout_sec,
+                phase="manual_policy_fetch",
             )
         override_text = (override_res.text or "").strip()
         if override_res.success and override_text:
@@ -668,6 +752,7 @@ async def process_site(
             client,
             home.url,
             home.cleaned_html,
+            fetch_timeout_sec=fetch_timeout_sec,
             policy_fetcher=first_party_policy_fetcher,
         )
         chosen_full = policy_info.get("_chosen_full")
@@ -848,6 +933,8 @@ async def process_site(
             p = r.get("prevalence")
             return (-(p if isinstance(p, (int, float)) else -1.0), r["third_party_etld1"])
 
+        tp_consecutive_timeouts = 0
+        tp_max_consecutive_timeouts = 3
         for rec in sorted(third_party_records, key=sort_key)[:third_party_policy_max]:
             purl = rec.get("policy_url")
             if not purl:
@@ -889,14 +976,24 @@ async def process_site(
             else:
                 tp_dir.mkdir(parents=True, exist_ok=True)
                 if third_party_policy_fetcher is not None:
-                    res = await third_party_policy_fetcher(purl)
+                    res = await _await_crawl_result(
+                        third_party_policy_fetcher(purl),
+                        url=purl,
+                        timeout_s=fetch_timeout_sec,
+                        phase="third_party_policy_fetch",
+                    )
                 else:
-                    res = await client.fetch(
-                        purl,
-                        capture_network=False,
-                        remove_overlays=True,
-                        magic=False,
-                        scan_full_page=_should_scan_full_page_policy(purl),
+                    res = await _await_crawl_result(
+                        client.fetch(
+                            purl,
+                            capture_network=False,
+                            remove_overlays=True,
+                            magic=False,
+                            scan_full_page=_should_scan_full_page_policy(purl),
+                        ),
+                        url=purl,
+                        timeout_s=fetch_timeout_sec,
+                        phase="third_party_policy_fetch",
                     )
                 tp_text_raw = (res.text or "").strip()
                 tp_llm_cleaned: str | None = None
@@ -907,20 +1004,26 @@ async def process_site(
                 tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
                 tp_base_method = res.text_extraction_method or "fallback"
                 tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
-                _write_text(tp_dir / "policy.txt", tp_text)
-                _write_json(
-                    tp_dir / "policy.extraction.json",
-                    {
-                        "method": tp_method,
-                        "base_extraction": tp_base_method,
-                        "llm_model": llm_model if tp_llm_cleaned else None,
-                        "source_url": purl,
-                    },
-                )
-                if use_tp_registry:
+                if tp_text:
+                    _write_text(tp_dir / "policy.txt", tp_text)
+                    _write_json(
+                        tp_dir / "policy.extraction.json",
+                        {
+                            "method": tp_method,
+                            "base_extraction": tp_base_method,
+                            "llm_model": llm_model if tp_llm_cleaned else None,
+                            "source_url": purl,
+                        },
+                    )
+                if use_tp_registry and tp_text:
                     await _register_policy_artifact(
                         norm_tp_url, tp_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
                     )
+                tp_err = res.error_message or ""
+                if "timed_out" in tp_err:
+                    tp_consecutive_timeouts += 1
+                else:
+                    tp_consecutive_timeouts = 0
                 third_party_policy_fetches.append({
                     "third_party_etld1": rec["third_party_etld1"],
                     "policy_url": purl,
@@ -931,6 +1034,9 @@ async def process_site(
                     "extraction_method": tp_method,
                     "error_message": res.error_message,
                 })
+                if tp_consecutive_timeouts >= tp_max_consecutive_timeouts:
+                    warn(f"[{etld1(site_url)}] Bailing out of third-party policy fetch after {tp_consecutive_timeouts} consecutive timeouts")
+                    break
     third_party_policy_fetch_ms = int((time.perf_counter() - t_tp_policy) * 1000)
 
     fetch_method_by_tp = {

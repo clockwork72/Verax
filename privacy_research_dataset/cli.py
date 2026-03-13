@@ -447,6 +447,8 @@ def _parse_args() -> argparse.Namespace:
     scale.add_argument("--third-party-engine", type=str, default="crawl4ai", choices=["crawl4ai", "openwpm"], help="How to collect third-party requests: crawl4ai (default) or openwpm (heavier).")
     scale.add_argument("--no-third-party-policy-fetch", action="store_true", help="Do not fetch third-party policy texts (still records mappings).")
     scale.add_argument("--third-party-policy-max", type=int, default=30, help="Max number of third-party policies to fetch per site (ranked by prevalence when available).")
+    scale.add_argument("--fetch-timeout-sec", type=float, default=60.0, help="Hard timeout for an individual browser-backed fetch. Default: 60 seconds.")
+    scale.add_argument("--site-timeout-sec", type=float, default=300.0, help="Hard timeout for processing a single site. Default: 300 seconds.")
     scale.add_argument("--exclude-same-entity", action="store_true", help="Exclude third-party domains owned by the same entity as the first-party site (requires a mapping index).")
 
     llm = p.add_argument_group("LLM semantic cleaning (DeepSeek via HPC tunnel)")
@@ -1406,197 +1408,235 @@ async def _run(args: argparse.Namespace) -> None:
         })
         current_stage = "crawl"
 
-        async with Crawl4AIClient(
-            browser_type=args.browser,
-            headless=(not args.headed),
-            verbose=args.verbose,
-            user_agent=args.user_agent,
-            proxy=args.proxy,
-            locale=args.locale,
-            timezone_id=args.timezone_id,
-            page_timeout_ms=args.page_timeout_ms,
-        ) as client:
-            from collections import OrderedDict
+        client_kwargs = {
+            "browser_type": args.browser,
+            "headless": (not args.headed),
+            "verbose": args.verbose,
+            "user_agent": args.user_agent,
+            "proxy": args.proxy,
+            "locale": args.locale,
+            "timezone_id": args.timezone_id,
+            "page_timeout_ms": args.page_timeout_ms,
+        }
 
-            policy_cache: "OrderedDict[str, Crawl4AIResult]" = OrderedDict()
-            policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
-            policy_url_aliases: dict[str, str] = {}
-            policy_cache_lock = asyncio.Lock()
-            policy_cache_max_entries = max(0, int(getattr(args, "policy_cache_max_entries", 2000) or 0))
-            policy_cache_ref = policy_cache
-            policy_inflight_ref = policy_inflight
+        from collections import OrderedDict
 
-            # Shared registry: normalized policy URL → artifact dir (first writer wins).
-            # Prevents re-scraping, LLM cleaning, and re-writing when two sites or
-            # third-parties share the same privacy policy URL (e.g. google.com + youtube.com).
-            policy_artifact_registry: dict[str, Path] = {}
-            policy_artifact_lock = asyncio.Lock()
+        policy_cache: "OrderedDict[str, Crawl4AIResult]" = OrderedDict()
+        policy_inflight: dict[str, asyncio.Future[Crawl4AIResult]] = {}
+        policy_url_aliases: dict[str, str] = {}
+        policy_cache_lock = asyncio.Lock()
+        policy_cache_max_entries = max(0, int(getattr(args, "policy_cache_max_entries", 2000) or 0))
+        policy_cache_ref = policy_cache
+        policy_inflight_ref = policy_inflight
 
-            def _policy_cache_get(key: str) -> Crawl4AIResult | None:
-                if not key:
-                    return None
-                cached = policy_cache.get(key)
-                if cached is not None:
-                    policy_cache.move_to_end(key)
-                return cached
+        # Shared registry: normalized policy URL → artifact dir (first writer wins).
+        # Prevents re-scraping, LLM cleaning, and re-writing when two sites or
+        # third-parties share the same privacy policy URL (e.g. google.com + youtube.com).
+        policy_artifact_registry: dict[str, Path] = {}
+        policy_artifact_lock = asyncio.Lock()
 
-            def _policy_cache_put(key: str, value: Crawl4AIResult) -> None:
-                if not key:
-                    return
-                policy_cache[key] = value
+        def _new_client() -> Crawl4AIClient:
+            return Crawl4AIClient(**client_kwargs)
+
+        def _policy_cache_get(key: str) -> Crawl4AIResult | None:
+            if not key:
+                return None
+            cached = policy_cache.get(key)
+            if cached is not None:
                 policy_cache.move_to_end(key)
-                if policy_cache_max_entries > 0:
-                    while len(policy_cache) > policy_cache_max_entries:
-                        old_key, _ = policy_cache.popitem(last=False)
-                        for alias, target in list(policy_url_aliases.items()):
-                            if alias == old_key or target == old_key:
-                                policy_url_aliases.pop(alias, None)
+            return cached
 
-            async def _flush_tp_cache_locked(*, force: bool = False) -> None:
-                nonlocal tp_cache_dirty_entries
-                if tp_cache_dirty_entries <= 0:
-                    return
-                if not force and tp_cache_dirty_entries < tp_cache_flush_entries:
-                    return
-                pending = tp_cache_dirty_entries
+        def _policy_cache_put(key: str, value: Crawl4AIResult) -> None:
+            if not key:
+                return
+            policy_cache[key] = value
+            policy_cache.move_to_end(key)
+            if policy_cache_max_entries > 0:
+                while len(policy_cache) > policy_cache_max_entries:
+                    old_key, _ = policy_cache.popitem(last=False)
+                    for alias, target in list(policy_url_aliases.items()):
+                        if alias == old_key or target == old_key:
+                            policy_url_aliases.pop(alias, None)
+
+        async def _flush_tp_cache_locked(*, force: bool = False) -> None:
+            nonlocal tp_cache_dirty_entries
+            if tp_cache_dirty_entries <= 0:
+                return
+            if not force and tp_cache_dirty_entries < tp_cache_flush_entries:
+                return
+            pending = tp_cache_dirty_entries
+            try:
+                payload = json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1)
+                await asyncio.to_thread(tp_cache_path.write_text, payload, "utf-8")
+                tp_cache_dirty_entries = 0
+                log(f"TP cache: flushed {pending} updated entries to {tp_cache_path}")
+            except Exception as e:
+                warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
+
+        async def fetch_policy_cached(client: Crawl4AIClient, policy_url: str) -> Crawl4AIResult:
+            nonlocal tp_cache_dirty_entries
+            req_key = _normalize_policy_url(policy_url) or policy_url
+            owner = False
+            lookup_key = req_key
+            fetch_timeout_sec = max(0.001, float(getattr(args, "fetch_timeout_sec", 60.0) or 60.0))
+
+            async def fetch_policy_direct(url: str) -> Crawl4AIResult:
                 try:
-                    payload = json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1)
-                    await asyncio.to_thread(tp_cache_path.write_text, payload, "utf-8")
-                    tp_cache_dirty_entries = 0
-                    log(f"TP cache: flushed {pending} updated entries to {tp_cache_path}")
-                except Exception as e:
-                    warn(f"Failed to write TP policy cache to {tp_cache_path}: {e}")
-
-            async def fetch_policy_cached(policy_url: str) -> Crawl4AIResult:
-                nonlocal tp_cache_dirty_entries
-                req_key = _normalize_policy_url(policy_url) or policy_url
-                owner = False
-                lookup_key = req_key
-                async with policy_cache_lock:
-                    lookup_key = policy_url_aliases.get(req_key, req_key)
-                    cached = _policy_cache_get(lookup_key) or _policy_cache_get(req_key)
-                    if cached is not None:
-                        return cached
-
-                    disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
-                    if disk is not None:
-                        status_code = disk.get("status_code")
-                        text = disk.get("text")
-                        result = Crawl4AIResult(
-                            url=disk.get("final_url") or policy_url,
-                            success=bool((isinstance(status_code, int) and status_code < 400) or text),
-                            status_code=status_code,
-                            raw_html=None,
-                            cleaned_html=None,
-                            text=text,
-                            network_requests=None,
-                            error_message=disk.get("error_message"),
-                            text_extraction_method=disk.get("extraction_method"),
-                        )
-                        _policy_cache_put(lookup_key, result)
-                        _policy_cache_put(req_key, result)
-                        final_url = disk.get("final_url")
-                        if isinstance(final_url, str) and final_url:
-                            final_key = _normalize_policy_url(final_url)
-                            if final_key:
-                                _policy_cache_put(final_key, result)
-                                policy_url_aliases[req_key] = final_key
-                        return result
-
-                    fut = policy_inflight.get(lookup_key)
-                    if fut is None:
-                        fut = asyncio.get_running_loop().create_future()
-                        policy_inflight[lookup_key] = fut
-                        owner = True
-
-                if owner:
-                    try:
-                        result = await client.fetch(
-                            policy_url,
+                    return await asyncio.wait_for(
+                        client.fetch(
+                            url,
                             capture_network=False,
                             remove_overlays=True,
                             magic=False,
-                        )
-                    except Exception as e:
-                        result = Crawl4AIResult(
-                            url=policy_url,
-                            success=False,
-                            status_code=None,
-                            raw_html=None,
-                            cleaned_html=None,
-                            text=None,
-                            network_requests=None,
-                            error_message=str(e),
-                            text_extraction_method=None,
-                        )
+                        ),
+                        timeout=fetch_timeout_sec,
+                    )
+                except asyncio.TimeoutError:
+                    warn(f"policy_fetch timed out after {fetch_timeout_sec:.1f}s for {url}")
+                    return Crawl4AIResult(
+                        url=url,
+                        success=False,
+                        status_code=None,
+                        raw_html=None,
+                        cleaned_html=None,
+                        text=None,
+                        network_requests=None,
+                        error_message=f"policy_fetch_timed_out_after_{fetch_timeout_sec:.1f}s",
+                        text_extraction_method=None,
+                    )
+                except Exception as e:
+                    return Crawl4AIResult(
+                        url=url,
+                        success=False,
+                        status_code=None,
+                        raw_html=None,
+                        cleaned_html=None,
+                        text=None,
+                        network_requests=None,
+                        error_message=str(e),
+                        text_extraction_method=None,
+                    )
 
-                    final_url = result.url or policy_url
-                    final_key = _normalize_policy_url(final_url) or req_key
-                    cache_keys = {req_key, final_key}
-
-                    if result.text:
-                        async with tp_cache_write_lock:
-                            cache_entry = {
-                                "text": result.text,
-                                "status_code": result.status_code,
-                                "extraction_method": result.text_extraction_method,
-                                "error_message": result.error_message,
-                                "final_url": final_url,
-                                "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                            }
-                            changed = 0
-                            for key in cache_keys:
-                                if tp_policy_disk_cache.get(key) != cache_entry:
-                                    tp_policy_disk_cache[key] = cache_entry
-                                    changed += 1
-                            if changed:
-                                tp_cache_dirty_entries += changed
-                                await _flush_tp_cache_locked(force=False)
-
-                    async with policy_cache_lock:
-                        _cached = Crawl4AIResult(
-                            url=result.url,
-                            success=result.success,
-                            status_code=result.status_code,
-                            raw_html=None,
-                            cleaned_html=result.cleaned_html,
-                            text=result.text,
-                            network_requests=None,
-                            error_message=result.error_message,
-                            text_extraction_method=result.text_extraction_method,
-                        )
-                        for key in cache_keys:
-                            _policy_cache_put(key, _cached)
-                        policy_url_aliases[req_key] = final_key
-                        inflight = policy_inflight.pop(req_key, None)
-                        if inflight is None:
-                            inflight = policy_inflight.pop(final_key, None)
-                        if inflight is None:
-                            inflight = policy_inflight.pop(lookup_key, None)
-                        if inflight is not None and not inflight.done():
-                            inflight.set_result(result)
-                    return result
-
-                async with policy_cache_lock:
-                    wait_key = policy_url_aliases.get(req_key, req_key)
-                    wait_fut = policy_inflight.get(wait_key)
-                    cached = _policy_cache_get(wait_key) or _policy_cache_get(req_key)
+            async with policy_cache_lock:
+                lookup_key = policy_url_aliases.get(req_key, req_key)
+                cached = _policy_cache_get(lookup_key) or _policy_cache_get(req_key)
                 if cached is not None:
                     return cached
-                if wait_fut is not None:
-                    try:
-                        return await asyncio.wait_for(asyncio.shield(wait_fut), timeout=120.0)
-                    except asyncio.TimeoutError:
-                        warn(f"Timed out waiting for concurrent policy fetch of {policy_url!r}; fetching directly.")
 
-                return await client.fetch(
-                    policy_url,
-                    capture_network=False,
-                    remove_overlays=True,
-                    magic=False,
-                )
+                disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
+                if disk is not None:
+                    status_code = disk.get("status_code")
+                    text = disk.get("text")
+                    result = Crawl4AIResult(
+                        url=disk.get("final_url") or policy_url,
+                        success=bool((isinstance(status_code, int) and status_code < 400) or text),
+                        status_code=status_code,
+                        raw_html=None,
+                        cleaned_html=None,
+                        text=text,
+                        network_requests=None,
+                        error_message=disk.get("error_message"),
+                        text_extraction_method=disk.get("extraction_method"),
+                    )
+                    _policy_cache_put(lookup_key, result)
+                    _policy_cache_put(req_key, result)
+                    final_url = disk.get("final_url")
+                    if isinstance(final_url, str) and final_url:
+                        final_key = _normalize_policy_url(final_url)
+                        if final_key:
+                            _policy_cache_put(final_key, result)
+                            policy_url_aliases[req_key] = final_key
+                    return result
 
-            async def worker(rec: dict[str, Any]) -> None:
+                fut = policy_inflight.get(lookup_key)
+                if fut is None:
+                    fut = asyncio.get_running_loop().create_future()
+                    policy_inflight[lookup_key] = fut
+                    owner = True
+
+            if owner:
+                cancelled = False
+                try:
+                    result = await fetch_policy_direct(policy_url)
+                except asyncio.CancelledError:
+                    cancelled = True
+                    result = Crawl4AIResult(
+                        url=policy_url,
+                        success=False,
+                        status_code=None,
+                        raw_html=None,
+                        cleaned_html=None,
+                        text=None,
+                        network_requests=None,
+                        error_message="policy_fetch_cancelled",
+                        text_extraction_method=None,
+                    )
+
+                final_url = result.url or policy_url
+                final_key = _normalize_policy_url(final_url) or req_key
+                cache_keys = {req_key, final_key}
+
+                if result.text:
+                    async with tp_cache_write_lock:
+                        cache_entry = {
+                            "text": result.text,
+                            "status_code": result.status_code,
+                            "extraction_method": result.text_extraction_method,
+                            "error_message": result.error_message,
+                            "final_url": final_url,
+                            "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                        }
+                        changed = 0
+                        for key in cache_keys:
+                            if tp_policy_disk_cache.get(key) != cache_entry:
+                                tp_policy_disk_cache[key] = cache_entry
+                                changed += 1
+                        if changed:
+                            tp_cache_dirty_entries += changed
+                            await _flush_tp_cache_locked(force=False)
+
+                async with policy_cache_lock:
+                    _cached = Crawl4AIResult(
+                        url=result.url,
+                        success=result.success,
+                        status_code=result.status_code,
+                        raw_html=None,
+                        cleaned_html=result.cleaned_html,
+                        text=result.text,
+                        network_requests=None,
+                        error_message=result.error_message,
+                        text_extraction_method=result.text_extraction_method,
+                    )
+                    for key in cache_keys:
+                        _policy_cache_put(key, _cached)
+                    policy_url_aliases[req_key] = final_key
+                    inflight = policy_inflight.pop(req_key, None)
+                    if inflight is None:
+                        inflight = policy_inflight.pop(final_key, None)
+                    if inflight is None:
+                        inflight = policy_inflight.pop(lookup_key, None)
+                    if inflight is not None and not inflight.done():
+                        inflight.set_result(result)
+
+                if cancelled:
+                    raise asyncio.CancelledError()
+                return result
+
+            async with policy_cache_lock:
+                wait_key = policy_url_aliases.get(req_key, req_key)
+                wait_fut = policy_inflight.get(wait_key)
+                cached = _policy_cache_get(wait_key) or _policy_cache_get(req_key)
+            if cached is not None:
+                return cached
+            if wait_fut is not None:
+                try:
+                    return await asyncio.wait_for(asyncio.shield(wait_fut), timeout=120.0)
+                except asyncio.TimeoutError:
+                    warn(f"Timed out waiting for concurrent policy fetch of {policy_url!r}; fetching directly.")
+
+            return await fetch_policy_direct(policy_url)
+
+        async def worker(rec: dict[str, Any]) -> None:
                 rank = rec["rank"]
                 site = rec["site"]
 
@@ -1700,35 +1740,52 @@ async def _run(args: argparse.Namespace) -> None:
                     "rank": rank,
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
+                site_timeout_sec = max(0.001, float(getattr(args, "site_timeout_sec", 300.0) or 300.0))
                 try:
-                    result = await process_site(
-                        client,
-                        site,
-                        rank=rank,
-                        artifacts_dir=args.artifacts_dir,
-                        tracker_radar=tracker_radar,
-                        trackerdb=trackerdb,
-                        fetch_third_party_policies=not args.no_third_party_policy_fetch,
-                        third_party_policy_max=args.third_party_policy_max,
-                        third_party_engine=args.third_party_engine,
-                        run_id=run_id,
-                        exclude_same_entity=bool(args.exclude_same_entity),
-                        first_party_policy_url_override=(args.policy_url_override or None),
-                        first_party_policy_fetcher=fetch_policy_cached,
-                        third_party_policy_fetcher=fetch_policy_cached,
-                        openai_client=openai_client,
-                        llm_model=args.llm_model,
-                        policy_artifact_registry=policy_artifact_registry,
-                        policy_artifact_lock=policy_artifact_lock,
-                        stage_callback=lambda stage: emit_event({
-                            "type": "site_stage",
-                            "run_id": run_id,
-                            "site": site,
-                            "rank": rank,
-                            "stage": stage,
-                            "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                        }),
-                    )
+                    async with _new_client() as client:
+                        result = await asyncio.wait_for(
+                            process_site(
+                                client,
+                                site,
+                                rank=rank,
+                                artifacts_dir=args.artifacts_dir,
+                                tracker_radar=tracker_radar,
+                                trackerdb=trackerdb,
+                                fetch_third_party_policies=not args.no_third_party_policy_fetch,
+                                third_party_policy_max=args.third_party_policy_max,
+                                third_party_engine=args.third_party_engine,
+                                run_id=run_id,
+                                exclude_same_entity=bool(args.exclude_same_entity),
+                                first_party_policy_url_override=(args.policy_url_override or None),
+                                first_party_policy_fetcher=lambda url: fetch_policy_cached(client, url),
+                                third_party_policy_fetcher=lambda url: fetch_policy_cached(client, url),
+                                openai_client=openai_client,
+                                llm_model=args.llm_model,
+                                policy_artifact_registry=policy_artifact_registry,
+                                policy_artifact_lock=policy_artifact_lock,
+                                fetch_timeout_sec=float(getattr(args, "fetch_timeout_sec", 60.0) or 60.0),
+                                stage_callback=lambda stage: emit_event({
+                                    "type": "site_stage",
+                                    "run_id": run_id,
+                                    "site": site,
+                                    "rank": rank,
+                                    "stage": stage,
+                                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                                }),
+                            ),
+                            timeout=site_timeout_sec,
+                        )
+                except asyncio.TimeoutError:
+                    warn(f"Timed out processing {site} after {site_timeout_sec:.1f}s")
+                    result = {
+                        "rank": rank,
+                        "input": site,
+                        "main_category": rec.get("main_category"),
+                        "status": "exception",
+                        "error_message": f"site_timed_out_after_{site_timeout_sec:.1f}s",
+                        "error_code": "site_timeout",
+                        "run_id": run_id,
+                    }
                 except Exception as e:
                     warn(f"Unhandled error for {site}: {e}")
                     result = {
@@ -1860,13 +1917,13 @@ async def _run(args: argparse.Namespace) -> None:
                 if result.get("status") != "ok":
                     warn(f"FAILED {site}: {result.get('status')}")
 
-            await _run_bounded(
-                sites,
-                concurrency=max(1, int(args.concurrency)),
-                worker=worker,
-            )
-            async with tp_cache_write_lock:
-                await _flush_tp_cache_locked(force=True)
+        await _run_bounded(
+            sites,
+            concurrency=max(1, int(args.concurrency)),
+            worker=worker,
+        )
+        async with tp_cache_write_lock:
+            await _flush_tp_cache_locked(force=True)
 
         current_stage = "finalize"
         if args.explorer_out and not explorer_is_jsonl:

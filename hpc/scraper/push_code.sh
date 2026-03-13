@@ -21,6 +21,7 @@ SYNC_FILES=(
   "README.md"
   "pyproject.toml"
   "requirements.txt"
+  "scrapable_websites_categorized.csv"
   "tracker_radar_index.json"
   "trackerdb_index.json"
 )
