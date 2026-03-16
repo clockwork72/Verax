@@ -55,6 +55,24 @@ export function buildDisabledNavs({
   }
 }
 
+export function shouldAutoLoadWorkspace({
+  bridgeReady,
+  running,
+  hasRun,
+  hasDataset,
+  hasSummaryOrState,
+}: {
+  bridgeReady: boolean
+  running: boolean
+  hasRun: boolean
+  hasDataset: boolean
+  hasSummaryOrState: boolean
+}) {
+  if (!bridgeReady || running) return false
+  if (hasRun || hasDataset || hasSummaryOrState) return false
+  return true
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>('academia')
   const [showExtractionMethod, setShowExtractionMethod] = useState<boolean>(() => {
@@ -233,6 +251,30 @@ function App() {
     bridgeReady,
     hasWorkspaceContent,
   })
+
+  useEffect(() => {
+    if (!shouldAutoLoadWorkspace({
+      bridgeReady,
+      running,
+      hasRun,
+      hasDataset: datasetState.hasDataset,
+      hasSummaryOrState: Boolean(summaryData || stateData),
+    })) {
+      return
+    }
+
+    void loadOutDir()
+    void refreshRuns()
+  }, [
+    bridgeReady,
+    datasetState.hasDataset,
+    hasRun,
+    loadOutDir,
+    refreshRuns,
+    running,
+    stateData,
+    summaryData,
+  ])
 
   const handleSelectNav = useCallback((next: NavId) => {
     if (!disabledNavs[next]) {

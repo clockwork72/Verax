@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildDisabledNavs } from './App'
+import { buildDisabledNavs, shouldAutoLoadWorkspace } from './App'
 
 describe('App navigation gating', () => {
   it('keeps read-only workspace views available when a dataset is already loaded', () => {
@@ -28,5 +28,31 @@ describe('App navigation gating', () => {
     expect(disabled.explorer).toBe(true)
     expect(disabled.annotations).toBe(true)
     expect(disabled.consistency).toBe(true)
+  })
+
+  it('auto-loads the current workspace when the bridge is ready and nothing is loaded yet', () => {
+    expect(shouldAutoLoadWorkspace({
+      bridgeReady: true,
+      running: false,
+      hasRun: false,
+      hasDataset: false,
+      hasSummaryOrState: false,
+    })).toBe(true)
+
+    expect(shouldAutoLoadWorkspace({
+      bridgeReady: true,
+      running: false,
+      hasRun: false,
+      hasDataset: true,
+      hasSummaryOrState: false,
+    })).toBe(false)
+
+    expect(shouldAutoLoadWorkspace({
+      bridgeReady: false,
+      running: false,
+      hasRun: false,
+      hasDataset: false,
+      hasSummaryOrState: false,
+    })).toBe(false)
   })
 })

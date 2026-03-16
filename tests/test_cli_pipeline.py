@@ -189,6 +189,35 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
     assert summary["status_counts"] == {"ok": 1}
     assert summary["site_categories"] == [{"name": "Technology", "count": 1}]
 
+    figure_data = json.loads((tmp_path / "results.figure_data.json").read_text(encoding="utf-8"))
+    assert figure_data["dataset_overview"] == {
+        "total_sites_targeted": 1,
+        "sites_successfully_processed": 1,
+        "unique_3p_services_detected": 1,
+        "mapped_3p_services": 1,
+        "mapping_coverage_pct": 100.0,
+        "third_parties_with_policy_urls": 1,
+    }
+    assert figure_data["distribution_profiles"]["website_categories"][0] == {
+        "category": "Technology",
+        "site_count": 1,
+    }
+    assert figure_data["distribution_profiles"]["third_party_service_categories"][0] == {
+        "category": "Analytics",
+        "unique_service_count": 1,
+    }
+
+    # English-only outputs
+    english_jsonl = tmp_path / "results.english.jsonl"
+    assert english_jsonl.exists()
+    english_records = [json.loads(line) for line in english_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert len(english_records) == 1
+    assert english_records[0]["site_etld1"] == "alpha.example"
+    assert english_records[0]["policy_is_english"] is True
+
+    english_summary = json.loads((tmp_path / "results.english.summary.json").read_text(encoding="utf-8"))
+    assert english_summary["dataset_overview"]["sites_successfully_processed"] == 1
+
     state_payload = json.loads(Path(args.state_file).read_text(encoding="utf-8"))
     assert state_payload["processed_sites"] == 1
     assert state_payload["started_at"] == summary["started_at"]

@@ -51,7 +51,6 @@ export function resolveRunSummary(
     },
     categories: liveSummary.categories,
     entities: liveSummary.entities,
-    category_service_heatmap: summary?.category_service_heatmap ?? null,
     started_at: summary?.started_at,
     updated_at: summary?.updated_at,
   }

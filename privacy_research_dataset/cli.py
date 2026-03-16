@@ -1083,9 +1083,14 @@ def _upsert_explorer_jsonl(path: Path, record: dict[str, Any]) -> None:
 
 def _count_english_from_artifacts(artifacts_dir: Path) -> int:
     """Count sites whose scrape_complete.json has policy_is_english=True."""
-    count = 0
+    return len(_english_policy_sites_from_artifacts(artifacts_dir))
+
+
+def _english_policy_sites_from_artifacts(artifacts_dir: Path) -> set[str]:
+    """Return site keys whose scrape_complete.json marks an English policy."""
+    english_sites: set[str] = set()
     if not artifacts_dir.is_dir():
-        return count
+        return english_sites
     for site_dir in artifacts_dir.iterdir():
         if not site_dir.is_dir():
             continue
@@ -1095,10 +1100,10 @@ def _count_english_from_artifacts(artifacts_dir: Path) -> int:
         try:
             data = json.loads(marker.read_text(encoding="utf-8"))
             if data.get("policy_is_english"):
-                count += 1
+                english_sites.add(site_dir.name)
         except Exception:
             pass
-    return count
+    return english_sites
 
 
 def _build_summary_from_results(
@@ -1108,8 +1113,27 @@ def _build_summary_from_results(
     mapping_mode: str,
     total_sites_override: int | None = None,
 ) -> dict[str, Any]:
+    summary, _figure_data = _build_outputs_from_results(
+        out_path,
+        run_id=run_id,
+        mapping_mode=mapping_mode,
+        total_sites_override=total_sites_override,
+    )
+    return summary
+
+
+def _build_outputs_from_results(
+    out_path: Path,
+    *,
+    run_id: str,
+    mapping_mode: str,
+    total_sites_override: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     records = list(_iter_jsonl(out_path))
+    artifacts_dir = out_path.parent / "artifacts"
+    english_policy_sites = _english_policy_sites_from_artifacts(artifacts_dir)
     sites_seen: set[str] = set()
+    english_records: list[dict[str, Any]] = []
     for rec in records:
         key = rec.get("site_etld1") or rec.get("input")
         if isinstance(key, str) and key:
@@ -1119,14 +1143,68 @@ def _build_summary_from_results(
         effective_total_sites = max(effective_total_sites, total_sites_override)
     sb = SummaryBuilder(run_id=run_id, total_sites=effective_total_sites, mapping_mode=mapping_mode)
     for rec in records:
-        sb.update(rec)
+        site_key = rec.get("site_etld1") or rec.get("input")
+        if (
+            isinstance(site_key, str)
+            and site_key in english_policy_sites
+            and "policy_is_english" not in rec
+        ):
+            enriched = {**rec, "policy_is_english": True}
+            sb.update(enriched)
+            english_records.append(enriched)
+        else:
+            sb.update(rec)
+            if rec.get("policy_is_english"):
+                english_records.append(rec)
     result = sb.to_summary()
+    figure_data = sb.to_figure_data()
     # If records don't carry policy_is_english (older runs), scan artifacts directly.
     if not result.get("english_policy_count"):
-        artifacts_dir = out_path.parent / "artifacts"
-        if artifacts_dir.is_dir():
-            result["english_policy_count"] = _count_english_from_artifacts(artifacts_dir)
-    return result
+        result["english_policy_count"] = len(english_policy_sites)
+        figure_data["dataset_overview"]["sites_successfully_processed"] = int(result["english_policy_count"])
+    # Write English-only JSONL alongside the main results.
+    english_jsonl_path = out_path.with_name("results.english.jsonl")
+    _write_jsonl_records(english_jsonl_path, english_records)
+    return result, figure_data
+
+
+def _figure_data_out_path(args: argparse.Namespace) -> Path:
+    if getattr(args, "summary_out", None):
+        return Path(str(args.summary_out)).with_name("results.figure_data.json")
+    return Path(str(args.out)).with_name("results.figure_data.json")
+
+
+def _english_jsonl_out_path(args: argparse.Namespace) -> Path:
+    return Path(str(args.out)).with_name("results.english.jsonl")
+
+
+def _english_summary_out_path(args: argparse.Namespace) -> Path:
+    return Path(str(args.out)).with_name("results.english.summary.json")
+
+
+def _write_reporting_outputs(
+    args: argparse.Namespace,
+    *,
+    summary_payload: dict[str, Any],
+    figure_data_payload: dict[str, Any],
+    run_id: str,
+    total_sites: int,
+) -> None:
+    if args.summary_out:
+        write_json(args.summary_out, summary_payload)
+
+    write_json(_figure_data_out_path(args), figure_data_payload)
+    write_json(_english_summary_out_path(args), figure_data_payload)
+
+    if args.state_file:
+        write_json(
+            args.state_file,
+            _state_from_summary(
+                summary_payload,
+                run_id=run_id,
+                total_sites=total_sites,
+            ),
+        )
 
 
 def _state_from_summary(summary: dict[str, Any], *, run_id: str, total_sites: int) -> dict[str, Any]:
@@ -1649,24 +1727,21 @@ async def _run(args: argparse.Namespace) -> None:
                             "main_category": rec.get("main_category") or cached_result.get("main_category"),
                         })
                         summary_payload = summary.to_summary()
+                        figure_data_payload = summary.to_figure_data()
                         if args.upsert_by_site:
-                            summary_payload = _build_summary_from_results(
+                            summary_payload, figure_data_payload = _build_outputs_from_results(
                                 Path(args.out),
                                 run_id=run_id,
                                 mapping_mode=mapping_mode,
                                 total_sites_override=target_total_sites,
                             )
-                        if args.summary_out:
-                            write_json(args.summary_out, summary_payload)
-                        if args.state_file:
-                            write_json(
-                                args.state_file,
-                                _state_from_summary(
-                                    summary_payload,
-                                    run_id=run_id,
-                                    total_sites=int(summary_payload.get("total_sites") or target_total_sites),
-                                ),
-                            )
+                        _write_reporting_outputs(
+                            args,
+                            summary_payload=summary_payload,
+                            figure_data_payload=figure_data_payload,
+                            run_id=run_id,
+                            total_sites=int(summary_payload.get("total_sites") or target_total_sites),
+                        )
                     emit_event({
                         "type": "site_finished",
                         "run_id": run_id,
@@ -1689,24 +1764,21 @@ async def _run(args: argparse.Namespace) -> None:
                             "main_category": rec.get("main_category"),
                         })
                         summary_payload = summary.to_summary()
+                        figure_data_payload = summary.to_figure_data()
                         if args.upsert_by_site:
-                            summary_payload = _build_summary_from_results(
+                            summary_payload, figure_data_payload = _build_outputs_from_results(
                                 Path(args.out),
                                 run_id=run_id,
                                 mapping_mode=mapping_mode,
                                 total_sites_override=target_total_sites,
                             )
-                        if args.summary_out:
-                            write_json(args.summary_out, summary_payload)
-                        if args.state_file:
-                            write_json(
-                                args.state_file,
-                                _state_from_summary(
-                                    summary_payload,
-                                    run_id=run_id,
-                                    total_sites=int(summary_payload.get("total_sites") or target_total_sites),
-                                ),
-                            )
+                        _write_reporting_outputs(
+                            args,
+                            summary_payload=summary_payload,
+                            figure_data_payload=figure_data_payload,
+                            run_id=run_id,
+                            total_sites=int(summary_payload.get("total_sites") or target_total_sites),
+                        )
                     emit_event({
                         "type": "site_finished",
                         "run_id": run_id,
@@ -1821,6 +1893,13 @@ async def _run(args: argparse.Namespace) -> None:
                         else:
                             append_jsonl(args.out, result)
 
+                        if result.get("policy_is_english"):
+                            english_jsonl_path = _english_jsonl_out_path(args)
+                            if args.upsert_by_site:
+                                _upsert_result_jsonl(english_jsonl_path, result)
+                            else:
+                                append_jsonl(str(english_jsonl_path), result)
+
                     if not should_skip_output:
                         summary.update(result)
 
@@ -1841,26 +1920,21 @@ async def _run(args: argparse.Namespace) -> None:
                                 explorer_records.append(explorer_rec)
 
                     summary_payload = summary.to_summary()
+                    figure_data_payload = summary.to_figure_data()
                     if args.upsert_by_site and not should_skip_output:
-                        summary_payload = _build_summary_from_results(
+                        summary_payload, figure_data_payload = _build_outputs_from_results(
                             Path(args.out),
                             run_id=run_id,
                             mapping_mode=mapping_mode,
                             total_sites_override=target_total_sites,
                         )
-
-                    if args.summary_out:
-                        write_json(args.summary_out, summary_payload)
-
-                    if args.state_file:
-                        write_json(
-                            args.state_file,
-                            _state_from_summary(
-                                summary_payload,
-                                run_id=run_id,
-                                total_sites=int(summary_payload.get("total_sites") or target_total_sites),
-                            ),
-                        )
+                    _write_reporting_outputs(
+                        args,
+                        summary_payload=summary_payload,
+                        figure_data_payload=figure_data_payload,
+                        run_id=run_id,
+                        total_sites=int(summary_payload.get("total_sites") or target_total_sites),
+                    )
 
                 if result.get("status") == "ok" and args.artifacts_dir:
                     site_key = result.get("site_etld1") or site

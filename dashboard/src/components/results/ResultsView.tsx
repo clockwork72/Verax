@@ -13,7 +13,6 @@ import type { ExplorerSite } from '../../data/explorer'
 import { ResultsMetrics } from '../../utils/results'
 import { deriveLiveRunSummary, resolveRunSummary } from '../../utils/liveRunSummary'
 import { CATEGORY_ORDER } from '../../utils/trackerCategories'
-import { CategoryServiceHeatmap } from './CategoryServiceHeatmap'
 import { BentoCard, BentoGrid } from '../ui/BentoCard'
 import { AnimatedCounter } from '../ui/AnimatedCounter'
 import { StatusPill } from '../ui/StatusPill'
@@ -357,15 +356,9 @@ export function ResultsView({
         </BentoCard>
       </BentoGrid>
 
-      {/* ── Row 4: Heatmap + Entities ───────────────────────────── */}
-      <BentoGrid className="grid-cols-1 xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]">
-        <CategoryServiceHeatmap
-          summary={effectiveSummary}
-          records={records || undefined}
-          sites={sites || undefined}
-        />
-
-        <BentoCard className="xl:min-h-[32rem]">
+      {/* ── Row 4: Entities ────────────────────────────────────── */}
+      <BentoGrid className="grid-cols-1">
+        <BentoCard>
           <div className="mb-4 flex items-start justify-between gap-4">
             <div>
               <p className="text-[11px] uppercase tracking-[0.15em] text-[var(--muted-text)]">Entity prevalence</p>

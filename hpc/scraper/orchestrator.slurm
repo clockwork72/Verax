@@ -6,7 +6,7 @@
 # 6 concurrent site workers plus the aiohttp control plane, browser helpers,
 # and JSON / artifact processing headroom.
 #SBATCH --cpus-per-task=24
-#SBATCH --time=02:00:00
+#SBATCH --time=20:00:00
 
 set -euo pipefail
 
