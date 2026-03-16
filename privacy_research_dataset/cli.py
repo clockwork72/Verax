@@ -1282,15 +1282,19 @@ def _load_scraped_sites(artifacts_dir: Path) -> set[str]:
     return scraped
 
 
-def _load_tp_disk_cache(cache_path: Path) -> dict[str, dict]:
-    """Load the persistent policy cache from disk."""
+def _load_tp_disk_cache(cache_path: Path) -> tuple[dict[str, dict], bool]:
+    """Load and compact the persistent policy cache from disk."""
     if not cache_path.exists():
-        return {}
+        return {}, False
     try:
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except Exception as e:
         warn(f"Failed to load TP policy cache from {cache_path}: {e}")
-        return {}
+        return {}, False
+    if not isinstance(payload, dict):
+        return {}, False
+    compacted = _compact_tp_disk_cache(payload)
+    return compacted, compacted != payload
 
 
 def _normalize_policy_url(url: str) -> str:
@@ -1310,6 +1314,73 @@ def _normalize_policy_url(url: str) -> str:
         return urlunparse((scheme, netloc, path, "", p.query, ""))
     except Exception:
         return u
+
+
+def _compact_tp_disk_cache(cache: dict[str, Any]) -> dict[str, dict]:
+    compacted: dict[str, dict] = {}
+    for key, value in cache.items():
+        if not isinstance(key, str) or not key:
+            continue
+        alias_of = _tp_disk_alias_target(value)
+        if alias_of:
+            compacted[key] = {"alias_of": alias_of}
+            continue
+        if not isinstance(value, dict):
+            continue
+        entry = _prune_tp_disk_cache_entry(value)
+        final_key = _normalize_policy_url(str(value.get("final_url") or key)) or key
+        existing = compacted.get(final_key)
+        if existing is None or _tp_disk_alias_target(existing) or existing == entry:
+            compacted[final_key] = entry
+            if key != final_key:
+                compacted[key] = {"alias_of": final_key}
+        else:
+            compacted[key] = entry
+    return compacted
+
+
+def _prune_tp_disk_cache_entry(value: dict[str, Any]) -> dict[str, Any]:
+    entry: dict[str, Any] = {"text": str(value.get("text") or "")}
+    status_code = value.get("status_code")
+    if isinstance(status_code, int):
+        entry["status_code"] = status_code
+    extraction_method = value.get("extraction_method")
+    if isinstance(extraction_method, str) and extraction_method:
+        entry["extraction_method"] = extraction_method
+    error_message = value.get("error_message")
+    if isinstance(error_message, str) and error_message:
+        entry["error_message"] = error_message
+    final_url = value.get("final_url")
+    if isinstance(final_url, str) and final_url:
+        entry["final_url"] = final_url
+    return entry
+
+
+def _tp_disk_alias_target(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    alias_of = value.get("alias_of")
+    if not isinstance(alias_of, str) or not alias_of:
+        return None
+    return alias_of
+
+
+def _resolve_tp_disk_cache_entry(cache: dict[str, dict], key: str) -> dict[str, Any] | None:
+    current = key
+    seen: set[str] = set()
+    for _ in range(8):
+        if current in seen:
+            return None
+        seen.add(current)
+        value = cache.get(current)
+        if not isinstance(value, dict):
+            return None
+        alias_of = _tp_disk_alias_target(value)
+        if alias_of:
+            current = alias_of
+            continue
+        return value
+    return None
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -1480,12 +1551,12 @@ async def _run(args: argparse.Namespace) -> None:
             if args.tp_cache_file
             else out_path.with_name(out_path.stem + ".tp_cache.json")
         )
-        tp_policy_disk_cache = _load_tp_disk_cache(tp_cache_path)
+        tp_policy_disk_cache, tp_cache_compacted = _load_tp_disk_cache(tp_cache_path)
         if tp_policy_disk_cache:
             log(f"Loaded {len(tp_policy_disk_cache)} cached policy URL(s) from {tp_cache_path}")
         tp_cache_write_lock = asyncio.Lock()
         tp_cache_flush_entries = max(1, int(getattr(args, "tp_cache_flush_entries", 25) or 25))
-        tp_cache_dirty_entries = 0
+        tp_cache_dirty_entries = 1 if tp_cache_compacted else 0
 
         summary = SummaryBuilder(run_id=run_id, total_sites=target_total_sites, mapping_mode=mapping_mode)
         explorer_records: list[dict[str, Any]] = []
@@ -1564,7 +1635,7 @@ async def _run(args: argparse.Namespace) -> None:
                 return
             pending = tp_cache_dirty_entries
             try:
-                payload = json.dumps(tp_policy_disk_cache, ensure_ascii=False, indent=1)
+                payload = json.dumps(tp_policy_disk_cache, ensure_ascii=False, separators=(",", ":"))
                 await asyncio.to_thread(tp_cache_path.write_text, payload, "utf-8")
                 tp_cache_dirty_entries = 0
                 log(f"TP cache: flushed {pending} updated entries to {tp_cache_path}")
@@ -1621,7 +1692,7 @@ async def _run(args: argparse.Namespace) -> None:
                 if cached is not None:
                     return cached
 
-                disk = tp_policy_disk_cache.get(lookup_key) or tp_policy_disk_cache.get(req_key)
+                disk = _resolve_tp_disk_cache_entry(tp_policy_disk_cache, lookup_key) or _resolve_tp_disk_cache_entry(tp_policy_disk_cache, req_key)
                 if disk is not None:
                     status_code = disk.get("status_code")
                     text = disk.get("text")
@@ -1676,19 +1747,27 @@ async def _run(args: argparse.Namespace) -> None:
 
                 if result.text:
                     async with tp_cache_write_lock:
-                        cache_entry = {
-                            "text": result.text,
-                            "status_code": result.status_code,
-                            "extraction_method": result.text_extraction_method,
-                            "error_message": result.error_message,
-                            "final_url": final_url,
-                            "fetched_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                        }
+                        cache_entry = _prune_tp_disk_cache_entry(
+                            {
+                                "text": result.text,
+                                "status_code": result.status_code,
+                                "extraction_method": result.text_extraction_method,
+                                "error_message": result.error_message,
+                                "final_url": final_url if final_url != policy_url else None,
+                            }
+                        )
                         changed = 0
-                        for key in cache_keys:
-                            if tp_policy_disk_cache.get(key) != cache_entry:
-                                tp_policy_disk_cache[key] = cache_entry
+                        if tp_policy_disk_cache.get(final_key) != cache_entry:
+                            tp_policy_disk_cache[final_key] = cache_entry
+                            changed += 1
+                        if req_key != final_key:
+                            alias_entry = {"alias_of": final_key}
+                            if tp_policy_disk_cache.get(req_key) != alias_entry:
+                                tp_policy_disk_cache[req_key] = alias_entry
                                 changed += 1
+                        elif req_key in tp_policy_disk_cache and tp_policy_disk_cache.get(req_key) != cache_entry:
+                            tp_policy_disk_cache[req_key] = cache_entry
+                            changed += 1
                         if changed:
                             tp_cache_dirty_entries += changed
                             await _flush_tp_cache_locked(force=False)

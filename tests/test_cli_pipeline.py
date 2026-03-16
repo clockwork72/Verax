@@ -245,6 +245,85 @@ def test_run_pipeline_flushes_tp_cache_on_shutdown(tmp_path, monkeypatch):
     assert tp_cache[cli._normalize_policy_url("https://shared.example/privacy")]["text"] == (
         "Policy text for https://shared.example/privacy"
     )
+    assert "\n " not in tp_cache_path.read_text(encoding="utf-8")
+
+
+def test_run_pipeline_deduplicates_tp_cache_alias_entries(tmp_path, monkeypatch):
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=1)
+
+    async def fake_prefilter(args, records):
+        return list(records)
+
+    async def redirecting_fetch(self, url: str, **kwargs) -> Crawl4AIResult:
+        self.fetch_calls.append(url)
+        return Crawl4AIResult(
+            url="https://shared.example/privacy/",
+            success=True,
+            status_code=200,
+            raw_html="<html><body>policy</body></html>",
+            cleaned_html="<html><body>policy</body></html>",
+            text="Redirected policy text",
+            network_requests=[],
+            error_message=None,
+            text_extraction_method="fake",
+        )
+
+    async def fake_process_site(client, site, **kwargs):
+        result = await kwargs["third_party_policy_fetcher"]("https://shared.example/privacy")
+        assert result.text == "Redirected policy text"
+        site_dir = Path(kwargs["artifacts_dir"]) / site
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "policy.txt").write_text("Primary policy", encoding="utf-8")
+        return {
+            "rank": kwargs["rank"],
+            "input": site,
+            "site_etld1": site,
+            "main_category": "Technology",
+            "status": "ok",
+            "third_parties": [],
+            "run_id": "test-run",
+        }
+
+    FakeCrawl4AIClient.instances.clear()
+    monkeypatch.setattr(cli, "_load_input_sites", lambda args: [{"rank": 1, "site": "alpha.example"}])
+    monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
+    monkeypatch.setattr(cli, "Crawl4AIClient", FakeCrawl4AIClient)
+    monkeypatch.setattr(FakeCrawl4AIClient, "fetch", redirecting_fetch)
+    monkeypatch.setattr(cli, "process_site", fake_process_site)
+
+    asyncio.run(cli._run(args))
+
+    tp_cache = json.loads(Path(args.tp_cache_file).read_text(encoding="utf-8"))
+    assert tp_cache["https://shared.example/privacy"] == {"alias_of": "https://shared.example/privacy/"}
+    assert tp_cache["https://shared.example/privacy/"]["text"] == "Redirected policy text"
+
+
+def test_load_tp_disk_cache_compacts_legacy_duplicates(tmp_path):
+    cache_path = tmp_path / "results.tp_cache.json"
+    cache_path.write_text(json.dumps({
+        "https://shared.example/privacy": {
+            "text": "Policy text",
+            "status_code": 200,
+            "extraction_method": "fake",
+            "error_message": None,
+            "final_url": "https://shared.example/privacy/",
+            "fetched_at": "2026-03-16T15:14:09+00:00",
+        },
+        "https://shared.example/privacy/": {
+            "text": "Policy text",
+            "status_code": 200,
+            "extraction_method": "fake",
+            "error_message": None,
+            "final_url": "https://shared.example/privacy/",
+            "fetched_at": "2026-03-16T15:14:09+00:00",
+        },
+    }), encoding="utf-8")
+
+    cache, compacted = cli._load_tp_disk_cache(cache_path)
+
+    assert compacted is True
+    assert cache["https://shared.example/privacy"] == {"alias_of": "https://shared.example/privacy/"}
+    assert cache["https://shared.example/privacy/"]["text"] == "Policy text"
 
 
 def test_run_pipeline_uses_site_scoped_crawl_clients(tmp_path, monkeypatch):
