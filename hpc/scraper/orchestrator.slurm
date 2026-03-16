@@ -12,7 +12,13 @@ set -euo pipefail
 
 PLACEHOLDER_REMOTE_ROOT="/path/to/your/hpc/scraper"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+SCRIPT_REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+SUBMIT_REPO_ROOT="${SLURM_SUBMIT_DIR:-}"
+if [ -n "${SUBMIT_REPO_ROOT}" ] && [ -f "${SUBMIT_REPO_ROOT}/privacy_research_dataset/hpc_service.py" ]; then
+  DEFAULT_REPO_ROOT="${SUBMIT_REPO_ROOT}"
+else
+  DEFAULT_REPO_ROOT="${SCRIPT_REPO_ROOT}"
+fi
 
 is_placeholder_path() {
   case "${1:-}" in

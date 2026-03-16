@@ -354,3 +354,42 @@ def test_orchestrator_direct_run_reports_missing_inferred_python(tmp_path):
     assert result.returncode == 1
     assert f"Missing runtime python at {tmp_path / '.venv' / 'bin' / 'python'}" in result.stderr
     assert f"Run {repo_root / 'hpc' / 'scraper' / 'install_remote.sh'} first." in result.stderr
+
+
+def test_orchestrator_prefers_slurm_submit_dir_when_script_runs_from_spool(tmp_path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    package_dir = repo_root / "privacy_research_dataset"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "hpc_service.py").write_text(
+        "from __future__ import annotations\nprint('dummy hpc service invoked')\n",
+        encoding="utf-8",
+    )
+
+    spool_dir = tmp_path / "spool"
+    spool_dir.mkdir()
+    spool_script = spool_dir / "orchestrator.slurm"
+    spool_script.write_text(ORCHESTRATOR.read_text(encoding="utf-8"), encoding="utf-8")
+
+    python_dir = tmp_path / ".venv" / "bin"
+    python_dir.mkdir(parents=True)
+    fake_python = python_dir / "python"
+    fake_python.write_text("#!/bin/bash\nexec python3 \"$@\"\n", encoding="utf-8")
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+
+    result = subprocess.run(
+        ["bash", str(spool_script)],
+        check=True,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SCRAPER_CLUSTER_FQDN": "cluster.example",
+            "SLURM_SUBMIT_DIR": str(repo_root),
+        },
+    )
+
+    assert f"Remote root: {tmp_path}" in result.stdout
+    assert f"Repo root: {repo_root}" in result.stdout
+    assert "dummy hpc service invoked" in result.stdout
