@@ -60,10 +60,10 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
   const request: CatalogQueryRequest = {
     siteStatuses,
     siteCategoriesAny,
-    firstPartyEnglish,
+    firstPartyEnglish: firstPartyEnglish ? true : undefined,
     firstPartyWordCountMin: Number(firstPartyWordCountMin) || undefined,
-    requiresThirdPartyPolicy,
-    requiresThirdPartyEnglishPolicy,
+    requiresThirdPartyPolicy: requiresThirdPartyPolicy ? true : undefined,
+    requiresThirdPartyEnglishPolicy: requiresThirdPartyEnglishPolicy ? true : undefined,
     thirdPartyCategoriesAny,
     thirdPartyDomain: thirdPartyDomain.trim() || undefined,
     entity: entity.trim() || undefined,
