@@ -228,6 +228,16 @@ class TestQueryCatalog:
         wcs = [item["firstPartyPolicyWordCount"] for item in result["items"]]
         assert wcs == sorted(wcs, reverse=True)
 
+    def test_sort_word_count_asc(self, populated_store: CatalogStore) -> None:
+        result = populated_store.query_catalog(CatalogQueryRequest(sort="word_count_asc"))
+        wcs = [item["firstPartyPolicyWordCount"] for item in result["items"]]
+        assert wcs == sorted(wcs)
+
+    def test_sort_third_party_count_asc(self, populated_store: CatalogStore) -> None:
+        result = populated_store.query_catalog(CatalogQueryRequest(sort="third_party_count_asc"))
+        counts = [item["thirdPartyCount"] for item in result["items"]]
+        assert counts == sorted(counts)
+
     def test_pagination(self, populated_store: CatalogStore) -> None:
         page1 = populated_store.query_catalog(CatalogQueryRequest(limit=2, offset=0))
         page2 = populated_store.query_catalog(CatalogQueryRequest(limit=2, offset=2))

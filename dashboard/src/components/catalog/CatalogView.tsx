@@ -20,7 +20,9 @@ const SORT_OPTIONS = [
   { value: 'site_asc', label: 'Site A-Z' },
   { value: 'rank_asc', label: 'Rank asc' },
   { value: 'rank_desc', label: 'Rank desc' },
+  { value: 'word_count_asc', label: 'Word count asc' },
   { value: 'word_count_desc', label: 'Word count' },
+  { value: 'third_party_count_asc', label: '3P count asc' },
   { value: 'third_party_count_desc', label: '3P count' },
   { value: 'updated_desc', label: 'Updated' },
 ]
@@ -35,6 +37,20 @@ function bucketMap(items?: CatalogBucket[]) {
 
 function fmtRatio(value: number) {
   return `${(value * 100).toFixed(1)}%`
+}
+
+function nextColumnSort(current: string, column: 'word_count' | 'third_party_count') {
+  const asc = `${column}_asc`
+  const desc = `${column}_desc`
+  return current === desc ? asc : desc
+}
+
+function sortLabel(current: string, column: 'word_count' | 'third_party_count') {
+  const asc = `${column}_asc`
+  const desc = `${column}_desc`
+  if (current === asc) return '↑'
+  if (current === desc) return '↓'
+  return ''
 }
 
 export function CatalogView({ bridgeReady }: CatalogViewProps) {
@@ -97,7 +113,7 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeReady])
+  }, [bridgeReady, sort])
 
   const statusCounts = bucketMap(facets?.statuses)
   const serviceCounts = bucketMap(facets?.serviceCategories)
@@ -265,8 +281,20 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
               <span>Site</span>
               <span>Category</span>
               <span>Status</span>
-              <span>Words</span>
-              <span>3P</span>
+              <button
+                className="text-left transition-colors hover:text-[var(--color-text)]"
+                onClick={() => setSort((current) => nextColumnSort(current, 'word_count'))}
+                type="button"
+              >
+                Words {sortLabel(sort, 'word_count')}
+              </button>
+              <button
+                className="text-left transition-colors hover:text-[var(--color-text)]"
+                onClick={() => setSort((current) => nextColumnSort(current, 'third_party_count'))}
+                type="button"
+              >
+                3P {sortLabel(sort, 'third_party_count')}
+              </button>
               <span>Categories</span>
               <span>Artifacts</span>
             </div>

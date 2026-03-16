@@ -74,10 +74,13 @@ def build_site_match_query(request: CatalogQueryRequest) -> BuiltCatalogQuery:
 
 def build_order_by(sort: str) -> str:
     return {
+        "site_asc": "s.site_etld1 ASC",
         "site_desc": "s.site_etld1 DESC",
         "rank_asc": "s.rank ASC NULLS LAST, s.site_etld1 ASC",
         "rank_desc": "s.rank DESC NULLS LAST, s.site_etld1 ASC",
+        "word_count_asc": "s.first_party_policy_word_count ASC, s.site_etld1 ASC",
         "word_count_desc": "s.first_party_policy_word_count DESC, s.site_etld1 ASC",
+        "third_party_count_asc": "s.third_party_count ASC, s.site_etld1 ASC",
         "third_party_count_desc": "s.third_party_count DESC, s.site_etld1 ASC",
         "updated_desc": "s.run_updated_at DESC, s.site_etld1 ASC",
     }.get(sort, "s.site_etld1 ASC")
