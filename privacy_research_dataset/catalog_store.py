@@ -87,33 +87,15 @@ class CatalogStore:
             return
         if psycopg is None:  # pragma: no cover - only reached if dependency missing in real runtime
             raise RuntimeError("psycopg is required for PostgreSQL catalog storage")
-        use_pool = ConnectionPool is not None and self._pool is not None
-        if not use_pool and ConnectionPool is not None:
-            # Try to create the pool; fall back to direct conn on failure
-            try:
-                self._get_pool()
-                use_pool = True
-            except Exception:
-                pass
-        if use_pool and self._pool is not None:
-            with self._pool.connection() as conn:
-                conn.row_factory = dict_row
-                try:
-                    yield conn
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-        else:
-            conn = psycopg.connect(self.dsn, row_factory=dict_row)
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+        conn = psycopg.connect(self.dsn, row_factory=dict_row)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def ensure_schema(self) -> None:
         with self.connect() as conn:

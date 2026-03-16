@@ -5,9 +5,11 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import privacy_research_dataset.catalog_store as catalog_store_module
 from privacy_research_dataset.catalog_ingest import CatalogSyncer, build_site_bundle, build_run_bundle
 from privacy_research_dataset.catalog_store import CatalogStore
 from privacy_research_dataset.catalog_types import CatalogQueryRequest
@@ -443,3 +445,41 @@ class TestCatalogQueryRequest:
 
         req2 = CatalogQueryRequest.from_payload({"limit": -5})
         assert req2.limit == 1
+
+
+def test_postgres_connect_uses_direct_connection_without_pool(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def __init__(self) -> None:
+            self.committed = False
+            self.rolled_back = False
+            self.closed = False
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_conn = _FakeConn()
+
+    def fake_connect(dsn: str, *, row_factory=None):
+        calls.append((dsn, row_factory))
+        return fake_conn
+
+    monkeypatch.setattr(catalog_store_module, "psycopg", SimpleNamespace(connect=fake_connect))
+    monkeypatch.setattr(catalog_store_module, "dict_row", object())
+    monkeypatch.setattr(catalog_store_module, "ConnectionPool", type("ExplodePool", (), {"__init__": lambda self, *args, **kwargs: (_ for _ in ()).throw(AssertionError("pool should not be used"))}))
+
+    store = CatalogStore("postgresql://scraper:test@127.0.0.1:55432/scraper")
+
+    with store.connect() as conn:
+        assert conn is fake_conn
+
+    assert calls == [("postgresql://scraper:test@127.0.0.1:55432/scraper", catalog_store_module.dict_row)]
+    assert fake_conn.committed is True
+    assert fake_conn.closed is True
