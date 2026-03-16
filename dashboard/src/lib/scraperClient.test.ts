@@ -154,22 +154,6 @@ describe('scraperClient', () => {
           ...baseSummary,
           processed_sites: 4,
           total_sites: 10,
-          category_service_heatmap: {
-            website_categories: ['Technology'],
-            service_categories: ['Analytics'],
-            rows: [{
-              website_category: 'Technology',
-              total_sites: 2,
-              cells: [{
-                service_category: 'Analytics',
-                matched_sites: 2,
-                total_sites: 2,
-                percentage: 100,
-                zero_overlap: false,
-              }],
-            }],
-            max_percentage: 100,
-          },
           mapping: {
             ...baseSummary.mapping,
             unique_radar_mapped: 2,
@@ -230,9 +214,6 @@ describe('scraperClient', () => {
       unique_trackerdb_mapped: 1,
       unique_unmapped: 3,
     }))
-    expect(snapshot.summary?.category_service_heatmap).toEqual(expect.objectContaining({
-      rows: [expect.objectContaining({ website_category: 'Technology', total_sites: 2 })],
-    }))
     expect(snapshot.explorer).toEqual([
       {
         site: 'docker.com',
@@ -277,6 +258,34 @@ describe('scraperClient', () => {
     expect(snapshot.missingOutputDir).toBe(true)
     expect(snapshot.hasAnyResults).toBe(false)
     expect(snapshot.progress).toBe(0)
+  })
+
+  it('skips explorer and results artifact reads unless explicitly requested', async () => {
+    let explorerReads = 0
+    let resultsReads = 0
+    installScraperMock({
+      readSummary: async () => ({ ok: true, data: { ...baseSummary, processed_sites: 5, total_sites: 10 } }),
+      readState: async () => ({ ok: true, data: { ...baseState, processed_sites: 5, total_sites: 10 } }),
+      readExplorer: async () => {
+        explorerReads += 1
+        return { ok: true, data: [{ site: 'docker.com' }] }
+      },
+      readResults: async () => {
+        resultsReads += 1
+        return { ok: true, data: [{ site_etld1: 'docker.com' }] }
+      },
+    })
+
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: 'outputs/unified',
+      includeManifest: true,
+    })
+
+    expect(snapshot.progress).toBe(50)
+    expect(snapshot.explorer).toBeUndefined()
+    expect(snapshot.results).toBeUndefined()
+    expect(explorerReads).toBe(0)
+    expect(resultsReads).toBe(0)
   })
 
   it('uses retained results rows as a progress floor when summary counters lag after resume', async () => {

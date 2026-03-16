@@ -71,7 +71,7 @@ _SERVICE_CATEGORY_ORDER: tuple[str, ...] = (
     "High Risk",
 )
 
-_WEBSITE_CATEGORY_ORDER: tuple[str, ...] = (
+_EXPORT_WEBSITE_CATEGORY_ORDER: tuple[str, ...] = (
     "Business & Finance",
     "Technology",
     "News & Media",
@@ -79,6 +79,15 @@ _WEBSITE_CATEGORY_ORDER: tuple[str, ...] = (
     "Entertainment",
     "Education",
     "Adult",
+    "Lifestyle",
+    "Web Infrastructure",
+    "Government",
+    "Social & Communication",
+    "Gambling",
+    "Security Risks",
+    "Other",
+    "Health",
+    "Nonprofit & Religion",
 )
 
 _WEBSITE_CATEGORY_ALIASES: dict[str, str] = {
@@ -95,6 +104,18 @@ _WEBSITE_CATEGORY_ALIASES: dict[str, str] = {
     "education": "Education",
     "adult": "Adult",
     "adult content": "Adult",
+    "lifestyle": "Lifestyle",
+    "web infrastructure": "Web Infrastructure",
+    "government": "Government",
+    "social & communication": "Social & Communication",
+    "social and communication": "Social & Communication",
+    "gambling": "Gambling",
+    "security risks": "Security Risks",
+    "security risk": "Security Risks",
+    "other": "Other",
+    "health": "Health",
+    "nonprofit & religion": "Nonprofit & Religion",
+    "nonprofit and religion": "Nonprofit & Religion",
 }
 
 
@@ -150,6 +171,10 @@ class SummaryBuilder:
     total_sites: int
     mapping_mode: str | None = None
     processed_sites: int = 0
+    last_processed_rank: int | None = None
+    last_processed_site: str | None = None
+    last_successful_rank: int | None = None
+    last_successful_site: str | None = None
     status_counts: Counter = field(default_factory=Counter)
     third_party_total: int = 0
     third_party_unique_domains: set = field(default_factory=set)
@@ -165,14 +190,21 @@ class SummaryBuilder:
     third_party_unique_unmapped_domains: set = field(default_factory=set)
     english_policy_count: int = 0
     site_category_counts: Counter = field(default_factory=Counter)
-    website_category_counts: Counter = field(default_factory=Counter)
     category_counts: Counter = field(default_factory=Counter)
     category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
     entity_counts: Counter = field(default_factory=Counter)
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
     entity_prevalence_max: dict[str, float] = field(default_factory=dict)
     entity_categories: dict[str, Counter] = field(default_factory=dict)
-    category_service_site_counts: dict[str, Counter] = field(default_factory=dict)
+    figure_third_party_unique_domains: set = field(default_factory=set)
+    figure_third_party_unique_mapped_domains: set = field(default_factory=set)
+    figure_third_party_unique_policy_domains: set = field(default_factory=set)
+    figure_website_category_counts: Counter = field(default_factory=Counter)
+    figure_category_counts: Counter = field(default_factory=Counter)
+    figure_category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
+    figure_entity_counts: Counter = field(default_factory=Counter)
+    figure_entity_categories: dict[str, Counter] = field(default_factory=dict)
+    figure_category_service_site_counts: dict[str, Counter] = field(default_factory=dict)
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"))
     updated_at: str | None = None
 
@@ -180,8 +212,28 @@ class SummaryBuilder:
         self.processed_sites += 1
         status = str(result.get("status") or "unknown")
         self.status_counts[status] += 1
+        rank = result.get("rank")
+        rank_value = int(rank) if isinstance(rank, int) and rank > 0 else None
+        site_key = result.get("site_etld1") or result.get("input")
+        site_value = site_key.strip() if isinstance(site_key, str) and site_key.strip() else None
+        if rank_value is not None and (self.last_processed_rank is None or rank_value >= self.last_processed_rank):
+            self.last_processed_rank = rank_value
+            self.last_processed_site = site_value
+        if status == "ok" and rank_value is not None and (
+            self.last_successful_rank is None or rank_value >= self.last_successful_rank
+        ):
+            self.last_successful_rank = rank_value
+            self.last_successful_site = site_value
 
         third_parties = result.get("third_parties") or []
+        site_level_categories = {
+            normalize_tracker_category(cat)
+            for tp in third_parties
+            if isinstance(tp, dict)
+            for cat in (tp.get("categories") or [])
+            if isinstance(cat, str) and cat.strip()
+        }
+
         for tp in third_parties:
             if not isinstance(tp, dict):
                 continue
@@ -265,24 +317,90 @@ class SummaryBuilder:
             main_category_name = main_category.strip()
             self.site_category_counts[main_category_name] += 1
             normalized_website_category = normalize_website_category(main_category_name)
-            if normalized_website_category:
-                self.website_category_counts[normalized_website_category] += 1
-                row_counts = self.category_service_site_counts.setdefault(normalized_website_category, Counter())
-                site_level_categories = {
+
+        if result.get("policy_is_english"):
+            self.english_policy_count += 1
+            for tp in third_parties:
+                if not isinstance(tp, dict):
+                    continue
+                domain = tp.get("third_party_etld1")
+                if isinstance(domain, str) and domain:
+                    self.figure_third_party_unique_domains.add(domain)
+                mapped = bool(
+                    tp.get("tracker_radar_source_domain_file")
+                    or tp.get("entity")
+                    or tp.get("policy_url")
+                    or tp.get("prevalence")
+                    or (tp.get("categories") or [])
+                )
+                if mapped and isinstance(domain, str) and domain:
+                    self.figure_third_party_unique_mapped_domains.add(domain)
+                if mapped and tp.get("policy_url") and isinstance(domain, str) and domain:
+                    self.figure_third_party_unique_policy_domains.add(domain)
+
+                service_key = _third_party_service_key(tp)
+                normalized_cats = {
                     normalize_tracker_category(cat)
-                    for tp in third_parties
-                    if isinstance(tp, dict)
                     for cat in (tp.get("categories") or [])
                     if isinstance(cat, str) and cat.strip()
                 }
+                if not service_key:
+                    for cat in normalized_cats:
+                        self.figure_category_counts[cat] += 1
+                else:
+                    for cat in normalized_cats:
+                        pair_key = (service_key, cat)
+                        if pair_key in self.figure_category_service_pairs_seen:
+                            continue
+                        self.figure_category_service_pairs_seen.add(pair_key)
+                        self.figure_category_counts[cat] += 1
+
+                entity = tp.get("entity")
+                if isinstance(entity, str) and entity.strip():
+                    self.figure_entity_counts[entity] += 1
+                    if normalized_cats:
+                        if entity not in self.figure_entity_categories:
+                            self.figure_entity_categories[entity] = Counter()
+                        self.figure_entity_categories[entity].update(normalized_cats)
+
+            if normalized_website_category:
+                self.figure_website_category_counts[normalized_website_category] += 1
+                row_counts = self.figure_category_service_site_counts.setdefault(normalized_website_category, Counter())
                 for category in site_level_categories:
                     if category in _SERVICE_CATEGORY_ORDER:
                         row_counts[category] += 1
 
-        if result.get("policy_is_english"):
-            self.english_policy_count += 1
-
         self.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    @staticmethod
+    def _sort_rows(counter: Counter, ordered_names: tuple[str, ...]) -> list[dict[str, Any]]:
+        rows = [{"name": name, "count": int(counter.get(name, 0))} for name in ordered_names]
+        return sorted(rows, key=lambda row: (-row["count"], ordered_names.index(row["name"])))
+
+    def _build_heatmap_rows(self, website_order: tuple[str, ...]) -> tuple[list[dict[str, Any]], float]:
+        heatmap_rows: list[dict[str, Any]] = []
+        max_percentage = 0.0
+        for website_category in website_order:
+            total_sites = self.figure_website_category_counts.get(website_category, 0)
+            row_counts = self.figure_category_service_site_counts.get(website_category, Counter())
+            cells: list[dict[str, Any]] = []
+            for service_category in _SERVICE_CATEGORY_ORDER:
+                matched_sites = int(row_counts.get(service_category, 0))
+                percentage = (matched_sites / total_sites * 100.0) if total_sites > 0 else 0.0
+                max_percentage = max(max_percentage, percentage)
+                cells.append({
+                    "service_category": service_category,
+                    "matched_sites": matched_sites,
+                    "total_sites": total_sites,
+                    "percentage": round(percentage, 4),
+                    "zero_overlap": total_sites > 0 and matched_sites == 0,
+                })
+            heatmap_rows.append({
+                "website_category": website_category,
+                "total_sites": int(total_sites),
+                "cells": cells,
+            })
+        return heatmap_rows, max_percentage
 
     def to_summary(self) -> dict[str, Any]:
         success = self.status_counts.get("ok", 0)
@@ -315,33 +433,14 @@ class SummaryBuilder:
                 "categories": cats,
             })
 
-        heatmap_rows: list[dict[str, Any]] = []
-        max_percentage = 0.0
-        for website_category in _WEBSITE_CATEGORY_ORDER:
-            total_sites = self.website_category_counts.get(website_category, 0)
-            row_counts = self.category_service_site_counts.get(website_category, Counter())
-            cells: list[dict[str, Any]] = []
-            for service_category in _SERVICE_CATEGORY_ORDER:
-                matched_sites = int(row_counts.get(service_category, 0))
-                percentage = (matched_sites / total_sites * 100.0) if total_sites > 0 else 0.0
-                max_percentage = max(max_percentage, percentage)
-                cells.append({
-                    "service_category": service_category,
-                    "matched_sites": matched_sites,
-                    "total_sites": total_sites,
-                    "percentage": round(percentage, 4),
-                    "zero_overlap": total_sites > 0 and matched_sites == 0,
-                })
-            heatmap_rows.append({
-                "website_category": website_category,
-                "total_sites": total_sites,
-                "cells": cells,
-            })
-
         return {
             "run_id": self.run_id,
             "total_sites": self.total_sites,
             "processed_sites": self.processed_sites,
+            "last_processed_rank": self.last_processed_rank,
+            "last_processed_site": self.last_processed_site,
+            "last_successful_rank": self.last_successful_rank,
+            "last_successful_site": self.last_successful_site,
             "success_rate": success_rate,
             "status_counts": dict(self.status_counts),
             "third_party": {
@@ -366,14 +465,83 @@ class SummaryBuilder:
             },
             "categories": categories,
             "entities": entities,
-            "category_service_heatmap": {
-                "website_categories": list(_WEBSITE_CATEGORY_ORDER),
-                "service_categories": list(_SERVICE_CATEGORY_ORDER),
-                "rows": heatmap_rows,
-                "max_percentage": round(max_percentage, 4),
-            },
             "started_at": self.started_at,
             "updated_at": self.updated_at,
+        }
+
+    def to_figure_data(self) -> dict[str, Any]:
+        heatmap_rows, heatmap_max = self._build_heatmap_rows(_EXPORT_WEBSITE_CATEGORY_ORDER)
+        website_categories = self._sort_rows(self.figure_website_category_counts, _EXPORT_WEBSITE_CATEGORY_ORDER)
+        service_categories = self._sort_rows(self.figure_category_counts, _SERVICE_CATEGORY_ORDER)
+
+        top_entities: list[dict[str, Any]] = []
+        for name, count in self.figure_entity_counts.most_common(15):
+            category_counter = self.figure_entity_categories.get(name, Counter())
+            total_category_records = sum(int(value) for value in category_counter.values())
+            breakdown = []
+            for category_name, category_count in sorted(
+                category_counter.items(),
+                key=lambda item: (-int(item[1]), _SERVICE_CATEGORY_ORDER.index(item[0]) if item[0] in _SERVICE_CATEGORY_ORDER else len(_SERVICE_CATEGORY_ORDER)),
+            ):
+                breakdown.append({
+                    "category": category_name,
+                    "record_count": int(category_count),
+                    "share_pct": round((int(category_count) / total_category_records) * 100.0, 4) if total_category_records > 0 else 0.0,
+                })
+            top_entities.append({
+                "entity": name,
+                "record_count": int(count),
+                "service_category_breakdown": breakdown,
+            })
+
+        third_party_with_policy_urls = len(self.figure_third_party_unique_policy_domains)
+
+        return {
+            "run_id": self.run_id,
+            "generated_at": self.updated_at or self.started_at,
+            "dataset_overview": {
+                "total_sites_targeted": int(self.total_sites),
+                "sites_successfully_processed": int(self.english_policy_count),
+                "unique_3p_services_detected": len(self.figure_third_party_unique_domains),
+                "mapped_3p_services": len(self.figure_third_party_unique_mapped_domains),
+                "mapping_coverage_pct": round((len(self.figure_third_party_unique_mapped_domains) / max(1, len(self.figure_third_party_unique_domains))) * 100.0, 4)
+                if self.figure_third_party_unique_domains else 0.0,
+                "third_parties_with_policy_urls": third_party_with_policy_urls,
+            },
+            "distribution_profiles": {
+                "website_categories": [
+                    {
+                        "category": row["name"],
+                        "site_count": row["count"],
+                    }
+                    for row in website_categories
+                ],
+                "third_party_service_categories": [
+                    {
+                        "category": row["name"],
+                        "unique_service_count": row["count"],
+                    }
+                    for row in service_categories
+                ],
+            },
+            "ecosystem_density": {
+                "website_categories": list(_EXPORT_WEBSITE_CATEGORY_ORDER),
+                "service_categories": list(_SERVICE_CATEGORY_ORDER),
+                "rows": heatmap_rows,
+                "matrix_pct": [
+                    [cell["percentage"] for cell in row["cells"]]
+                    for row in heatmap_rows
+                ],
+                "matrix_site_counts": [
+                    [cell["matched_sites"] for cell in row["cells"]]
+                    for row in heatmap_rows
+                ],
+                "row_site_totals": [row["total_sites"] for row in heatmap_rows],
+                "max_percentage": round(heatmap_max, 4),
+            },
+            "entity_prevalence": {
+                "top_entities": top_entities,
+            },
         }
 
 

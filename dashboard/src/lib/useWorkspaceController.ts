@@ -50,7 +50,6 @@ export function useWorkspaceController({
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
       includeFolderSize: true,
-      includeResults: true,
       includeManifest: true,
     })
     if (snapshot.missingOutputDir) {
@@ -84,8 +83,6 @@ export function useWorkspaceController({
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
       includeFolderSize: true,
-      includeExplorer: true,
-      includeResults: true,
       includeAudit: true,
       includeManifest: true,
       includeAnnotation: true,
@@ -97,12 +94,16 @@ export function useWorkspaceController({
     if (dirOverride) {
       setOutDir(dirOverride)
     }
+    updateWorkspaceData({
+      explorerData: null,
+      resultsData: null,
+    })
     const loadedTargetTotal = resolveSnapshotTargetTotal(snapshot)
     if (loadedTargetTotal !== null) {
       setTopN(String(loadedTargetTotal))
     }
     applyWorkspaceSnapshot(snapshot)
-  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, setOutDir, setTopN])
+  }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, setOutDir, setTopN, updateWorkspaceData])
 
   const persistAuditState = useCallback(async (
     nextVerifiedSites: string[],

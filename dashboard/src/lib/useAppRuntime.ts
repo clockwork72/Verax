@@ -395,14 +395,12 @@ export function useAppRuntime({
       inFlight = true
       try {
         const needsExplorerData = (
-          activeNav === 'results'
-          || activeNav === 'explorer'
+          activeNav === 'explorer'
           || activeNav === 'annotations'
           || activeNav === 'consistency'
         )
         const needsResultsData = (
-          activeNav === 'results'
-          || activeNav === 'audit'
+          activeNav === 'audit'
         )
         const snapshot = await readWorkspaceSnapshot({
           outDir,

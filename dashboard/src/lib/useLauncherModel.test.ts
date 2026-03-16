@@ -8,6 +8,8 @@ describe('useLauncherModel helpers', () => {
       summaryData: {
         total_sites: 10,
         processed_sites: 4,
+        last_successful_rank: 4,
+        last_successful_site: 'openai.com',
         success_rate: 50,
         status_counts: { ok: 2, exception: 2 },
         third_party: {
@@ -51,6 +53,50 @@ describe('useLauncherModel helpers', () => {
     expect(datasetState.lastSuccessfulRank).toBe(4)
     expect(datasetState.lastSuccessfulSite).toBe('openai.com')
     expect(datasetState.pendingManifestSites).toEqual(['example.com'])
+  })
+
+  it('prefers summary resume metadata over scanning the full results dataset', () => {
+    const datasetState = buildDatasetState({
+      summaryData: {
+        total_sites: 1000,
+        processed_sites: 600,
+        last_successful_rank: 600,
+        last_successful_site: 'site-600.example',
+        success_rate: 70,
+        status_counts: { ok: 420, policy_not_found: 180 },
+        third_party: {
+          total: 0,
+          unique: 0,
+          mapped: 0,
+          unique_mapped: 0,
+          unique_with_policy: 0,
+          unmapped: 0,
+          no_policy_url: 0,
+        },
+        mapping: {
+          mode: 'mixed',
+          radar_mapped: 0,
+          trackerdb_mapped: 0,
+          unmapped: 0,
+        },
+        site_categories: [],
+        categories: [],
+        entities: [],
+      },
+      stateData: null,
+      resultsData: null,
+      runManifest: {
+        version: 1,
+        status: 'running',
+        mode: 'dataset',
+        expectedTotalSites: 1000,
+        updatedAt: '2026-03-13T10:00:00+00:00',
+      },
+    })
+
+    expect(datasetState.processedSites).toBe(600)
+    expect(datasetState.lastSuccessfulRank).toBe(600)
+    expect(datasetState.lastSuccessfulSite).toBe('site-600.example')
   })
 
   it('builds launcher state for extend mode on dataset-backed runs', () => {

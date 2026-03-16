@@ -58,8 +58,12 @@ export function buildDatasetState({
   const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? runManifest?.expectedTotalSites ?? 0)
   const persistedProcessedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
   const siteKeys = new Set<string>()
-  let lastSuccessfulRank: number | null = null
-  let lastSuccessfulSite: string | null = null
+  let lastSuccessfulRank = typeof summaryData?.last_successful_rank === 'number'
+    ? summaryData.last_successful_rank
+    : null
+  let lastSuccessfulSite = typeof summaryData?.last_successful_site === 'string'
+    ? summaryData.last_successful_site
+    : null
 
   for (const record of resultsData || []) {
     const siteKey = resultSiteKey(record)
