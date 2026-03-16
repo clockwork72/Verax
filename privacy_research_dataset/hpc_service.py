@@ -86,7 +86,7 @@ class HpcService:
     async def start(self) -> None:
         await self.postgres.start()
         self.catalog = CatalogManager(self.postgres.dsn, outputs_root=str(self.outputs_root))
-        await self.catalog.ensure_schema()
+        await self._wait_for_catalog_ready()
         self._catalog_bootstrap_task = asyncio.create_task(self._bootstrap_catalog())
 
     async def shutdown(self) -> None:
@@ -204,6 +204,22 @@ class HpcService:
             "warehouse_oldest_pending_sec": int(status.get("warehouse_oldest_pending_sec") or 0),
             "warehouse_last_success_at": status.get("warehouse_last_success_at"),
         }
+
+    async def _wait_for_catalog_ready(self) -> None:
+        if self.catalog is None:
+            return
+        last_error: Exception | None = None
+        for attempt in range(30):
+            try:
+                await self.catalog.ensure_schema()
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= 29:
+                    raise
+                await asyncio.sleep(1)
+        if last_error is not None:
+            raise last_error
 
     async def _bootstrap_catalog(self) -> None:
         if self.catalog is None:

@@ -129,3 +129,24 @@ def test_warehouse_status_snapshot_falls_back_when_catalog_status_fails():
         "warehouse_oldest_pending_sec": 0,
         "warehouse_last_success_at": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_wait_for_catalog_ready_retries_transient_startup_failure(monkeypatch):
+    service = _make_service_stub()
+    attempts = {"count": 0}
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    async def ensure_schema() -> None:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("the database system is starting up")
+
+    service.catalog = SimpleNamespace(ensure_schema=ensure_schema)
+    monkeypatch.setattr("privacy_research_dataset.hpc_service.asyncio.sleep", fake_sleep)
+
+    await service._wait_for_catalog_ready()
+
+    assert attempts["count"] == 3
