@@ -5,6 +5,7 @@ export type NavId =
   | 'audit'
   | 'results'
   | 'explorer'
+  | 'catalog'
   | 'annotations'
   | 'consistency'
   | 'database'

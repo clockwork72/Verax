@@ -23,6 +23,7 @@ from .crawler import process_site
 from .tracker_radar import TrackerRadarIndex
 from .trackerdb import TrackerDbIndex
 from .annotation_state import has_completed_annotation_output
+from .catalog_ingest import CatalogSyncer
 from .utils.io import append_jsonl, write_json
 from .utils.logging import log, warn
 from .summary import SummaryBuilder, site_to_explorer_record
@@ -1455,6 +1456,15 @@ async def _run(args: argparse.Namespace) -> None:
                 )
 
         out_path = Path(args.out)
+        catalog_syncer = None
+        catalog_dsn = os.getenv("DATABASE_URL")
+        if catalog_dsn:
+            try:
+                catalog_syncer = CatalogSyncer(catalog_dsn, outputs_root=out_path.parent.parent)
+                catalog_syncer.ensure_schema()
+            except Exception as exc:
+                warn(f"Catalog warehouse bootstrap failed; continuing with file outputs only. Error: {exc}")
+                catalog_syncer = None
         tp_cache_path = (
             Path(args.tp_cache_file)
             if args.tp_cache_file
@@ -1883,6 +1893,26 @@ async def _run(args: argparse.Namespace) -> None:
                         except Exception:
                             result["policy_is_english"] = False
 
+                warehouse_sync_pending = False
+                if catalog_syncer is not None:
+                    try:
+                        await asyncio.to_thread(
+                            catalog_syncer.sync_site_result,
+                            out_path=str(out_path),
+                            artifacts_dir=str(args.artifacts_dir),
+                            result=result,
+                        )
+                    except Exception as exc:
+                        warehouse_sync_pending = True
+                        warn(f"Catalog warehouse sync failed for {site}; queued for reconcile. Error: {exc}")
+                        await asyncio.to_thread(
+                            catalog_syncer.enqueue_pending_site,
+                            out_path=str(out_path),
+                            artifacts_dir=str(args.artifacts_dir),
+                            result=result,
+                            error=str(exc),
+                        )
+
                 async with write_lock:
                     should_skip_output = args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"
                     if should_skip_output:
@@ -1976,6 +2006,7 @@ async def _run(args: argparse.Namespace) -> None:
                     "site": site,
                     "rank": rank,
                     "status": result.get("status"),
+                    "warehouse_sync_pending": warehouse_sync_pending,
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
 

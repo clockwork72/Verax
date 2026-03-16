@@ -5,6 +5,10 @@ import type {
   AnnotationStats,
   ArtifactCountResponse,
   BridgeScriptResult,
+  CatalogFacetResponse,
+  CatalogMetricsResponse,
+  CatalogQueryRequest,
+  CatalogQueryResponse,
   ClearResultsResponse,
   CompletedSiteInfo,
   DeleteOutputResponse,
@@ -98,6 +102,10 @@ declare global {
       annotationStats: (artifactsDir?: string) => Promise<AnnotationStats>
       countOkArtifacts: (outDir?: string) => Promise<ArtifactCountResponse>
       readTpCache: (outDir?: string) => Promise<ThirdPartyCacheStats>
+      catalogQuery: (payload?: CatalogQueryRequest) => Promise<CatalogQueryResponse>
+      catalogFacets: (payload?: CatalogQueryRequest) => Promise<CatalogFacetResponse>
+      catalogMetrics: () => Promise<CatalogMetricsResponse>
+      catalogReindex: () => Promise<{ ok: boolean; processedRuns?: number; processedSites?: number; errors?: number; error?: string }>
       onAnnotatorLog: (callback: (event: { message?: string | null }) => void) => void
       onAnnotatorExit: (callback: (event: { code?: number | null; signal?: string | null; stop_requested?: boolean }) => void) => void
       onAnnotatorStream: (callback: (event: AnnotatorStreamEvent) => void) => void

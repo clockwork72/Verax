@@ -31,6 +31,8 @@ dependencies = [
   "python-rapidjson>=1.10",
   "regex>=2024.0",
   "psutil>=5.9.0",
+  "psycopg[binary]>=3.2.0",
+  "psycopg_pool>=3.2.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +47,8 @@ openwpm = [
 privacy-dataset = "privacy_research_dataset.cli:main"
 privacy-dataset-annotate = "privacy_research_dataset.annotate_cli:main"
 privacy-dataset-hpc-service = "privacy_research_dataset.hpc_service:main"
+privacy-dataset-catalog-schema = "privacy_research_dataset.catalog_schema:main"
+privacy-dataset-catalog-ingest = "privacy_research_dataset.catalog_ingest:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -6,129 +6,21 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-# ---------------------------------------------------------------------------
-# Category normalisation table
-# ---------------------------------------------------------------------------
-# Raw category strings from Tracker Radar (TR) and TrackerDB (TDB) are mapped
-# to a shared set of 9 consolidated labels.  The lookup is case-insensitive and
-# stripped.  Any category not listed here passes through unchanged.
-_CATEGORY_MAP: dict[str, str] = {
-    # ── Advertising ─────────────────────────────────────────────────────────
-    "advertising":                        "Advertising",
-    "ad motivated tracking":              "Advertising",
-    "action pixels":                      "Advertising",
-    "third-party analytics marketing":    "Advertising",
-    "ad fraud":                           "Advertising",
-    "adult advertising":                  "Advertising",          # TDB
-    # ── Analytics ───────────────────────────────────────────────────────────
-    "analytics":                          "Analytics",
-    "audience measurement":               "Analytics",
-    "session replay":                     "Analytics",
-    "site analytics":                     "Analytics",            # TDB
-    # ── Social Media ────────────────────────────────────────────────────────
-    "social network":                     "Social Media",
-    "social - share":                     "Social Media",
-    "social - comment":                   "Social Media",
-    "social media":                       "Social Media",         # TDB
-    # ── CDN & Hosting ───────────────────────────────────────────────────────
-    "cdn":                                "CDN & Hosting",
-    "hosting":                            "CDN & Hosting",        # TDB
-    "misc":                               "CDN & Hosting",        # TDB
-    # ── Tag Management ──────────────────────────────────────────────────────
-    "tag manager":                        "Tag Management",
-    "non-tracking":                       "Tag Management",
-    "utilities":                          "Tag Management",       # TDB
-    "extensions":                         "Tag Management",       # TDB
-    # ── Consent Management ──────────────────────────────────────────────────
-    "consent management platform":        "Consent Management",
-    "consent management":                 "Consent Management",   # TDB
-    # ── Identity & Payment ──────────────────────────────────────────────────
-    "federated login":                    "Identity & Payment",
-    "sso":                                "Identity & Payment",
-    "fraud prevention":                   "Identity & Payment",
-    "online payment":                     "Identity & Payment",
-    # ── Embedded Content ────────────────────────────────────────────────────
-    "embedded content":                   "Embedded Content",
-    "badge":                              "Embedded Content",
-    "support chat widget":                "Embedded Content",
-    "audio/video player":                 "Embedded Content",     # TDB
-    "customer interaction":               "Embedded Content",     # TDB
-    # ── High Risk ───────────────────────────────────────────────────────────
-    "malware":                            "High Risk",
-    "unknown high risk behavior":         "High Risk",
-    "obscure ownership":                  "High Risk",
-}
-
-_SERVICE_CATEGORY_ORDER: tuple[str, ...] = (
-    "Advertising",
-    "Analytics",
-    "CDN & Hosting",
-    "Social Media",
-    "Embedded Content",
-    "Tag Management",
-    "Consent Management",
-    "Identity & Payment",
-    "High Risk",
+from .catalog_taxonomy import (
+    SERVICE_CATEGORY_ORDER as _SERVICE_CATEGORY_ORDER,
+    WEBSITE_CATEGORY_ORDER as _EXPORT_WEBSITE_CATEGORY_ORDER,
+    normalize_tracker_category as _normalize_tracker_category,
+    normalize_website_category as _normalize_website_category,
 )
-
-_EXPORT_WEBSITE_CATEGORY_ORDER: tuple[str, ...] = (
-    "Business & Finance",
-    "Technology",
-    "News & Media",
-    "E-commerce",
-    "Entertainment",
-    "Education",
-    "Adult",
-    "Lifestyle",
-    "Web Infrastructure",
-    "Government",
-    "Social & Communication",
-    "Gambling",
-    "Security Risks",
-    "Other",
-    "Health",
-    "Nonprofit & Religion",
-)
-
-_WEBSITE_CATEGORY_ALIASES: dict[str, str] = {
-    "business & finance": "Business & Finance",
-    "business and finance": "Business & Finance",
-    "technology": "Technology",
-    "news & media": "News & Media",
-    "news and media": "News & Media",
-    "news": "News & Media",
-    "e-commerce": "E-commerce",
-    "ecommerce": "E-commerce",
-    "shopping": "E-commerce",
-    "entertainment": "Entertainment",
-    "education": "Education",
-    "adult": "Adult",
-    "adult content": "Adult",
-    "lifestyle": "Lifestyle",
-    "web infrastructure": "Web Infrastructure",
-    "government": "Government",
-    "social & communication": "Social & Communication",
-    "social and communication": "Social & Communication",
-    "gambling": "Gambling",
-    "security risks": "Security Risks",
-    "security risk": "Security Risks",
-    "other": "Other",
-    "health": "Health",
-    "nonprofit & religion": "Nonprofit & Religion",
-    "nonprofit and religion": "Nonprofit & Religion",
-}
 
 
 def normalize_tracker_category(raw: str) -> str:
-    """Map a raw Tracker Radar / TrackerDB category string to a consolidated label."""
-    return _CATEGORY_MAP.get(raw.strip().lower(), raw)
+    """Backward-compatible import surface for existing callers."""
+    return _normalize_tracker_category(raw)
 
 
 def normalize_website_category(raw: str) -> str | None:
-    normalized = raw.strip().lower()
-    if not normalized:
-        return None
-    return _WEBSITE_CATEGORY_ALIASES.get(normalized)
+    return _normalize_website_category(raw)
 
 
 def _normalize_policy_url(url: str) -> str:

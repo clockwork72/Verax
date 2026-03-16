@@ -253,6 +253,87 @@ export type ThirdPartyCacheStats = {
   by_status?: Record<string, number>
 }
 
+export type CatalogBucket = {
+  name: string
+  count: number
+}
+
+export type CatalogQueryRequest = {
+  runIds?: string[]
+  siteStatuses?: string[]
+  siteCategoriesAny?: string[]
+  firstPartyEnglish?: boolean
+  firstPartyWordCountMin?: number
+  requiresThirdPartyPolicy?: boolean
+  requiresThirdPartyEnglishPolicy?: boolean
+  thirdPartyCategoriesAny?: string[]
+  thirdPartyDomain?: string
+  entity?: string
+  limit?: number
+  offset?: number
+  sort?: string
+}
+
+export type CatalogQueryItem = {
+  runId: string
+  outDir: string
+  site: string
+  rank?: number | null
+  mainCategory?: string | null
+  status?: string | null
+  firstPartyPolicyUrl?: string | null
+  firstPartyPolicyLanguage?: string | null
+  firstPartyPolicyWordCount: number
+  firstPartyPolicyCharCount: number
+  thirdPartyCount: number
+  thirdPartyWithPolicyCount: number
+  thirdPartyWithEnglishPolicyCount: number
+  thirdPartyCategories: string[]
+  entities: string[]
+  artifactsPath: string
+  updatedAt?: string | null
+}
+
+export type CatalogQueryResponse = {
+  ok: boolean
+  items: CatalogQueryItem[]
+  total: number
+  limit: number
+  offset: number
+  error?: string
+}
+
+export type CatalogFacetResponse = {
+  ok: boolean
+  statuses: CatalogBucket[]
+  siteCategories: CatalogBucket[]
+  serviceCategories: CatalogBucket[]
+  entities: CatalogBucket[]
+  wordCountBuckets: CatalogBucket[]
+  error?: string
+}
+
+export type CatalogMetricsResponse = {
+  ok: boolean
+  runs: number
+  sites: number
+  policyDocuments: number
+  services: number
+  searchRows: number
+  englishFirstPartyPolicies: number
+  qualifiedEnglishSites: number
+  warehouseSyncLag: number
+  dedupRatio: number
+  ingestion: {
+    totalRuns: number
+    completedRuns: number
+    processedSites: number
+    errors: number
+  }
+  latencyMs?: Record<string, number>
+  error?: string
+}
+
 export type PipelineEvent = {
   id?: number
   channel: string

@@ -49,6 +49,8 @@ outputsresults.jsonl
 results.crux_cache.json
 .tranco_cache/
 tracker_radar_index.json
+.pgdata/
+.tmp-home/
 
 # Tracker Radar clone
 tracker-radar/

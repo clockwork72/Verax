@@ -353,3 +353,83 @@ class SiteActionResponse:
 
     def to_dict(self) -> dict[str, Any]:
         return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class CatalogBucket:
+    name: str
+    count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CatalogQueryItem:
+    runId: str
+    outDir: str
+    site: str
+    rank: int | None
+    mainCategory: str | None
+    status: str | None
+    firstPartyPolicyUrl: str | None
+    firstPartyPolicyLanguage: str | None
+    firstPartyPolicyWordCount: int
+    firstPartyPolicyCharCount: int
+    thirdPartyCount: int
+    thirdPartyWithPolicyCount: int
+    thirdPartyWithEnglishPolicyCount: int
+    thirdPartyCategories: list[str]
+    entities: list[str]
+    artifactsPath: str
+    updatedAt: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class CatalogQueryResponse:
+    ok: bool
+    items: list[dict[str, Any]]
+    total: int
+    limit: int
+    offset: int
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class CatalogFacetResponse:
+    ok: bool
+    statuses: list[dict[str, Any]]
+    siteCategories: list[dict[str, Any]]
+    serviceCategories: list[dict[str, Any]]
+    entities: list[dict[str, Any]]
+    wordCountBuckets: list[dict[str, Any]]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))
+
+
+@dataclass(slots=True)
+class CatalogMetricsResponse:
+    ok: bool
+    runs: int
+    sites: int
+    policyDocuments: int
+    services: int
+    searchRows: int
+    englishFirstPartyPolicies: int
+    qualifiedEnglishSites: int
+    warehouseSyncLag: int
+    dedupRatio: float
+    ingestion: dict[str, Any]
+    latencyMs: dict[str, float] | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _compact(asdict(self))

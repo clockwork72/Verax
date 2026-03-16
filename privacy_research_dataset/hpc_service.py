@@ -16,6 +16,8 @@ from typing import Any
 from aiohttp import web
 
 from .hpc_artifacts import artifact_routes
+from .catalog_api import catalog_routes
+from .catalog_manager import CatalogManager
 from .hpc_commands import build_annotator_args, build_default_paths, build_scraper_args
 from .hpc_control_plane import control_plane_routes
 from .hpc_io import run_async_file_io
@@ -57,6 +59,8 @@ class HpcService:
         self.last_paths = self.default_paths(None)
         self._fs_cache: dict[tuple[str, str], _FsCacheEntry] = {}
         self._fs_cache_lock = asyncio.Lock()
+        self.catalog: CatalogManager | None = None
+        self._catalog_bootstrap_task: asyncio.Task[None] | None = None
 
     def runtime_env(self) -> dict[str, str]:
         env = {
@@ -81,8 +85,15 @@ class HpcService:
 
     async def start(self) -> None:
         await self.postgres.start()
+        self.catalog = CatalogManager(self.postgres.dsn, outputs_root=str(self.outputs_root))
+        await self.catalog.ensure_schema()
+        self._catalog_bootstrap_task = asyncio.create_task(self._bootstrap_catalog())
 
     async def shutdown(self) -> None:
+        if self._catalog_bootstrap_task is not None:
+            self._catalog_bootstrap_task.cancel()
+            with suppress(Exception):
+                await self._catalog_bootstrap_task
         await self.scraper.stop()
         await self.annotator.stop()
         await self.postgres.stop()
@@ -167,11 +178,18 @@ class HpcService:
         async with self._fs_cache_lock:
             self._fs_cache.clear()
 
+    async def _bootstrap_catalog(self) -> None:
+        if self.catalog is None:
+            return
+        with suppress(asyncio.CancelledError, Exception):
+            await self.catalog.backfill_outputs()
+
     def app(self) -> web.Application:
         app = web.Application()
         app.add_routes(
             control_plane_routes(self)
             + artifact_routes(self)
+            + catalog_routes(self)
             + operation_routes(self)
         )
         return app

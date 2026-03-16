@@ -793,6 +793,31 @@ ipcMain.handle('scraper:read-tp-cache', async (_event, outDir?: string) => {
   return hpcRequest(`/api/read-tp-cache?outDir=${encode(outDir)}`)
 })
 
+ipcMain.handle('scraper:catalog-query', async (_event, payload?: unknown) => {
+  return hpcRequest('/api/catalog/query', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  })
+})
+
+ipcMain.handle('scraper:catalog-facets', async (_event, payload?: unknown) => {
+  return hpcRequest('/api/catalog/facets', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  })
+})
+
+ipcMain.handle('scraper:catalog-metrics', async () => {
+  return hpcRequest('/api/catalog/metrics')
+})
+
+ipcMain.handle('scraper:catalog-reindex', async () => {
+  return hpcRequest('/api/catalog/reindex', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+})
+
 app.on('window-all-closed', () => {
   stopHpcPoller()
   if (process.platform !== 'darwin') {

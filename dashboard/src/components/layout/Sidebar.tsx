@@ -58,6 +58,18 @@ const navItems: { id: NavId; label: string; icon: JSX.Element }[] = [
     ),
   },
   {
+    id: 'catalog',
+    label: 'Catalog',
+    icon: (
+      <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+        <path d="M4 6.5C4 5.1 7.6 4 12 4s8 1.1 8 2.5S16.4 9 12 9 4 7.9 4 6.5z" />
+        <path d="M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5" />
+        <path d="M4 17.5C4 18.9 7.6 20 12 20s8-1.1 8-2.5V6.5" />
+        <path d="M4 6.5v11" />
+      </svg>
+    ),
+  },
+  {
     id: 'annotations',
     label: 'Annotations',
     icon: (

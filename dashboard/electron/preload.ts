@@ -69,6 +69,10 @@ contextBridge.exposeInMainWorld('scraper', {
   annotationStats: (artifactsDir?: string) => ipcRenderer.invoke('scraper:annotation-stats', artifactsDir),
   countOkArtifacts: (outDir?: string) => ipcRenderer.invoke('scraper:count-ok-artifacts', outDir),
   readTpCache: (outDir?: string) => ipcRenderer.invoke('scraper:read-tp-cache', outDir),
+  catalogQuery: (payload?: any) => ipcRenderer.invoke('scraper:catalog-query', payload),
+  catalogFacets: (payload?: any) => ipcRenderer.invoke('scraper:catalog-facets', payload),
+  catalogMetrics: () => ipcRenderer.invoke('scraper:catalog-metrics'),
+  catalogReindex: () => ipcRenderer.invoke('scraper:catalog-reindex'),
   onAnnotatorLog: (callback: (event: any) => void) => {
     ipcRenderer.removeAllListeners('annotator:log')
     ipcRenderer.on('annotator:log', (_evt, data) => callback(data))
