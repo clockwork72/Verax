@@ -393,3 +393,46 @@ def test_orchestrator_prefers_slurm_submit_dir_when_script_runs_from_spool(tmp_p
     assert f"Remote root: {tmp_path}" in result.stdout
     assert f"Repo root: {repo_root}" in result.stdout
     assert "dummy hpc service invoked" in result.stdout
+
+
+def test_orchestrator_tolerates_whoami_lookup_failure(tmp_path):
+    repo_root = tmp_path / "repo"
+    script_dir = repo_root / "hpc" / "scraper"
+    script_dir.mkdir(parents=True)
+    (script_dir / "orchestrator.slurm").write_text(ORCHESTRATOR.read_text(encoding="utf-8"), encoding="utf-8")
+
+    package_dir = repo_root / "privacy_research_dataset"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "hpc_service.py").write_text(
+        "from __future__ import annotations\nprint('dummy hpc service invoked')\n",
+        encoding="utf-8",
+    )
+
+    python_dir = tmp_path / ".venv" / "bin"
+    python_dir.mkdir(parents=True)
+    fake_python = python_dir / "python"
+    fake_python.write_text("#!/bin/bash\nexec python3 \"$@\"\n", encoding="utf-8")
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_whoami = fake_bin / "whoami"
+    fake_whoami.write_text("#!/bin/bash\nprintf 'whoami failed\\n' >&2\nexit 1\n", encoding="utf-8")
+    fake_whoami.chmod(fake_whoami.stat().st_mode | stat.S_IXUSR)
+
+    result = subprocess.run(
+        ["bash", str(script_dir / "orchestrator.slurm")],
+        check=True,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "SCRAPER_CLUSTER_FQDN": "cluster.example",
+            "USER": "fallback-user",
+        },
+    )
+
+    assert "fallback-user@cluster.example" in result.stdout
+    assert "dummy hpc service invoked" in result.stdout

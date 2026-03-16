@@ -72,7 +72,13 @@ fi
 
 node="$(hostname -s)"
 cluster_fqdn="${SCRAPER_CLUSTER_FQDN}"
-user="$(whoami)"
+user="${USER:-}"
+if [ -z "${user}" ]; then
+  user="$(id -un 2>/dev/null || true)"
+fi
+if [ -z "${user}" ]; then
+  user="$(id -u)"
+fi
 job_id="${SLURM_JOB_ID:-manual}"
 
 cat <<EOF
