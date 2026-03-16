@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+
 from privacy_research_dataset.hpc_runtime import EventBuffer
+from privacy_research_dataset.hpc_runtime import PostgresRuntime
 
 
 def test_event_buffer_in_memory_poll(tmp_path):
@@ -116,3 +119,53 @@ def test_event_buffer_poll_prefers_in_memory_without_replaying_file(tmp_path, mo
 
     assert cursor == 1
     assert [item["payload"]["message"] for item in items] == ["hot"]
+
+
+def test_postgres_runtime_clears_stale_shared_state_when_socket_not_ready(tmp_path):
+    runtime = PostgresRuntime(tmp_path / "postgres", 55432)
+    runtime.runtime_root.mkdir(parents=True)
+    runtime.data_dir.mkdir(parents=True)
+    runtime.tmp_dir.mkdir(parents=True)
+
+    stale_pid = runtime.data_dir / "postmaster.pid"
+    stale_socket = runtime.tmp_dir / ".s.PGSQL.55432"
+    stale_lock = runtime.tmp_dir / ".s.PGSQL.55432.lock"
+    stale_pid.write_text("123\n", encoding="utf-8")
+    stale_socket.write_text("", encoding="utf-8")
+    stale_lock.write_text("", encoding="utf-8")
+
+    async def fake_socket_ready() -> bool:
+        return False
+
+    runtime._socket_ready = fake_socket_ready  # type: ignore[method-assign]
+
+    asyncio.run(runtime._clear_stale_runtime_state())
+
+    assert not stale_pid.exists()
+    assert not stale_socket.exists()
+    assert not stale_lock.exists()
+
+
+def test_postgres_runtime_keeps_runtime_files_when_socket_ready(tmp_path):
+    runtime = PostgresRuntime(tmp_path / "postgres", 55432)
+    runtime.runtime_root.mkdir(parents=True)
+    runtime.data_dir.mkdir(parents=True)
+    runtime.tmp_dir.mkdir(parents=True)
+
+    stale_pid = runtime.data_dir / "postmaster.pid"
+    stale_socket = runtime.tmp_dir / ".s.PGSQL.55432"
+    stale_lock = runtime.tmp_dir / ".s.PGSQL.55432.lock"
+    stale_pid.write_text("123\n", encoding="utf-8")
+    stale_socket.write_text("", encoding="utf-8")
+    stale_lock.write_text("", encoding="utf-8")
+
+    async def fake_socket_ready() -> bool:
+        return True
+
+    runtime._socket_ready = fake_socket_ready  # type: ignore[method-assign]
+
+    asyncio.run(runtime._clear_stale_runtime_state())
+
+    assert stale_pid.exists()
+    assert stale_socket.exists()
+    assert stale_lock.exists()

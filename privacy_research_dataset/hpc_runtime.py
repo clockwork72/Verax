@@ -344,6 +344,7 @@ class PostgresRuntime:
             )
         if not self.init_marker.exists():
             await self._initialize_database()
+        await self._clear_stale_runtime_state()
         self.proc = await asyncio.create_subprocess_exec(
             *self._apptainer_prefix(),
             str(self.image_path),
@@ -488,3 +489,14 @@ class PostgresRuntime:
             return True
         except Exception:
             return False
+
+    async def _clear_stale_runtime_state(self) -> None:
+        if await self._socket_ready():
+            return
+        stale_paths = [
+            self.data_dir / "postmaster.pid",
+            self.tmp_dir / f".s.PGSQL.{self.port}",
+            self.tmp_dir / f".s.PGSQL.{self.port}.lock",
+        ]
+        for path in stale_paths:
+            path.unlink(missing_ok=True)
