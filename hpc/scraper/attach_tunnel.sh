@@ -20,7 +20,7 @@ EOF
 }
 
 resolve_node() {
-  ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''"
+  ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'remote_user=\"\$(id -un)\"; squeue -u \"\${remote_user}\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''"
 }
 
 list_local_tunnels() {
@@ -69,7 +69,7 @@ fi
 
 if [ -z "${NODE}" ] || [ "${NODE}" = "(null)" ]; then
   echo "Could not resolve a running ${JOB_NAME} node on ${SSH_HOST}." >&2
-  echo "Check: ssh ${SSH_HOST} 'squeue -u \$USER -o \"%.10i %.10T %.20j %.25N\"'" >&2
+  echo "Check: ssh ${SSH_HOST} 'remote_user=\$(id -un); squeue -u \"\${remote_user}\" -o \"%.10i %.10T %.20j %.25N\"'" >&2
   exit 1
 fi
 

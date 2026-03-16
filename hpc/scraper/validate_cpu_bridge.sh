@@ -120,7 +120,7 @@ fi
 # ---------------------------------------------------------------------------
 printf '\n=== [7/7] Slurm job snapshot ===\n'
 set +e
-SLURM_OUT="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" 'squeue -u "$USER" -o "%.10i %.10T %.20j %.25N"' 2>/dev/null)"
+SLURM_OUT="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" 'bash -lc '\''remote_user="$(id -un)"; squeue -u "${remote_user}" -o "%.10i %.10T %.20j %.25N"'\''' 2>/dev/null)"
 SLURM_STATUS=$?
 set -e
 if [ "${SLURM_STATUS}" -eq 0 ]; then

@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SSH_COMMON = REPO_ROOT / "hpc" / "scraper" / "_ssh_common.sh"
 ATTACH_TUNNEL = REPO_ROOT / "hpc" / "scraper" / "attach_tunnel.sh"
+ORCHESTRATOR = REPO_ROOT / "hpc" / "scraper" / "orchestrator.slurm"
 
 
 def _write_fake_ssh(path: Path) -> None:
@@ -160,11 +161,11 @@ case "${command}" in
   *"sbatch --parsable"*)
     printf '6683730\\n'
     ;;
+  *"id -un"*"squeue -u"*"\"%i|%j\""*)
+    printf ''
+    ;;
   *"squeue -j 6683730 -h -o"*)
     printf 'RUNNING|slurm-compute-h22d5-u14-svn3\\n'
-    ;;
-  *"squeue -u \\\"\\$USER\\\" -h -o \\\"%i|%j\\\""*)
-    printf ''
     ;;
   *)
     printf '' 
@@ -195,6 +196,7 @@ submit_and_wait
 
     assert result.stdout.strip() == "slurm-compute-h22d5-u14-svn3"
     assert "Submitted orchestrator job 6683730" in result.stderr
+    assert "id -un" in ssh_log.read_text(encoding="utf-8")
 
 
 def test_attach_tunnel_recycles_stale_master_forward(tmp_path):
@@ -288,3 +290,67 @@ exit 1
     ssh_calls = ssh_log.read_text(encoding="utf-8")
     assert "-O exit" in ssh_calls
     assert ssh_calls.count("-O forward -L 8910:slurm-compute-h22d5-u14-svn3:8910") == 2
+
+
+def test_orchestrator_direct_run_derives_paths_from_repo_checkout(tmp_path):
+    repo_root = tmp_path / "repo"
+    script_dir = repo_root / "hpc" / "scraper"
+    script_dir.mkdir(parents=True)
+    (script_dir / "orchestrator.slurm").write_text(ORCHESTRATOR.read_text(encoding="utf-8"), encoding="utf-8")
+
+    package_dir = repo_root / "privacy_research_dataset"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "hpc_service.py").write_text(
+        "from __future__ import annotations\nprint('dummy hpc service invoked')\n",
+        encoding="utf-8",
+    )
+
+    python_dir = tmp_path / ".venv" / "bin"
+    python_dir.mkdir(parents=True)
+    fake_python = python_dir / "python"
+    fake_python.write_text("#!/bin/bash\nexec python3 \"$@\"\n", encoding="utf-8")
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+
+    result = subprocess.run(
+        ["bash", str(script_dir / "orchestrator.slurm")],
+        check=True,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SCRAPER_CLUSTER_FQDN": "cluster.example",
+        },
+    )
+
+    assert f"Remote root: {tmp_path}" in result.stdout
+    assert f"Repo root: {repo_root}" in result.stdout
+    assert f"Outputs root: {repo_root / 'outputs'}" in result.stdout
+    assert "dummy hpc service invoked" in result.stdout
+
+
+def test_orchestrator_direct_run_reports_missing_inferred_python(tmp_path):
+    repo_root = tmp_path / "repo"
+    script_dir = repo_root / "hpc" / "scraper"
+    script_dir.mkdir(parents=True)
+    (script_dir / "orchestrator.slurm").write_text(ORCHESTRATOR.read_text(encoding="utf-8"), encoding="utf-8")
+
+    package_dir = repo_root / "privacy_research_dataset"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "hpc_service.py").write_text("print('never reached')\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(script_dir / "orchestrator.slurm")],
+        check=False,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SCRAPER_CLUSTER_FQDN": "cluster.example",
+        },
+    )
+
+    assert result.returncode == 1
+    assert f"Missing runtime python at {tmp_path / '.venv' / 'bin' / 'python'}" in result.stderr
+    assert f"Run {repo_root / 'hpc' / 'scraper' / 'install_remote.sh'} first." in result.stderr

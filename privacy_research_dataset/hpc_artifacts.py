@@ -25,9 +25,6 @@ from .hpc_contracts import (
     ThirdPartyCacheStatsResponse,
 )
 
-MAX_CONCURRENT_FILE_READS = 8
-_FILE_READ_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_FILE_READS)
-
 
 def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
     out: list[Any] = []
@@ -42,15 +39,6 @@ def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
         if limit and len(out) >= limit:
             break
     return out
-
-
-async def read_text_file(path: Path) -> str:
-    async with _FILE_READ_SEMAPHORE:
-        return await asyncio.to_thread(path.read_text, encoding="utf-8")
-
-
-async def read_jsonl_file(path: Path, limit: int | None = None) -> list[Any]:
-    return parse_jsonl(await read_text_file(path), limit)
 
 
 class ArtifactService(Protocol):
@@ -72,7 +60,24 @@ class ArtifactService(Protocol):
     def resolve_repo_path(self, value: str | os.PathLike[str] | None, fallback: Path) -> Path:
         ...
 
+    async def read_text_file(self, path: Path) -> str:
+        ...
+
     async def read_json_file(self, path: Path) -> Any:
+        ...
+
+    async def run_fs_job(self, fn, /, *args: Any, **kwargs: Any) -> Any:
+        ...
+
+    async def cached_fs_response(
+        self,
+        namespace: str,
+        key: str,
+        ttl_sec: float,
+        loader,
+        *,
+        not_found_ttl_sec: float | None = 1.0,
+    ) -> Any:
         ...
 
 
@@ -218,7 +223,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         limit = int(request.query.get("limit", "0") or "0") or None
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        data = await read_jsonl_file(target, limit) if target.suffix == ".jsonl" else await service.read_json_file(target)
+        data = parse_jsonl(await service.read_text_file(target), limit) if target.suffix == ".jsonl" else await service.read_json_file(target)
         return web.json_response(JsonPathResponse(ok=True, data=data, path=str(target)).to_dict())
 
     async def handle_read_results(request: web.Request) -> web.Response:
@@ -227,7 +232,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
         return web.json_response(
-            JsonPathResponse(ok=True, data=await read_jsonl_file(target, limit), path=str(target)).to_dict()
+            JsonPathResponse(ok=True, data=parse_jsonl(await service.read_text_file(target), limit), path=str(target)).to_dict()
         )
 
     async def handle_read_artifact_text(request: web.Request) -> web.Response:
@@ -238,7 +243,7 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         target = service.safe_resolve(payload.get("outDir"), relative_path)
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        return web.json_response(JsonPathResponse(ok=True, data=await read_text_file(target), path=str(target)).to_dict())
+        return web.json_response(JsonPathResponse(ok=True, data=await service.read_text_file(target), path=str(target)).to_dict())
 
     async def handle_read_run_manifest(request: web.Request) -> web.Response:
         target = service.manifest_path(request.query.get("outDir"))
@@ -253,36 +258,49 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         return web.json_response((await build_json_file_response(target, service.read_json_file)).to_dict())
 
     async def handle_folder_size(request: web.Request) -> web.Response:
-        target = service.default_paths(request.query.get("outDir")).out_dir
-        if not target.exists():
-            return web.json_response(FolderSizeResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        def compute_folder_size() -> int:
+        out_dir = request.query.get("outDir")
+        target = service.default_paths(out_dir).out_dir
+
+        def compute_folder_size_response() -> FolderSizeResponse:
+            if not target.exists():
+                return FolderSizeResponse(ok=False, error="not_found", path=str(target))
             size = 0
             for path in target.rglob("*"):
                 if path.is_file():
                     with suppress(Exception):
                         size += path.stat().st_size
-            return size
-        size = await asyncio.to_thread(compute_folder_size)
-        return web.json_response(FolderSizeResponse(ok=True, bytes=size, path=str(target)).to_dict())
+            return FolderSizeResponse(ok=True, bytes=size, path=str(target))
+
+        response = await service.cached_fs_response(
+            "folder_size",
+            str(target),
+            10.0,
+            lambda: service.run_fs_job(compute_folder_size_response),
+        )
+        return web.json_response(response.to_dict())
 
     async def handle_list_runs(request: web.Request) -> web.Response:
-        return web.json_response((await build_run_list_response(service, request.query.get("baseOutDir"))).to_dict())
+        base_out_dir = request.query.get("baseOutDir")
+        response = await service.cached_fs_response(
+            "list_runs",
+            base_out_dir or "outputs",
+            2.0,
+            lambda: service.run_fs_job(build_run_list_response, service, base_out_dir),
+        )
+        return web.json_response(response.to_dict())
 
     async def handle_count_ok_artifacts(request: web.Request) -> web.Response:
         ok_dir = service.default_paths(request.query.get("outDir")).artifacts_ok_dir
         if not ok_dir.exists():
             return web.json_response(ArtifactCountResponse(ok=True, count=0, sites=[], path=str(ok_dir)).to_dict())
-        sites = await asyncio.to_thread(
-            lambda: [entry.name for entry in ok_dir.iterdir() if entry.is_dir() or entry.is_symlink()]
-        )
+        sites = await service.run_fs_job(lambda: [entry.name for entry in ok_dir.iterdir() if entry.is_dir() or entry.is_symlink()])
         return web.json_response(ArtifactCountResponse(ok=True, count=len(sites), sites=sites, path=str(ok_dir)).to_dict())
 
     async def handle_read_tp_cache(request: web.Request) -> web.Response:
         cache_path = service.default_paths(request.query.get("outDir")).out_dir / "results.tp_cache.json"
         if not cache_path.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(cache_path)).to_dict())
-        raw = json.loads(await read_text_file(cache_path))
+        raw = json.loads(await service.read_text_file(cache_path))
         total = 0
         fetched = 0
         failed = 0
@@ -306,7 +324,13 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         )
 
     async def handle_annotation_stats(request: web.Request) -> web.Response:
-        response = await asyncio.to_thread(build_annotation_stats_response, service, request.query.get("artifactsDir"))
+        artifacts_dir = request.query.get("artifactsDir")
+        response = await service.cached_fs_response(
+            "annotation_stats",
+            artifacts_dir or str(service.last_paths.artifacts_dir),
+            2.0,
+            lambda: service.run_fs_job(build_annotation_stats_response, service, artifacts_dir),
+        )
         return web.json_response(response.to_dict())
 
     return [

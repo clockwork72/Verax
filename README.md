@@ -247,6 +247,12 @@ bash hpc/scraper/install_remote.sh
 sbatch hpc/scraper/orchestrator.slurm
 ```
 
+`orchestrator.slurm` now derives `SCRAPER_REPO_ROOT`, `SCRAPER_REMOTE_ROOT`, runtime, and outputs paths from the checked-out repo location when helper-script exports are missing, so direct `sbatch` from the remote repo checkout is supported.
+
+The helper scripts are still preferred because they push code, inject exports, refresh the runtime, and open the tunnel automatically.
+
+If you submit directly with plain `sbatch`, Slurm logs may land in the submit directory unless you pass explicit `--output` / `--error` flags or configure `SCRAPER_SBATCH_EXTRA_ARGS`.
+
 The job log prints the compute node name and a suggested tunnel command.
 
 ### Local-side tunnel

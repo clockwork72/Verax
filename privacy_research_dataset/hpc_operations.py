@@ -72,6 +72,9 @@ class OperationsService(Protocol):
     def build_annotator_args(self, options: dict[str, Any]) -> tuple[list[str], Path]:
         ...
 
+    async def invalidate_fs_cache(self) -> None:
+        ...
+
 
 def build_audit_state_data(payload: dict[str, Any]) -> AuditStatePayload:
     verified_raw = payload.get("verifiedSites") or []
@@ -210,6 +213,7 @@ async def clear_results(service: OperationsService, payload: dict[str, Any]) -> 
             if paths.artifacts_dir.exists():
                 shutil.rmtree(paths.artifacts_dir)
                 removed.append(str(paths.artifacts_dir))
+    await service.invalidate_fs_cache()
     return ClearResultsResponse(ok=not errors, removed=removed, missing=missing, errors=errors)
 
 
@@ -228,6 +232,7 @@ async def delete_output(service: OperationsService, payload: dict[str, Any]) -> 
     if not target.is_dir():
         return DeleteOutputResponse(ok=False, error="not_a_directory", path=str(target))
     shutil.rmtree(target)
+    await service.invalidate_fs_cache()
     return DeleteOutputResponse(ok=True, path=str(target))
 
 
@@ -243,6 +248,7 @@ async def delete_all_outputs(service: OperationsService) -> DeleteOutputResponse
         else:
             entry.unlink()
         removed.append(str(entry))
+    await service.invalidate_fs_cache()
     return DeleteOutputResponse(ok=True, removed=removed, path=str(service.outputs_root))
 
 
@@ -257,6 +263,7 @@ async def start_run(service: OperationsService, payload: dict[str, Any]) -> Star
     )
     if not ok:
         return StartRunResponse(ok=False, error=error or "failed_to_start")
+    await service.invalidate_fs_cache()
     return StartRunResponse(
         ok=True,
         paths=PathsResultPayload(
@@ -287,6 +294,7 @@ async def rerun_site(service: OperationsService, payload: dict[str, Any]) -> Sit
     )
     if not ok:
         return SiteActionResponse(ok=False, error=error or "failed_to_start")
+    await service.invalidate_fs_cache()
     return SiteActionResponse(ok=True, site=site, paths={"outDir": str(paths.out_dir)})
 
 
@@ -310,6 +318,7 @@ async def start_annotate(service: OperationsService, payload: dict[str, Any]) ->
     )
     if not ok:
         return SiteActionResponse(ok=False, error=error or "failed_to_start")
+    await service.invalidate_fs_cache()
     return SiteActionResponse(ok=True, artifactsDir=str(artifacts_dir))
 
 
@@ -329,6 +338,7 @@ async def annotate_site(service: OperationsService, payload: dict[str, Any]) -> 
     )
     if not ok:
         return SiteActionResponse(ok=False, error=error or "failed_to_start")
+    await service.invalidate_fs_cache()
     return SiteActionResponse(ok=True, artifactsDir=str(paths.artifacts_dir), site=site)
 
 

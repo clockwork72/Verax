@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from privacy_research_dataset.hpc_contracts import FolderSizeResponse, RunListResponse
+from privacy_research_dataset.hpc_service import HpcService
+
+
+def _make_service_stub() -> HpcService:
+    service = HpcService.__new__(HpcService)
+    service._fs_cache = {}
+    service._fs_cache_lock = asyncio.Lock()
+    return service
+
+
+@pytest.mark.asyncio
+async def test_cached_fs_response_caches_not_found_briefly():
+    service = _make_service_stub()
+    calls = 0
+
+    async def load():
+        nonlocal calls
+        calls += 1
+        return FolderSizeResponse(ok=False, error="not_found", path="/tmp/missing")
+
+    first = await service.cached_fs_response("folder_size", "outputs/missing", 10.0, load)
+    second = await service.cached_fs_response("folder_size", "outputs/missing", 10.0, load)
+
+    assert first.error == "not_found"
+    assert second.error == "not_found"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cached_fs_response_does_not_cache_generic_failures():
+    service = _make_service_stub()
+    calls = 0
+
+    async def load():
+        nonlocal calls
+        calls += 1
+        return RunListResponse(ok=False, error="permission_denied", path="/tmp/outputs")
+
+    await service.cached_fs_response("list_runs", "outputs", 2.0, load)
+    await service.cached_fs_response("list_runs", "outputs", 2.0, load)
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_invalidate_fs_cache_clears_cached_entries():
+    service = _make_service_stub()
+
+    async def load():
+        return RunListResponse(ok=True, runs=[], root="/tmp/outputs")
+
+    await service.cached_fs_response("list_runs", "outputs", 2.0, load)
+    assert service._fs_cache
+
+    await service.invalidate_fs_cache()
+
+    assert service._fs_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_read_json_file_uses_bounded_text_reader(monkeypatch):
+    service = _make_service_stub()
+    seen: list[str] = []
+
+    async def fake_run_async_file_io(fn, /, *args, **kwargs):
+        seen.append(getattr(fn, "__name__", repr(fn)))
+        return json.dumps({"ok": True, "count": 3})
+
+    monkeypatch.setattr("privacy_research_dataset.hpc_service.run_async_file_io", fake_run_async_file_io)
+
+    class _FakePath:
+        def read_text(self, encoding: str = "utf-8") -> str:
+            raise AssertionError("patched helper should intercept file reads")
+
+    payload = await service.read_json_file(_FakePath())
+
+    assert payload == {"ok": True, "count": 3}
+    assert seen == ["read_text"]

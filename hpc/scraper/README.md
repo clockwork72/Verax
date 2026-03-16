@@ -268,6 +268,8 @@ curl 'http://127.0.0.1:8910/api/poll?after=0' | python3 -m json.tool
 
 ```bash
 # Find the most recent Slurm output file
+# Direct manual sbatch runs usually write here unless you pass explicit Slurm
+# --output/--error flags.
 ssh "${SCRAPER_SSH_HOST}" 'ls -lt ~/slurm-*.out | head -5'
 
 # Tail it
@@ -276,6 +278,8 @@ ssh "${SCRAPER_SSH_HOST}" 'tail -100 ~/slurm-<job_id>.out'
 # Or follow live
 ssh "${SCRAPER_SSH_HOST}" 'tail -f ~/slurm-<job_id>.out'
 ```
+
+If you run `sbatch hpc/scraper/orchestrator.slurm` directly from the remote repo checkout, the script now infers `SCRAPER_REPO_ROOT`, `SCRAPER_REMOTE_ROOT`, runtime, and outputs paths from its own location. The helper scripts remain the preferred path because they still handle deploy, install, export injection, and tunnel setup for you.
 
 ---
 

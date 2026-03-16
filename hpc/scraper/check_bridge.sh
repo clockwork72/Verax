@@ -37,7 +37,7 @@ if [ -z "${LOCAL_TARGET}" ] && [ -f "${FORWARD_STATE}" ]; then
 fi
 
 set +e
-REMOTE_NODE="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'squeue -u \"\$USER\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''" 2>/dev/null)"
+REMOTE_NODE="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'remote_user=\"\$(id -un)\"; squeue -u \"\${remote_user}\" -h -o \"%i|%T|%j|%N\" | sort -t\"|\" -k1,1nr | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$3 == \"${JOB_NAME}\" && \$4 != \"(null)\" { print \$4; exit }'\'''" 2>/dev/null)"
 SSH_STATUS=$?
 set -e
 
@@ -107,7 +107,7 @@ if [ "${SSH_STATUS}" -eq 0 ] && [ -n "${REMOTE_NODE}" ]; then
   fi
 else
   echo "Running orchestrator node: unavailable"
-  echo "Run manually if needed: ssh ${SSH_HOST} 'squeue -u \$USER -o \"%.10i %.10T %.20j %.25N\"'"
+  echo "Run manually if needed: ssh ${SSH_HOST} 'remote_user=\$(id -un); squeue -u \"\${remote_user}\" -o \"%.10i %.10T %.20j %.25N\"'"
 fi
 
 if [ "${HEALTH_OK}" -eq 1 ]; then

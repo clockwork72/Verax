@@ -18,7 +18,8 @@ SBATCH_EXTRA_ARGS="${SCRAPER_SBATCH_EXTRA_ARGS:-}"
 
 discover_remote_model_node() {
   ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc '
-    squeue -u \"\$USER\" -h -o \"%i|%T|%j|%N\" \
+    remote_user=\"\$(id -un)\"
+    squeue -u \"\${remote_user}\" -h -o \"%i|%T|%j|%N\" \
       | sort -t\"|\" -k1,1nr \
       | awk -F\"|\" '\''\$2 == \"RUNNING\" && \$4 != \"(null)\" && \$3 != \"scraper-orch\" { print \$4 }'\'' \
       | while read -r node; do
@@ -35,7 +36,8 @@ retire_other_orchestrators() {
   local current_job_id="$1"
   local other_jobs=""
   other_jobs="$(ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc '
-    squeue -u \"\$USER\" -h -o \"%i|%j\" \
+    remote_user=\"\$(id -un)\"
+    squeue -u \"\${remote_user}\" -h -o \"%i|%j\" \
       | awk -F\"|\" '\''\$2 == \"${JOB_NAME}\" && \$1 != \"${current_job_id}\" { print \$1 }'\''
   '" || true)"
   if [ -z "${other_jobs}" ]; then

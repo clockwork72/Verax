@@ -99,3 +99,20 @@ def test_event_buffer_replay_cap(tmp_path):
     buf2.set_log_path(log_path)
     _, items = buf2.poll(0)
     assert len(items) <= EventBuffer.REPLAY_LIMIT
+
+
+def test_event_buffer_poll_prefers_in_memory_without_replaying_file(tmp_path, monkeypatch):
+    log_path = tmp_path / "events.jsonl"
+    buf = EventBuffer()
+    buf.set_log_path(log_path)
+    buf.push("scraper:log", {"message": "hot"})
+
+    def fail_if_replayed(*_args, **_kwargs):
+        raise AssertionError("fresh in-memory poll should not reread the persisted log")
+
+    monkeypatch.setattr("privacy_research_dataset.hpc_runtime.run_sync_file_io", fail_if_replayed)
+
+    cursor, items = buf.poll(0)
+
+    assert cursor == 1
+    assert [item["payload"]["message"] for item in items] == ["hot"]

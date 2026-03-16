@@ -8,7 +8,9 @@ import signal
 import socket
 import sys
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from aiohttp import web
@@ -16,12 +18,19 @@ from aiohttp import web
 from .hpc_artifacts import artifact_routes
 from .hpc_commands import build_annotator_args, build_default_paths, build_scraper_args
 from .hpc_control_plane import control_plane_routes
+from .hpc_io import run_async_file_io
 from .hpc_operations import operation_routes
 from .hpc_runtime import EventBuffer, Paths, PostgresRuntime, ProcessHandle, utc_now
 
 
 DEFAULT_DB_PORT = 55432
 DEFAULT_SERVICE_PORT = 8910
+
+
+@dataclass(slots=True)
+class _FsCacheEntry:
+    value: Any
+    expires_at: float
 
 
 class HpcService:
@@ -46,6 +55,8 @@ class HpcService:
         self.started_at = utc_now()
         self.current_out_dir = "outputs/unified"
         self.last_paths = self.default_paths(None)
+        self._fs_cache: dict[tuple[str, str], _FsCacheEntry] = {}
+        self._fs_cache_lock = asyncio.Lock()
 
     def runtime_env(self) -> dict[str, str]:
         env = {
@@ -104,15 +115,57 @@ class HpcService:
         path = Path(value)
         return path if path.is_absolute() else (self.repo_root / path).resolve()
 
+    async def read_text_file(self, path: Path) -> str:
+        return await run_async_file_io(path.read_text, encoding="utf-8")
+
     async def read_json_file(self, path: Path) -> Any:
         for attempt in range(3):
             try:
-                raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                raw = await self.read_text_file(path)
                 return json.loads(raw)
             except json.JSONDecodeError:
                 if attempt >= 2:
                     raise
                 await asyncio.sleep(0.05 * (attempt + 1))
+
+    async def run_fs_job(self, fn, /, *args: Any, **kwargs: Any) -> Any:
+        return await run_async_file_io(fn, *args, **kwargs)
+
+    async def cached_fs_response(
+        self,
+        namespace: str,
+        key: str,
+        ttl_sec: float,
+        loader,
+        *,
+        not_found_ttl_sec: float | None = 1.0,
+    ) -> Any:
+        cache_key = (namespace, key)
+        now = monotonic()
+        async with self._fs_cache_lock:
+            cached = self._fs_cache.get(cache_key)
+            if cached and cached.expires_at > now:
+                return cached.value
+
+        value = await loader()
+        ok = getattr(value, "ok", True)
+        error = getattr(value, "error", None)
+        if not ok and error != "not_found":
+            return value
+
+        ttl = ttl_sec
+        if not ok and error == "not_found":
+            if not_found_ttl_sec is None:
+                return value
+            ttl = not_found_ttl_sec
+
+        async with self._fs_cache_lock:
+            self._fs_cache[cache_key] = _FsCacheEntry(value=value, expires_at=monotonic() + ttl)
+        return value
+
+    async def invalidate_fs_cache(self) -> None:
+        async with self._fs_cache_lock:
+            self._fs_cache.clear()
 
     def app(self) -> web.Application:
         app = web.Application()

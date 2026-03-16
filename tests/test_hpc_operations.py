@@ -38,6 +38,7 @@ class _FakeOperationsService:
         self.outputs_root.mkdir(parents=True, exist_ok=True)
         self.scraper = _FakeProcess()
         self.annotator = _FakeProcess()
+        self.invalidate_calls = 0
 
     def runtime_env(self) -> dict[str, str]:
         return {"DATABASE_URL": "postgresql://scraper:test@127.0.0.1:55432/scraper"}
@@ -83,6 +84,9 @@ class _FakeOperationsService:
             ],
             paths.artifacts_dir,
         )
+
+    async def invalidate_fs_cache(self) -> None:
+        self.invalidate_calls += 1
 
 
 def test_build_audit_state_data_normalizes_sites_and_overrides():
@@ -177,6 +181,7 @@ def test_start_run_and_stop_run_preserve_status_fields(tmp_path):
     assert start_payload["ok"] is True
     assert start_payload["paths"]["outDir"].endswith("/outputs/unified")
     assert service.scraper.start_calls[0]["run_manifest_path"] == service.manifest_path("outputs/unified")
+    assert service.invalidate_calls == 1
 
     service.scraper.running = True
     stop_payload = asyncio.run(stop_run(service)).to_dict()

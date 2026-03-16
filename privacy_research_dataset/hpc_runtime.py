@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .hpc_contracts import PipelineEventEnvelope
+from .hpc_io import run_sync_file_io
 
 
 def utc_now() -> str:
@@ -82,7 +83,7 @@ class EventBuffer:
         assert self._log_path is not None
         lines: list[str] = []
         try:
-            with self._log_path.open("r", encoding="utf-8") as fh:
+            with run_sync_file_io(self._log_path.open, "r", encoding="utf-8") as fh:
                 for line in fh:
                     stripped = line.strip()
                     if stripped:
@@ -114,7 +115,7 @@ class EventBuffer:
 
     @staticmethod
     def _append_log_lines(path: Path, payload: str) -> None:
-        with path.open("a", encoding="utf-8") as fh:
+        with run_sync_file_io(path.open, "a", encoding="utf-8") as fh:
             fh.write(payload)
 
 
