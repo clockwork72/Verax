@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnnotationsView } from './components/annotations/AnnotationsView'
 import { PolicyViewerView } from './components/annotations/PolicyViewerView'
 import { AuditWorkspaceView } from './components/audit/AuditWorkspaceView'
+import { CatalogView } from './components/catalog/CatalogView'
 import { ConsistencyCheckerView } from './components/consistency/ConsistencyCheckerView'
 import { DatabaseView } from './components/database/DatabaseView'
 import { ExplorerView } from './components/explorer/ExplorerView'
@@ -46,6 +47,7 @@ export function buildDisabledNavs({
   return {
     launcher: false,
     settings: false,
+    catalog: !bridgeReady,
     database: !bridgeReady,
     results: !hasWorkspaceContent,
     audit: !hasWorkspaceContent,
@@ -416,6 +418,7 @@ function App() {
     audit: 'Audit Workspace',
     results: 'Results',
     explorer: 'Explorer',
+    catalog: 'Catalog',
     annotations: 'Annotations',
     consistency: 'Consistency checker',
     database: 'Database',
@@ -427,6 +430,7 @@ function App() {
     audit: 'Audit scraped sites, apply manual fixes, and rerun targeted tasks.',
     results: 'Outcome overview of the latest scrape.',
     explorer: 'Browse scraped sites and their policy links.',
+    catalog: 'Query the warehouse for sites, policies, and third-party services.',
     annotations: annotationsTab === 'viewer'
       ? 'Read annotated policy text with phrase-level highlights.'
       : 'LLM-extracted privacy statements from policy documents.',
@@ -539,6 +543,9 @@ function App() {
             showExtractionMethod={showExtractionMethod}
             outDir={outDir}
           />
+        )}
+        {activeNav === 'catalog' && (
+          <CatalogView bridgeReady={bridgeReady} />
         )}
         {activeNav === 'annotations' && (
           <>
