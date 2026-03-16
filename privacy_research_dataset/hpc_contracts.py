@@ -153,6 +153,11 @@ class HealthResponse:
     repo_root: str
     current_out_dir: str
     source_rev: str | None = None
+    warehouse_ready: bool = True
+    warehouse_sync_pending: int = 0
+    warehouse_oldest_pending_sec: int = 0
+    warehouse_last_success_at: str | None = None
+    warehouse_mode: str = "file_ledger_dual_write"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -179,6 +184,11 @@ class StatusResponse:
     currentOutDir: str
     dbDsn: str
     dbReady: bool
+    warehouseReady: bool = True
+    warehouseSyncPending: int = 0
+    warehouseOldestPendingSec: int = 0
+    warehouseLastSuccessAt: str | None = None
+    warehouseMode: str = "file_ledger_dual_write"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -428,6 +438,11 @@ class CatalogMetricsResponse:
     warehouseSyncLag: int
     dedupRatio: float
     ingestion: dict[str, Any]
+    warehouseReady: bool = True
+    warehouseSyncPending: int = 0
+    warehouseOldestPendingSec: int = 0
+    warehouseLastSuccessAt: str | None = None
+    warehouseMode: str = "file_ledger_dual_write"
     latencyMs: dict[str, float] | None = None
     error: str | None = None
 

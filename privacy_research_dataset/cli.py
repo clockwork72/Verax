@@ -1048,6 +1048,16 @@ def _write_jsonl_records(path: Path, records: list[dict[str, Any]]) -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def _append_jsonl_with_offset(path: Path, record: dict[str, Any]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(record, ensure_ascii=False) + "\n"
+    with path.open("a+", encoding="utf-8") as f:
+        f.seek(0, os.SEEK_END)
+        offset = f.tell()
+        f.write(payload)
+    return offset
+
+
 def _site_keys_for_result(result: dict[str, Any]) -> set[str]:
     keys: set[str] = set()
     for key in (
@@ -1894,25 +1904,8 @@ async def _run(args: argparse.Namespace) -> None:
                             result["policy_is_english"] = False
 
                 warehouse_sync_pending = False
-                if catalog_syncer is not None:
-                    try:
-                        await asyncio.to_thread(
-                            catalog_syncer.sync_site_result,
-                            out_path=str(out_path),
-                            artifacts_dir=str(args.artifacts_dir),
-                            result=result,
-                        )
-                    except Exception as exc:
-                        warehouse_sync_pending = True
-                        warn(f"Catalog warehouse sync failed for {site}; queued for reconcile. Error: {exc}")
-                        await asyncio.to_thread(
-                            catalog_syncer.enqueue_pending_site,
-                            out_path=str(out_path),
-                            artifacts_dir=str(args.artifacts_dir),
-                            result=result,
-                            error=str(exc),
-                        )
-
+                outbox_result_offset: int | None = None
+                should_skip_output = False
                 async with write_lock:
                     should_skip_output = args.skip_home_fetch_failed and result.get("status") == "home_fetch_failed"
                     if should_skip_output:
@@ -1921,7 +1914,7 @@ async def _run(args: argparse.Namespace) -> None:
                         if args.upsert_by_site:
                             _upsert_result_jsonl(Path(args.out), result)
                         else:
-                            append_jsonl(args.out, result)
+                            outbox_result_offset = _append_jsonl_with_offset(Path(args.out), result)
 
                         if result.get("policy_is_english"):
                             english_jsonl_path = _english_jsonl_out_path(args)
@@ -1965,40 +1958,64 @@ async def _run(args: argparse.Namespace) -> None:
                         run_id=run_id,
                         total_sites=int(summary_payload.get("total_sites") or target_total_sites),
                     )
+                    if result.get("status") == "ok" and args.artifacts_dir:
+                        site_key = result.get("site_etld1") or site
+                        site_art_dir = Path(args.artifacts_dir) / site_key
+                        policy_txt = site_art_dir / "policy.txt"
+                        if policy_txt.exists() and policy_txt.stat().st_size > 0:
+                            is_en = bool(result.get("policy_is_english"))
+                            try:
+                                (site_art_dir / "scrape_complete.json").write_text(
+                                    json.dumps({
+                                        "status": "ok",
+                                        "run_id": run_id,
+                                        "scraped_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                                        "policy_text_len": policy_txt.stat().st_size,
+                                        "policy_is_english": is_en,
+                                    }, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                            except Exception as e:
+                                warn(f"Failed to write scrape_complete.json for {site_key}: {e}")
 
-                if result.get("status") == "ok" and args.artifacts_dir:
-                    site_key = result.get("site_etld1") or site
-                    site_art_dir = Path(args.artifacts_dir) / site_key
-                    policy_txt = site_art_dir / "policy.txt"
-                    if policy_txt.exists() and policy_txt.stat().st_size > 0:
-                        is_en = bool(result.get("policy_is_english"))
-                        try:
-                            (site_art_dir / "scrape_complete.json").write_text(
-                                json.dumps({
-                                    "status": "ok",
-                                    "run_id": run_id,
-                                    "scraped_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                                    "policy_text_len": policy_txt.stat().st_size,
-                                    "policy_is_english": is_en,
-                                }, ensure_ascii=False, indent=2),
-                                encoding="utf-8",
+                            artifacts_ok_dir_str = getattr(args, "artifacts_ok_dir", None) or (
+                                str(Path(args.artifacts_dir).parent / (Path(args.artifacts_dir).name + "_ok"))
                             )
-                        except Exception as e:
-                            warn(f"Failed to write scrape_complete.json for {site_key}: {e}")
+                            try:
+                                qualifies = is_en and _has_third_party_policy(site_art_dir)
+                                if qualifies:
+                                    ok_dir = Path(artifacts_ok_dir_str)
+                                    ok_dir.mkdir(parents=True, exist_ok=True)
+                                    ok_link = ok_dir / site_key
+                                    if not ok_link.exists() and not ok_link.is_symlink():
+                                        ok_link.symlink_to(site_art_dir.resolve())
+                            except Exception as e:
+                                warn(f"Failed to create artifacts_ok symlink for {site_key}: {e}")
 
-                        artifacts_ok_dir_str = getattr(args, "artifacts_ok_dir", None) or (
-                            str(Path(args.artifacts_dir).parent / (Path(args.artifacts_dir).name + "_ok"))
-                        )
+                    if catalog_syncer is not None and not should_skip_output:
                         try:
-                            qualifies = is_en and _has_third_party_policy(site_art_dir)
-                            if qualifies:
-                                ok_dir = Path(artifacts_ok_dir_str)
-                                ok_dir.mkdir(parents=True, exist_ok=True)
-                                ok_link = ok_dir / site_key
-                                if not ok_link.exists() and not ok_link.is_symlink():
-                                    ok_link.symlink_to(site_art_dir.resolve())
-                        except Exception as e:
-                            warn(f"Failed to create artifacts_ok symlink for {site_key}: {e}")
+                            await asyncio.to_thread(
+                                catalog_syncer.enqueue_pending_site,
+                                out_path=str(out_path),
+                                artifacts_dir=str(args.artifacts_dir),
+                                result=result,
+                                error="pending_sync",
+                                result_offset=outbox_result_offset,
+                            )
+                        except Exception as exc:
+                            warehouse_sync_pending = True
+                            warn(f"Catalog warehouse outbox append failed for {site}; sync deferred. Error: {exc}")
+
+                if catalog_syncer is not None and not should_skip_output:
+                    try:
+                        sync_result = await asyncio.to_thread(
+                            catalog_syncer.flush_outbox_for_run,
+                            out_path.parent,
+                        )
+                        warehouse_sync_pending = bool(sync_result.get("pendingCount") or 0)
+                    except Exception as exc:
+                        warehouse_sync_pending = True
+                        warn(f"Catalog warehouse replay failed for {site}; queued for reconcile. Error: {exc}")
 
                 emit_event({
                     "type": "site_finished",

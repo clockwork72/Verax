@@ -39,6 +39,16 @@ function fmtRatio(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
 
+function fmtWarehouseAge(seconds?: number) {
+  const value = Number(seconds || 0)
+  if (!value) return '0s'
+  if (value < 60) return `${value}s`
+  const minutes = Math.floor(value / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h`
+}
+
 function nextColumnSort(current: string, column: 'word_count' | 'third_party_count') {
   const asc = `${column}_asc`
   const desc = `${column}_desc`
@@ -239,7 +249,12 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
             </label>
 
             <div className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-soft)] bg-black/10 px-3 py-3 text-[12px] text-[var(--muted-text)]">
-              <span>Warehouse sync lag: {metrics?.warehouseSyncLag ?? 0}</span>
+              <span>
+                Warehouse {metrics?.warehouseReady === false ? 'catching up' : 'caught up'}
+                {' · '}
+                lag {metrics?.warehouseSyncLag ?? 0}
+                {(metrics?.warehouseOldestPendingSec ?? 0) > 0 ? ` · oldest ${fmtWarehouseAge(metrics?.warehouseOldestPendingSec)}` : ''}
+              </span>
               <button
                 className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 text-[11px] text-[var(--color-warn)] disabled:opacity-50"
                 disabled={reindexing}

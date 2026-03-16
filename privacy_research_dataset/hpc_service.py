@@ -178,6 +178,33 @@ class HpcService:
         async with self._fs_cache_lock:
             self._fs_cache.clear()
 
+    def warehouse_status_snapshot(self) -> dict[str, Any]:
+        if self.catalog is None:
+            return {
+                "warehouse_mode": "file_ledger_dual_write",
+                "warehouse_ready": True,
+                "warehouse_sync_pending": 0,
+                "warehouse_oldest_pending_sec": 0,
+                "warehouse_last_success_at": None,
+            }
+        try:
+            status = self.catalog.syncer.warehouse_status()
+        except Exception:
+            return {
+                "warehouse_mode": "file_ledger_dual_write",
+                "warehouse_ready": False,
+                "warehouse_sync_pending": 0,
+                "warehouse_oldest_pending_sec": 0,
+                "warehouse_last_success_at": None,
+            }
+        return {
+            "warehouse_mode": str(status.get("mode") or "file_ledger_dual_write"),
+            "warehouse_ready": bool(status.get("warehouse_ready", True)),
+            "warehouse_sync_pending": int(status.get("warehouse_sync_pending") or 0),
+            "warehouse_oldest_pending_sec": int(status.get("warehouse_oldest_pending_sec") or 0),
+            "warehouse_last_success_at": status.get("warehouse_last_success_at"),
+        }
+
     async def _bootstrap_catalog(self) -> None:
         if self.catalog is None:
             return

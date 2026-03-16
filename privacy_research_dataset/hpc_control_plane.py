@@ -43,8 +43,12 @@ class ControlPlaneService(Protocol):
     def default_paths(self, out_dir: str | None) -> Any:
         ...
 
+    def warehouse_status_snapshot(self) -> dict[str, Any]:
+        ...
+
 
 def build_health_response(service: ControlPlaneService) -> HealthResponse:
+    warehouse = service.warehouse_status_snapshot()
     return HealthResponse(
         ok=True,
         service_ready=service.postgres.ready,
@@ -61,6 +65,11 @@ def build_health_response(service: ControlPlaneService) -> HealthResponse:
         repo_root=str(service.repo_root),
         current_out_dir=service.current_out_dir,
         source_rev=os.getenv("SCRAPER_SOURCE_REV"),
+        warehouse_ready=bool(warehouse.get("warehouse_ready", True)),
+        warehouse_sync_pending=int(warehouse.get("warehouse_sync_pending") or 0),
+        warehouse_oldest_pending_sec=int(warehouse.get("warehouse_oldest_pending_sec") or 0),
+        warehouse_last_success_at=warehouse.get("warehouse_last_success_at"),
+        warehouse_mode=str(warehouse.get("warehouse_mode") or "file_ledger_dual_write"),
     )
 
 
@@ -77,6 +86,7 @@ def build_poll_response(service: ControlPlaneService, after: int) -> PollRespons
 
 
 def build_status_response(service: ControlPlaneService) -> StatusResponse:
+    warehouse = service.warehouse_status_snapshot()
     return StatusResponse(
         ok=True,
         running=service.scraper.running,
@@ -84,6 +94,11 @@ def build_status_response(service: ControlPlaneService) -> StatusResponse:
         currentOutDir=service.current_out_dir,
         dbDsn=service.postgres.dsn,
         dbReady=service.postgres.ready,
+        warehouseReady=bool(warehouse.get("warehouse_ready", True)),
+        warehouseSyncPending=int(warehouse.get("warehouse_sync_pending") or 0),
+        warehouseOldestPendingSec=int(warehouse.get("warehouse_oldest_pending_sec") or 0),
+        warehouseLastSuccessAt=warehouse.get("warehouse_last_success_at"),
+        warehouseMode=str(warehouse.get("warehouse_mode") or "file_ledger_dual_write"),
     )
 
 

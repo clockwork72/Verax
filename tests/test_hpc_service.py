@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,3 +85,47 @@ async def test_read_json_file_uses_bounded_text_reader(monkeypatch):
 
     assert payload == {"ok": True, "count": 3}
     assert seen == ["read_text"]
+
+
+def test_warehouse_status_snapshot_reflects_catalog_sync_status():
+    service = _make_service_stub()
+    service.catalog = SimpleNamespace(
+        syncer=SimpleNamespace(
+            warehouse_status=lambda: {
+                "mode": "file_ledger_dual_write",
+                "warehouse_ready": False,
+                "warehouse_sync_pending": 3,
+                "warehouse_oldest_pending_sec": 17,
+                "warehouse_last_success_at": "2026-03-16T10:00:00+00:00",
+            }
+        )
+    )
+
+    payload = service.warehouse_status_snapshot()
+
+    assert payload == {
+        "warehouse_mode": "file_ledger_dual_write",
+        "warehouse_ready": False,
+        "warehouse_sync_pending": 3,
+        "warehouse_oldest_pending_sec": 17,
+        "warehouse_last_success_at": "2026-03-16T10:00:00+00:00",
+    }
+
+
+def test_warehouse_status_snapshot_falls_back_when_catalog_status_fails():
+    service = _make_service_stub()
+
+    def _raise() -> dict[str, object]:
+        raise RuntimeError("catalog down")
+
+    service.catalog = SimpleNamespace(syncer=SimpleNamespace(warehouse_status=_raise))
+
+    payload = service.warehouse_status_snapshot()
+
+    assert payload == {
+        "warehouse_mode": "file_ledger_dual_write",
+        "warehouse_ready": False,
+        "warehouse_sync_pending": 0,
+        "warehouse_oldest_pending_sec": 0,
+        "warehouse_last_success_at": None,
+    }

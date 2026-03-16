@@ -36,6 +36,15 @@ class _FakeService:
         self.repo_root = Path("/srv/scraper/repo")
         self.current_out_dir = "outputs/unified"
 
+    def warehouse_status_snapshot(self) -> dict[str, object]:
+        return {
+            "warehouse_mode": "file_ledger_dual_write",
+            "warehouse_ready": True,
+            "warehouse_sync_pending": 0,
+            "warehouse_oldest_pending_sec": 0,
+            "warehouse_last_success_at": "2026-03-12T04:07:16+00:00",
+        }
+
     def default_paths(self, out_dir: str | None):
         relative = out_dir or "outputs/unified"
         root = (self.repo_root / relative).resolve()
@@ -72,6 +81,11 @@ def test_build_health_response_matches_dashboard_bridge_contract(monkeypatch):
         "repo_root": "/srv/scraper/repo",
         "current_out_dir": "outputs/unified",
         "source_rev": "abc123",
+        "warehouse_ready": True,
+        "warehouse_sync_pending": 0,
+        "warehouse_oldest_pending_sec": 0,
+        "warehouse_last_success_at": "2026-03-12T04:07:16+00:00",
+        "warehouse_mode": "file_ledger_dual_write",
     }
 
 
@@ -96,6 +110,11 @@ def test_build_poll_and_status_responses_preserve_existing_field_names():
         "currentOutDir": "outputs/unified",
         "dbDsn": "postgresql://scraper:secret@127.0.0.1:55432/scraper",
         "dbReady": True,
+        "warehouseReady": True,
+        "warehouseSyncPending": 0,
+        "warehouseOldestPendingSec": 0,
+        "warehouseLastSuccessAt": "2026-03-12T04:07:16+00:00",
+        "warehouseMode": "file_ledger_dual_write",
     }
 
 

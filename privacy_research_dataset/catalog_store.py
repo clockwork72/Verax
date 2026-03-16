@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - sqlite-backed tests do not need psycopg
     dict_row = None
     ConnectionPool = None
 
+from .catalog_outbox import aggregate_outputs_status
 from .catalog_query import build_order_by, build_site_match_query
 from .catalog_types import CatalogQueryRequest, CatalogRunBundle, CatalogSiteBundle
 
@@ -399,7 +400,13 @@ class CatalogStore:
         }
 
     def metrics(self) -> dict[str, Any]:
-        pending = _count_pending_queue_entries(self.outputs_root) if self.outputs_root else 0
+        warehouse = aggregate_outputs_status(self.outputs_root) if self.outputs_root else {
+            "warehouse_ready": True,
+            "warehouse_sync_pending": 0,
+            "warehouse_oldest_pending_sec": 0,
+            "warehouse_last_success_at": None,
+            "mode": "file_ledger_dual_write",
+        }
         with self.connect() as conn:
             runs = self._fetchone(conn, "SELECT COUNT(*) AS count FROM catalog_runs")
             sites = self._fetchone(conn, "SELECT COUNT(*) AS count FROM catalog_sites")
@@ -485,7 +492,12 @@ class CatalogStore:
             "searchRows": int((search_rows or {}).get("count") or 0),
             "englishFirstPartyPolicies": int((english or {}).get("count") or 0),
             "qualifiedEnglishSites": int((qualified or {}).get("count") or 0),
-            "warehouseSyncLag": pending,
+            "warehouseReady": bool(warehouse.get("warehouse_ready", True)),
+            "warehouseSyncLag": int(warehouse.get("warehouse_sync_pending") or 0),
+            "warehouseSyncPending": int(warehouse.get("warehouse_sync_pending") or 0),
+            "warehouseOldestPendingSec": int(warehouse.get("warehouse_oldest_pending_sec") or 0),
+            "warehouseLastSuccessAt": warehouse.get("warehouse_last_success_at"),
+            "warehouseMode": str(warehouse.get("mode") or "file_ledger_dual_write"),
             "dedupRatio": round((1.0 - (unique_hashes / max(1, documents))), 6) if documents else 0.0,
             "ingestion": {
                 "totalRuns": int((audit or {}).get("total_ingestions") or 0),
@@ -1249,15 +1261,3 @@ def _json_loads(value: Any) -> list[str]:
 
 def _bucket(row: dict[str, Any]) -> dict[str, Any]:
     return {"name": row.get("name"), "count": int(row.get("count") or 0)}
-
-
-def _count_pending_queue_entries(outputs_root: Path | None) -> int:
-    if outputs_root is None or not outputs_root.exists():
-        return 0
-    total = 0
-    for path in outputs_root.glob("*/warehouse_sync_pending.jsonl"):
-        try:
-            total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-        except Exception:
-            continue
-    return total

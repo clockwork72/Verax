@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from privacy_research_dataset.catalog_ingest import build_site_bundle, build_run_bundle
+from privacy_research_dataset.catalog_ingest import CatalogSyncer, build_site_bundle, build_run_bundle
 from privacy_research_dataset.catalog_store import CatalogStore
 from privacy_research_dataset.catalog_types import CatalogQueryRequest
 
@@ -133,7 +133,6 @@ def populated_store(tmp_path: Path) -> CatalogStore:
     store = CatalogStore(dsn, outputs_root=str(tmp_path / "outputs"))
     store.ensure_schema()
 
-    from privacy_research_dataset.catalog_ingest import CatalogSyncer
     syncer = CatalogSyncer(dsn, outputs_root=str(tmp_path / "outputs"))
     syncer.ensure_schema()
     result = syncer.ingest_outputs()
@@ -142,6 +141,34 @@ def populated_store(tmp_path: Path) -> CatalogStore:
     assert result["processedSites"] == 5
 
     return store
+
+
+def _write_run_metadata(run_dir: Path, *, run_id: str, total_sites: int = 1) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run_state.json").write_text(json.dumps({
+        "run_id": run_id,
+        "total_sites": total_sites,
+        "started_at": "2026-01-01T00:00:00Z",
+    }))
+    (run_dir / "dashboard_run_manifest.json").write_text(json.dumps({
+        "runId": run_id,
+        "status": "running",
+        "expectedTotalSites": total_sites,
+    }))
+    (run_dir / "results.summary.json").write_text(json.dumps({
+        "run_id": run_id,
+        "total_sites": total_sites,
+    }))
+
+
+def _append_result_record(path: Path, record: dict[str, object]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(record) + "\n"
+    with path.open("a+", encoding="utf-8") as fh:
+        fh.seek(0, os.SEEK_END)
+        offset = fh.tell()
+        fh.write(payload)
+    return offset
 
 
 class TestSchemaBootstrap:
@@ -278,6 +305,111 @@ class TestMetrics:
         assert m["quality"]["successRate"] > 0
         assert len(m["statusBreakdown"]) >= 1
         assert len(m["categoryBreakdown"]) >= 1
+
+    def test_metrics_report_outbox_freshness(self, tmp_path: Path) -> None:
+        outputs_root = tmp_path / "outputs"
+        run_dir = outputs_root / "run-1"
+        artifacts_dir = run_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True)
+        run_id = "run-1"
+        _write_run_metadata(run_dir, run_id=run_id)
+        result = {
+            "rank": 1,
+            "input": "example.com",
+            "site_etld1": "example.com",
+            "site_url": "https://example.com",
+            "status": "ok",
+            "main_category": "Technology",
+            "policy_is_english": True,
+            "run_id": run_id,
+            "first_party_policy": {"url": "https://example.com/privacy", "status_code": 200, "text_len": 200},
+            "third_parties": [],
+            "third_party_policy_fetches": [],
+        }
+        (artifacts_dir / "example.com").mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / "example.com" / "policy.txt").write_text("Privacy policy text " * 30)
+        offset = _append_result_record(run_dir / "results.jsonl", result)
+
+        syncer = CatalogSyncer(f"sqlite:///{tmp_path / 'catalog.db'}", outputs_root=str(outputs_root))
+        syncer.ensure_schema()
+        syncer.enqueue_pending_site(
+            out_path=run_dir / "results.jsonl",
+            artifacts_dir=artifacts_dir,
+            result=result,
+            error="pending_sync",
+            result_offset=offset,
+        )
+
+        status = syncer.warehouse_status(run_dir=run_dir)
+        metrics = syncer.store.metrics()
+
+        assert status["warehouse_ready"] is False
+        assert status["warehouse_sync_pending"] == 1
+        assert metrics["warehouseReady"] is False
+        assert metrics["warehouseSyncLag"] == 1
+        assert metrics["warehouseSyncPending"] == 1
+
+
+class TestOutboxReplay:
+    def test_flush_outbox_replays_result_by_offset(self, tmp_path: Path) -> None:
+        outputs_root = tmp_path / "outputs"
+        run_dir = outputs_root / "run-1"
+        artifacts_dir = run_dir / "artifacts"
+        site_dir = artifacts_dir / "example.com"
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "policy.txt").write_text("Privacy policy text " * 50)
+        run_id = "run-1"
+        _write_run_metadata(run_dir, run_id=run_id)
+
+        first = {
+            "rank": 1,
+            "input": "example.com",
+            "site_etld1": "example.com",
+            "site_url": "https://example.com",
+            "status": "home_fetch_failed",
+            "main_category": "Technology",
+            "policy_is_english": False,
+            "run_id": run_id,
+            "first_party_policy": {},
+            "third_parties": [],
+            "third_party_policy_fetches": [],
+        }
+        second = {
+            "rank": 1,
+            "input": "example.com",
+            "site_etld1": "example.com",
+            "site_url": "https://example.com",
+            "status": "ok",
+            "main_category": "Shopping",
+            "policy_is_english": True,
+            "run_id": run_id,
+            "first_party_policy": {"url": "https://example.com/privacy", "status_code": 200, "text_len": 500},
+            "third_parties": [],
+            "third_party_policy_fetches": [],
+        }
+
+        results_path = run_dir / "results.jsonl"
+        first_offset = _append_result_record(results_path, first)
+        _append_result_record(results_path, second)
+
+        syncer = CatalogSyncer(f"sqlite:///{tmp_path / 'catalog.db'}", outputs_root=str(outputs_root))
+        syncer.ensure_schema()
+        syncer.enqueue_pending_site(
+            out_path=results_path,
+            artifacts_dir=artifacts_dir,
+            result=first,
+            error="pending_sync",
+            result_offset=first_offset,
+        )
+
+        summary = syncer.flush_outbox_for_run(run_dir)
+        items = syncer.store.query_catalog(CatalogQueryRequest())["items"]
+
+        assert summary["ok"] is True
+        assert summary["processedSites"] == 1
+        assert summary["pendingCount"] == 0
+        assert items[0]["site"] == "example.com"
+        assert items[0]["status"] == "home_fetch_failed"
 
 
 class TestCatalogQueryRequest:

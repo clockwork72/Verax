@@ -10,6 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .catalog_outbox import (
+    aggregate_outputs_status,
+    append_outbox_event,
+    load_outbox_entries,
+    read_status,
+    update_status,
+    write_outbox_entries,
+)
 from .catalog_store import CatalogStore
 from .catalog_taxonomy import normalize_tracker_categories
 from .catalog_types import (
@@ -63,7 +71,7 @@ class CatalogSyncer:
                 processed_sites += site_count
                 processed_runs += 1
                 if reconcile_pending:
-                    stats = self.reconcile_pending_for_run(path)
+                    stats = self.flush_outbox_for_run(path)
                     processed_sites += int(stats.get("processedSites") or 0)
                     error_count += int(stats.get("errors") or 0)
             except Exception as exc:
@@ -116,40 +124,44 @@ class CatalogSyncer:
         _clear_pending_marker(Path(artifacts_dir).resolve(), bundle.site_etld1)
         return {"ok": True, "site": bundle.site_etld1, "runId": bundle.run_id}
 
-    def enqueue_pending_site(self, *, out_path: str | Path, artifacts_dir: str | Path, result: dict[str, Any], error: str) -> dict[str, Any]:
+    def enqueue_pending_site(
+        self,
+        *,
+        out_path: str | Path,
+        artifacts_dir: str | Path,
+        result: dict[str, Any],
+        error: str,
+        result_offset: int | None = None,
+    ) -> dict[str, Any]:
         out_file = Path(out_path).resolve()
-        queue_path = out_file.parent / "warehouse_sync_pending.jsonl"
+        run_dir = out_file.parent
         site = str(result.get("site_etld1") or result.get("input") or "").strip()
-        payload = {
-            "runId": str(result.get("run_id") or _run_id_for_dir(out_file.parent)),
-            "outDir": _relative_out_dir(out_file.parent, self.repo_root),
-            "site": site,
-            "queuedAt": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-            "error": error,
-        }
-        queue_path.parent.mkdir(parents=True, exist_ok=True)
-        with queue_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        payload = append_outbox_event(
+            run_dir,
+            run_id=str(result.get("run_id") or _run_id_for_dir(run_dir)),
+            out_dir=_relative_out_dir(run_dir, self.repo_root),
+            site=site,
+            result_offset=result_offset,
+            replay_key=site,
+            last_error=error,
+        )
         _write_pending_marker(Path(artifacts_dir).resolve(), site, payload)
         return payload
 
-    def reconcile_pending_for_run(self, run_dir: str | Path) -> dict[str, Any]:
+    def flush_outbox_for_run(self, run_dir: str | Path) -> dict[str, Any]:
         self.ensure_schema()
         run_path = Path(run_dir).resolve()
-        queue_path = run_path / "warehouse_sync_pending.jsonl"
-        if not queue_path.exists():
-            return {"ok": True, "processedSites": 0, "errors": 0}
-        pending = []
-        for line in queue_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                pending.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+        pending = load_outbox_entries(run_path)
         if not pending:
-            queue_path.unlink(missing_ok=True)
-            return {"ok": True, "processedSites": 0, "errors": 0}
+            update_status(run_path)
+            return {
+                "ok": True,
+                "processedSites": 0,
+                "errors": 0,
+                "pendingCount": 0,
+                "warehouseReady": True,
+            }
+        results_path = run_path / "results.jsonl"
         results_by_site = {
             bundle.site_etld1: bundle
             for bundle in build_run_bundle(run_path, repo_root=self.repo_root).site_bundles
@@ -159,25 +171,58 @@ class CatalogSyncer:
         kept: list[dict[str, Any]] = []
         processed = 0
         errors = 0
+        last_applied_event_id: str | None = None
+        last_success_at: str | None = None
         for item in pending:
             site = str(item.get("site") or "").strip()
-            bundle = results_by_site.get(site)
+            bundle = _site_bundle_for_outbox_item(
+                item,
+                results_path=results_path,
+                run_path=run_path,
+                repo_root=self.repo_root,
+                artifacts_dir=run_path / "artifacts",
+            )
             if bundle is None:
-                kept.append(item)
+                bundle = results_by_site.get(site)
+            if bundle is None:
+                kept.append({**item, "attempt_count": int(item.get("attempt_count") or 0) + 1, "last_error": "result_not_found"})
                 continue
             try:
                 self.store.upsert_site_bundle(bundle)
                 processed += 1
-                _clear_pending_marker(run_path / "artifacts", site)
+                last_applied_event_id = str(item.get("event_id") or "") or last_applied_event_id
+                last_success_at = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+                _clear_pending_marker(run_path / "artifacts", bundle.site_etld1)
             except Exception as exc:
-                kept.append({**item, "error": str(exc)})
+                kept.append(
+                    {
+                        **item,
+                        "attempt_count": int(item.get("attempt_count") or 0) + 1,
+                        "last_error": str(exc),
+                    }
+                )
                 errors += 1
-        self.store.refresh_derived(run_id=run_bundle.run_id)
-        if kept:
-            queue_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in kept) + "\n", encoding="utf-8")
-        else:
-            queue_path.unlink(missing_ok=True)
-        return {"ok": errors == 0, "processedSites": processed, "errors": errors}
+        if processed:
+            self.store.refresh_derived(run_id=run_bundle.run_id)
+        write_outbox_entries(run_path, kept)
+        status = update_status(run_path, last_applied_event_id=last_applied_event_id, last_success_at=last_success_at)
+        return {
+            "ok": errors == 0,
+            "processedSites": processed,
+            "errors": errors,
+            "pendingCount": int(status.get("warehouse_sync_pending") or 0),
+            "warehouseReady": bool(status.get("warehouse_ready")),
+            "lastAppliedEventId": status.get("last_applied_event_id"),
+            "lastSuccessAt": status.get("warehouse_last_success_at"),
+        }
+
+    def reconcile_pending_for_run(self, run_dir: str | Path) -> dict[str, Any]:
+        return self.flush_outbox_for_run(run_dir)
+
+    def warehouse_status(self, *, run_dir: str | Path | None = None) -> dict[str, Any]:
+        if run_dir is not None:
+            return read_status(Path(run_dir).resolve())
+        return aggregate_outputs_status(self.outputs_root)
 
 
 def build_run_bundle(run_dir: str | Path, *, repo_root: str | Path) -> CatalogRunBundle:
@@ -426,6 +471,49 @@ def _text_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _site_bundle_for_outbox_item(
+    item: dict[str, Any],
+    *,
+    results_path: Path,
+    run_path: Path,
+    repo_root: Path,
+    artifacts_dir: Path,
+) -> CatalogSiteBundle | None:
+    result_offset = item.get("result_offset")
+    if not isinstance(result_offset, int) or result_offset < 0:
+        return None
+    result = _load_result_at_offset(results_path, result_offset)
+    if result is None:
+        return None
+    try:
+        return build_site_bundle(
+            result,
+            run_dir=run_path,
+            repo_root=repo_root,
+            artifacts_dir=artifacts_dir,
+        )
+    except Exception:
+        return None
+
+
+def _load_result_at_offset(results_path: Path, offset: int) -> dict[str, Any] | None:
+    if offset < 0 or not results_path.exists():
+        return None
+    try:
+        with results_path.open("r", encoding="utf-8") as fh:
+            fh.seek(offset)
+            line = fh.readline()
+    except Exception:
+        return None
+    if not line.strip():
+        return None
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _int_or_none(value: Any) -> int | None:

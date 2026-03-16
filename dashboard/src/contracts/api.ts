@@ -39,6 +39,16 @@ export type HpcBridgeStatus = {
   tunnel_state?: 'stale' | 'offline'
   source_rev?: string
   local_source_rev?: string
+  warehouse_ready?: boolean
+  warehouse_sync_pending?: number
+  warehouse_oldest_pending_sec?: number
+  warehouse_last_success_at?: string | null
+  warehouse_mode?: string
+  warehouseReady?: boolean
+  warehouseSyncPending?: number
+  warehouseOldestPendingSec?: number
+  warehouseLastSuccessAt?: string | null
+  warehouseMode?: string
 }
 
 export type HealthResponse = {
@@ -57,6 +67,11 @@ export type HealthResponse = {
   repo_root: string
   current_out_dir: string
   source_rev?: string | null
+  warehouse_ready?: boolean
+  warehouse_sync_pending?: number
+  warehouse_oldest_pending_sec?: number
+  warehouse_last_success_at?: string | null
+  warehouse_mode?: string
 }
 
 export type PollResponse = {
@@ -75,6 +90,11 @@ export type StatusResponse = {
   currentOutDir: string
   dbDsn: string
   dbReady: boolean
+  warehouseReady?: boolean
+  warehouseSyncPending?: number
+  warehouseOldestPendingSec?: number
+  warehouseLastSuccessAt?: string | null
+  warehouseMode?: string
 }
 
 export type PathsPayload = {
@@ -322,7 +342,12 @@ export type CatalogMetricsResponse = {
   searchRows: number
   englishFirstPartyPolicies: number
   qualifiedEnglishSites: number
+  warehouseReady?: boolean
   warehouseSyncLag: number
+  warehouseSyncPending?: number
+  warehouseOldestPendingSec?: number
+  warehouseLastSuccessAt?: string | null
+  warehouseMode?: string
   dedupRatio: number
   ingestion: {
     totalRuns: number
