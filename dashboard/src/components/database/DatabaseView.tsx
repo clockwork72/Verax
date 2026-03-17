@@ -312,7 +312,7 @@ export function DatabaseView({
             {[
               ['Third-party mapped', thirdParty.mapped ? `${thirdParty.mapped}` : '—'],
               ['Third-party unmapped', thirdParty.unmapped ? `${thirdParty.unmapped}` : '—'],
-              ['No policy URL', thirdParty.no_policy_url ? `${thirdParty.no_policy_url}` : '—'],
+              ['No policy URL hits', thirdParty.no_policy_url ? `${thirdParty.no_policy_url}` : '—'],
               ['Annotation sites', annotationStats?.total_sites ? `${annotationStats.total_sites}` : '—'],
             ].map(([label, value]) => (
               <div key={label} className="rounded-xl border border-[var(--border-soft)] bg-black/10 px-3 py-3">

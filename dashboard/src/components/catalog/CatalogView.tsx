@@ -15,6 +15,7 @@ type CatalogViewProps = {
   bridgeReady: boolean
 }
 
+const PAGE_SIZE = 100
 const SITE_STATUSES = ['ok', 'policy_not_found', 'home_fetch_failed', 'non_browsable', 'exception']
 const SORT_OPTIONS = [
   { value: 'site_asc', label: 'Site A-Z' },
@@ -66,6 +67,7 @@ function sortLabel(current: string, column: 'word_count' | 'third_party_count') 
 export function CatalogView({ bridgeReady }: CatalogViewProps) {
   const [items, setItems] = useState<CatalogQueryItem[]>([])
   const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
   const [facets, setFacets] = useState<CatalogFacetResponse | null>(null)
   const [metrics, setMetrics] = useState<CatalogMetricsResponse | null>(null)
   const [loading, setLoading] = useState(false)
@@ -93,24 +95,36 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
     thirdPartyCategoriesAny,
     thirdPartyDomain: thirdPartyDomain.trim() || undefined,
     entity: entity.trim() || undefined,
-    limit: 100,
-    offset: 0,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
     sort,
   }
 
-  const load = async () => {
+  const load = async (pageOverride?: number) => {
     if (!bridgeReady || !window.scraper) return
+    const nextPage = Math.max(0, pageOverride ?? page)
+    const queryRequest: CatalogQueryRequest = {
+      ...request,
+      limit: PAGE_SIZE,
+      offset: nextPage * PAGE_SIZE,
+    }
     setLoading(true)
     setError(null)
     try {
       const [queryRes, facetsRes, metricsRes] = await Promise.all([
-        window.scraper.catalogQuery(request),
-        window.scraper.catalogFacets(request),
+        window.scraper.catalogQuery(queryRequest),
+        window.scraper.catalogFacets(queryRequest),
         window.scraper.catalogMetrics(),
       ])
       if (!queryRes?.ok) throw new Error(queryRes?.error || 'query_failed')
+      const nextTotal = Number(queryRes.total || 0)
+      const lastPage = Math.max(0, Math.ceil(nextTotal / PAGE_SIZE) - 1)
+      if (nextPage > lastPage) {
+        setPage(lastPage)
+        return
+      }
       setItems(queryRes.items || [])
-      setTotal(Number(queryRes.total || 0))
+      setTotal(nextTotal)
       setFacets(facetsRes?.ok ? facetsRes : null)
       setMetrics(metricsRes?.ok ? metricsRes : null)
     } catch (err) {
@@ -123,11 +137,12 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeReady, sort])
+  }, [bridgeReady, page, sort])
 
   const statusCounts = bucketMap(facets?.statuses)
   const serviceCounts = bucketMap(facets?.serviceCategories)
   const siteCounts = bucketMap(facets?.siteCategories)
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <div className="flex flex-col gap-5">
@@ -153,7 +168,10 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
               {loading && <StatusPill variant="running" label="loading" />}
               <button
                 className="focusable rounded-full border border-[var(--glass-border)] px-3 py-1.5 text-[11px] text-[var(--color-primary)]"
-                onClick={() => void load()}
+                onClick={() => {
+                  setPage(0)
+                  void load(0)
+                }}
               >
                 Run query
               </button>
@@ -344,6 +362,31 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
                   </div>
                 </div>
               ))}
+            </div>
+            <div className="flex items-center justify-between border-t border-[var(--border-soft)] bg-black/20 px-4 py-3 text-[11px] text-[var(--muted-text)]">
+              <span>
+                Page {(page + 1).toLocaleString()} of {totalPages.toLocaleString()}
+                {' · '}
+                showing {items.length.toLocaleString()} of {total.toLocaleString()}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 transition-colors hover:border-[var(--glass-border)] disabled:opacity-50"
+                  disabled={loading || page === 0}
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  type="button"
+                >
+                  Prev
+                </button>
+                <button
+                  className="focusable rounded-full border border-[var(--border-soft)] px-3 py-1 transition-colors hover:border-[var(--glass-border)] disabled:opacity-50"
+                  disabled={loading || page >= totalPages - 1}
+                  onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
+                  type="button"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           </div>
         </BentoCard>

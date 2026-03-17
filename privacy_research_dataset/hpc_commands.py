@@ -7,7 +7,8 @@ from typing import Any, Protocol
 from .hpc_runtime import Paths, utc_now
 
 
-SAFE_SCRAPER_CONCURRENCY = 6
+SAFE_SCRAPER_CONCURRENCY = 4
+SAFE_BROWSER_FETCH_CONCURRENCY = 4
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20
 SAFE_TP_POLICY_MAX = 12
@@ -153,6 +154,8 @@ def build_scraper_args(
         str(paths.explorer_jsonl),
         "--concurrency",
         str(max(1, int(options.get("concurrency") or SAFE_SCRAPER_CONCURRENCY))),
+        "--browser-fetch-concurrency",
+        str(max(1, int(options.get("browserFetchConcurrency") or SAFE_BROWSER_FETCH_CONCURRENCY))),
         "--third-party-policy-max",
         str(max(1, int(options.get("thirdPartyPolicyMax") or SAFE_TP_POLICY_MAX))),
         "--policy-cache-max-entries",

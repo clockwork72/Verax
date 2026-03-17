@@ -112,6 +112,7 @@ class Crawl4AIClient:
         locale: str | None = None,
         timezone_id: str | None = None,
         page_timeout_ms: int = 15000,
+        fetch_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         self.browser_type = browser_type
         self.headless = headless
@@ -121,6 +122,7 @@ class Crawl4AIClient:
         self.locale = locale
         self.timezone_id = timezone_id
         self.page_timeout_ms = page_timeout_ms
+        self.fetch_semaphore = fetch_semaphore
         self._crawler = None
 
     async def __aenter__(self) -> "Crawl4AIClient":
@@ -211,7 +213,11 @@ class Crawl4AIClient:
         run_cfg = CrawlerRunConfig(**_filter_kwargs(CrawlerRunConfig, cfg_kwargs))
 
         try:
-            res = await self._crawler.arun(url=url, config=run_cfg)
+            if self.fetch_semaphore is None:
+                res = await self._crawler.arun(url=url, config=run_cfg)
+            else:
+                async with self.fetch_semaphore:
+                    res = await self._crawler.arun(url=url, config=run_cfg)
         except Exception as e:
             return Crawl4AIResult(
                 url=url,

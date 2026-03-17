@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from argparse import Namespace
 
-from privacy_research_dataset.cli import _build_outputs_from_results, _build_summary_from_results, _load_input_sites
+from privacy_research_dataset.cli import (
+    _build_outputs_from_results,
+    _build_summary_builder_from_results,
+    _build_summary_from_results,
+    _load_input_sites,
+)
 
 
 def test_load_input_sites_resumes_after_rank(tmp_path):
@@ -56,6 +61,31 @@ def test_build_summary_from_results_keeps_expected_total(tmp_path):
         {"name": "Technology", "count": 1},
         {"name": "News", "count": 1},
     ]
+
+
+def test_build_summary_builder_from_results_preserves_prior_started_at(tmp_path):
+    out_path = tmp_path / "results.jsonl"
+    out_path.write_text(
+        "".join([
+            json.dumps({"input": "alpha.example", "site_etld1": "alpha.example", "status": "ok", "started_at": "2026-03-17T09:00:00Z"}) + "\n",
+            json.dumps({"input": "beta.example", "site_etld1": "beta.example", "status": "policy_not_found", "started_at": "2026-03-17T09:02:00Z"}) + "\n",
+        ]),
+        encoding="utf-8",
+    )
+
+    builder = _build_summary_builder_from_results(
+        out_path,
+        run_id="resume-test",
+        mapping_mode="mixed",
+        total_sites_override=10,
+        started_at_hint="2026-03-17T08:55:00Z",
+    )
+
+    summary = builder.to_summary()
+    assert summary["processed_sites"] == 2
+    assert summary["total_sites"] == 10
+    assert summary["started_at"] == "2026-03-17T08:55:00Z"
+    assert summary["status_counts"] == {"ok": 1, "policy_not_found": 1}
 
 
 def test_build_outputs_from_results_recovers_english_scoped_figure_data_from_artifacts(tmp_path):

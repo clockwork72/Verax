@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from privacy_research_dataset.hpc_commands import (
+    SAFE_BROWSER_FETCH_CONCURRENCY,
     SAFE_SCRAPER_CONCURRENCY,
     SAFE_TP_POLICY_MAX,
     annotator_rate_limit_args,
@@ -55,7 +56,9 @@ def test_build_scraper_args_preserves_manifest_and_resume_flags(tmp_path):
     assert "--skip-home-fetch-failed" in argv
     assert "--exclude-same-entity" in argv
     concurrency_index = argv.index("--concurrency")
+    browser_fetch_index = argv.index("--browser-fetch-concurrency")
     assert argv[concurrency_index + 1] == str(SAFE_SCRAPER_CONCURRENCY)
+    assert argv[browser_fetch_index + 1] == str(SAFE_BROWSER_FETCH_CONCURRENCY)
     tp_max_index = argv.index("--third-party-policy-max")
     assert argv[tp_max_index + 1] == str(SAFE_TP_POLICY_MAX)
     assert manifest["runId"] == "run-42"
@@ -113,14 +116,17 @@ def test_build_scraper_args_honors_runtime_scale_overrides(tmp_path):
         options={
             "sites": ["alpha.example"],
             "concurrency": 4,
+            "browserFetchConcurrency": 3,
             "thirdPartyPolicyMax": 7,
         },
     )
 
     concurrency_index = argv.index("--concurrency")
+    browser_fetch_index = argv.index("--browser-fetch-concurrency")
     tp_max_index = argv.index("--third-party-policy-max")
 
     assert argv[concurrency_index + 1] == "4"
+    assert argv[browser_fetch_index + 1] == "3"
     assert argv[tp_max_index + 1] == "7"
 
 

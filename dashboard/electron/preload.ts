@@ -26,8 +26,8 @@ contextBridge.exposeInMainWorld('scraper', {
   getPaths: (outDir?: string) => ipcRenderer.invoke('scraper:get-paths', outDir),
   readSummary: (path?: string) => ipcRenderer.invoke('scraper:read-summary', path),
   readState: (path?: string) => ipcRenderer.invoke('scraper:read-state', path),
-  readExplorer: (path?: string, limit?: number) => ipcRenderer.invoke('scraper:read-explorer', path, limit),
-  readResults: (path?: string, limit?: number) => ipcRenderer.invoke('scraper:read-results', path, limit),
+  readExplorer: (path?: string, limit?: number, offset?: number) => ipcRenderer.invoke('scraper:read-explorer', path, limit, offset),
+  readResults: (path?: string, limit?: number, offset?: number) => ipcRenderer.invoke('scraper:read-results', path, limit, offset),
   readAuditState: (outDir?: string) => ipcRenderer.invoke('scraper:read-audit-state', outDir),
   readRunManifest: (outDir?: string) => ipcRenderer.invoke('scraper:read-run-manifest', outDir),
   writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) =>

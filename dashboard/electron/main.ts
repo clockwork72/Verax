@@ -583,12 +583,12 @@ ipcMain.handle('scraper:read-state', async (_event, filePath?: string) => {
   return hpcRequest(`/api/state?filePath=${encode(filePath)}`)
 })
 
-ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?: number) => {
-  return hpcRequest(`/api/explorer?${params([['filePath', filePath], ['limit', limit]])}`)
+ipcMain.handle('scraper:read-explorer', async (_event, filePath?: string, limit?: number, offset?: number) => {
+  return hpcRequest(`/api/explorer?${params([['filePath', filePath], ['limit', limit], ['offset', offset]])}`)
 })
 
-ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?: number) => {
-  return hpcRequest(`/api/results?${params([['filePath', filePath], ['limit', limit]])}`)
+ipcMain.handle('scraper:read-results', async (_event, filePath?: string, limit?: number, offset?: number) => {
+  return hpcRequest(`/api/results?${params([['filePath', filePath], ['limit', limit], ['offset', offset]])}`)
 })
 
 ipcMain.handle('scraper:read-audit-state', async (_event, outDir?: string) => {

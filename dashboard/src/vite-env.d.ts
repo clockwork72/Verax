@@ -76,8 +76,8 @@ declare global {
       getPaths: (outDir?: string) => Promise<PathsPayload | PathsResponse>
       readSummary: (path?: string) => Promise<JsonPathResponse<RunSummary>>
       readState: (path?: string) => Promise<JsonPathResponse<RunState>>
-      readExplorer: (path?: string, limit?: number) => Promise<JsonPathResponse<unknown[]>>
-      readResults: (path?: string, limit?: number) => Promise<JsonPathResponse<ResultRecord[]>>
+      readExplorer: (path?: string, limit?: number, offset?: number) => Promise<JsonPathResponse<unknown[]>>
+      readResults: (path?: string, limit?: number, offset?: number) => Promise<JsonPathResponse<ResultRecord[]>>
       readAuditState: (outDir?: string) => Promise<JsonPathResponse<{ verifiedSites: string[]; urlOverrides: Record<string, string> }>>
       readRunManifest: (outDir?: string) => Promise<JsonPathResponse<RunManifest>>
       writeAuditState: (payload?: { outDir?: string; verifiedSites?: string[]; urlOverrides?: Record<string, string> }) => Promise<WriteAuditStateResponse>

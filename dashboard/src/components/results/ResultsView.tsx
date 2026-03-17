@@ -116,6 +116,7 @@ export function ResultsView({
   const uniqueMapped = thirdParty.unique_mapped ?? 0
   const uniqueWithPolicy = thirdParty.unique_with_policy ?? null
   const radarNoPolicy = thirdParty.no_policy_url ?? 0
+  const uniqueWithoutPolicy = Math.max(0, uniqueMapped - (uniqueWithPolicy ?? 0))
   const englishPolicyCount = effectiveSummary?.english_policy_count ?? null
   const siteCategories: RunSummaryCategory[] = effectiveSummary?.site_categories ?? []
 
@@ -288,7 +289,11 @@ export function ResultsView({
             {[
               { label: 'Unique detected', value: thirdPartyDetected, info: 'Unique third-party eTLD+1 domains observed.' },
               { label: 'With policy URL', value: uniqueWithPolicy, info: 'Mapped services providing a policy URL.' },
-              { label: 'No policy URL', value: radarNoPolicy, info: 'Mapped occurrences without a policy URL.' },
+              {
+                label: 'Without policy URL',
+                value: uniqueWithoutPolicy,
+                info: `Unique mapped domains without a policy URL. Raw occurrence count: ${radarNoPolicy.toLocaleString()}.`,
+              },
             ].map((s) => (
               <div key={s.label} className="rounded-lg border border-[var(--border-soft)] bg-black/15 px-2.5 py-2">
                 <p className="flex items-center text-[var(--muted-text)]">{s.label}<InfoTip text={s.info} /></p>

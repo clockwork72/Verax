@@ -445,6 +445,12 @@ def _parse_args() -> argparse.Namespace:
     scale = p.add_argument_group("Scale / behavior")
     scale.add_argument("--max-sites", type=int, default=None, help="Hard cap on number of sites processed.")
     scale.add_argument("--concurrency", type=int, default=3, help="How many sites to process concurrently.")
+    scale.add_argument(
+        "--browser-fetch-concurrency",
+        type=int,
+        default=4,
+        help="Global cap on simultaneous browser-backed fetches across all workers. Default: 4.",
+    )
     scale.add_argument("--third-party-engine", type=str, default="crawl4ai", choices=["crawl4ai", "openwpm"], help="How to collect third-party requests: crawl4ai (default) or openwpm (heavier).")
     scale.add_argument("--no-third-party-policy-fetch", action="store_true", help="Do not fetch third-party policy texts (still records mappings).")
     scale.add_argument("--third-party-policy-max", type=int, default=30, help="Max number of third-party policies to fetch per site (ranked by prevalence when available).")
@@ -1133,6 +1139,86 @@ def _build_summary_from_results(
     return summary
 
 
+def _summary_started_at_hint(*paths: Path | None) -> str | None:
+    for path in paths:
+        if path is None or not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        started_at = payload.get("started_at")
+        if isinstance(started_at, str) and started_at.strip():
+            return started_at
+    return None
+
+
+def _build_summary_builder_from_results(
+    out_path: Path,
+    *,
+    run_id: str,
+    mapping_mode: str,
+    total_sites_override: int | None = None,
+    started_at_hint: str | None = None,
+) -> SummaryBuilder:
+    return _build_summary_builder_from_records(
+        list(_iter_jsonl(out_path)),
+        artifacts_dir=out_path.parent / "artifacts",
+        run_id=run_id,
+        mapping_mode=mapping_mode,
+        total_sites_override=total_sites_override,
+        started_at_hint=started_at_hint,
+    )
+
+
+def _build_summary_builder_from_records(
+    records: list[dict[str, Any]],
+    *,
+    artifacts_dir: Path,
+    run_id: str,
+    mapping_mode: str,
+    total_sites_override: int | None = None,
+    started_at_hint: str | None = None,
+) -> SummaryBuilder:
+    english_policy_sites = _english_policy_sites_from_artifacts(artifacts_dir)
+    sites_seen: set[str] = set()
+    for rec in records:
+        key = rec.get("site_etld1") or rec.get("input")
+        if isinstance(key, str) and key:
+            sites_seen.add(key)
+    effective_total_sites = len(sites_seen)
+    if isinstance(total_sites_override, int) and total_sites_override > 0:
+        effective_total_sites = max(effective_total_sites, total_sites_override)
+
+    started_at = started_at_hint
+    if not started_at:
+        for rec in records:
+            rec_started_at = rec.get("started_at")
+            if isinstance(rec_started_at, str) and rec_started_at.strip():
+                started_at = rec_started_at
+                break
+
+    builder_kwargs: dict[str, Any] = {
+        "run_id": run_id,
+        "total_sites": effective_total_sites,
+        "mapping_mode": mapping_mode,
+    }
+    if started_at:
+        builder_kwargs["started_at"] = started_at
+    sb = SummaryBuilder(**builder_kwargs)
+    for rec in records:
+        site_key = rec.get("site_etld1") or rec.get("input")
+        if (
+            isinstance(site_key, str)
+            and site_key in english_policy_sites
+            and "policy_is_english" not in rec
+        ):
+            sb.update({**rec, "policy_is_english": True})
+        else:
+            sb.update(rec)
+    return sb
+
+
 def _build_outputs_from_results(
     out_path: Path,
     *,
@@ -1143,16 +1229,14 @@ def _build_outputs_from_results(
     records = list(_iter_jsonl(out_path))
     artifacts_dir = out_path.parent / "artifacts"
     english_policy_sites = _english_policy_sites_from_artifacts(artifacts_dir)
-    sites_seen: set[str] = set()
     english_records: list[dict[str, Any]] = []
-    for rec in records:
-        key = rec.get("site_etld1") or rec.get("input")
-        if isinstance(key, str) and key:
-            sites_seen.add(key)
-    effective_total_sites = len(sites_seen)
-    if isinstance(total_sites_override, int) and total_sites_override > 0:
-        effective_total_sites = max(effective_total_sites, total_sites_override)
-    sb = SummaryBuilder(run_id=run_id, total_sites=effective_total_sites, mapping_mode=mapping_mode)
+    sb = _build_summary_builder_from_records(
+        records,
+        artifacts_dir=artifacts_dir,
+        run_id=run_id,
+        mapping_mode=mapping_mode,
+        total_sites_override=total_sites_override,
+    )
     for rec in records:
         site_key = rec.get("site_etld1") or rec.get("input")
         if (
@@ -1161,10 +1245,8 @@ def _build_outputs_from_results(
             and "policy_is_english" not in rec
         ):
             enriched = {**rec, "policy_is_english": True}
-            sb.update(enriched)
             english_records.append(enriched)
         else:
-            sb.update(rec)
             if rec.get("policy_is_english"):
                 english_records.append(rec)
     result = sb.to_summary()
@@ -1558,7 +1640,25 @@ async def _run(args: argparse.Namespace) -> None:
         tp_cache_flush_entries = max(1, int(getattr(args, "tp_cache_flush_entries", 25) or 25))
         tp_cache_dirty_entries = 1 if tp_cache_compacted else 0
 
-        summary = SummaryBuilder(run_id=run_id, total_sites=target_total_sites, mapping_mode=mapping_mode)
+        existing_summary_hint = _summary_started_at_hint(
+            Path(str(args.summary_out)) if getattr(args, "summary_out", None) else None,
+            Path(str(args.state_file)) if getattr(args, "state_file", None) else None,
+        )
+        if not args.force and out_path.exists():
+            summary = _build_summary_builder_from_results(
+                out_path,
+                run_id=run_id,
+                mapping_mode=mapping_mode,
+                total_sites_override=target_total_sites,
+                started_at_hint=existing_summary_hint,
+            )
+        else:
+            summary = SummaryBuilder(
+                run_id=run_id,
+                total_sites=target_total_sites,
+                mapping_mode=mapping_mode,
+                started_at=existing_summary_hint or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            )
         explorer_records: list[dict[str, Any]] = []
         explorer_is_jsonl = bool(args.explorer_out and str(args.explorer_out).endswith(".jsonl"))
 
@@ -1586,6 +1686,7 @@ async def _run(args: argparse.Namespace) -> None:
             "locale": args.locale,
             "timezone_id": args.timezone_id,
             "page_timeout_ms": args.page_timeout_ms,
+            "fetch_semaphore": asyncio.Semaphore(max(1, int(getattr(args, "browser_fetch_concurrency", 4) or 4))),
         }
 
         from collections import OrderedDict
@@ -2111,7 +2212,7 @@ async def _run(args: argparse.Namespace) -> None:
                     "run_id": run_id,
                     "processed": int(summary_payload.get("processed_sites") or summary.processed_sites),
                     "total": int(summary_payload.get("total_sites") or target_total_sites),
-                    "status_counts": dict(summary.status_counts),
+                    "status_counts": dict(summary_payload.get("status_counts") or summary.status_counts),
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
 
@@ -2130,15 +2231,20 @@ async def _run(args: argparse.Namespace) -> None:
         if args.explorer_out and not explorer_is_jsonl:
             write_json(args.explorer_out, explorer_records)
 
-        final_processed = int(summary.processed_sites)
-        if args.upsert_by_site:
-            final_summary = _build_summary_from_results(
-                Path(args.out),
-                run_id=run_id,
-                mapping_mode=mapping_mode,
-                total_sites_override=target_total_sites,
-            )
-            final_processed = int(final_summary.get("processed_sites") or final_processed)
+        final_summary, final_figure_data = _build_outputs_from_results(
+            Path(args.out),
+            run_id=run_id,
+            mapping_mode=mapping_mode,
+            total_sites_override=target_total_sites,
+        )
+        _write_reporting_outputs(
+            args,
+            summary_payload=final_summary,
+            figure_data_payload=final_figure_data,
+            run_id=run_id,
+            total_sites=int(final_summary.get("total_sites") or target_total_sites),
+        )
+        final_processed = int(final_summary.get("processed_sites") or summary.processed_sites)
 
         emit_event({
             "type": "run_completed",
