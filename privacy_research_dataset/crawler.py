@@ -57,6 +57,8 @@ _NON_BROWSABLE_PATTERNS = [
     )
 ]
 _POLICY_SCAN_FULL_PAGE_DOMAINS = ("onetrust.com", "cookielaw.org", "cookiepro.com")
+_POLICY_DISCOVERY_BATCH_SIZE = 3
+_TP_POLICY_FETCH_BATCH_SIZE = 4
 
 # ---------------------------------------------------------------------------
 # LLM-based semantic policy cleaner
@@ -483,28 +485,29 @@ async def _fetch_best_policy(
             consecutive_timeouts = 0
         return False
 
-    # 1) Try top candidates directly
-    for c in candidates[:max_candidates]:
-        rec = await try_candidate(c)
-        tried.append({k: rec[k] for k in rec.keys() if k not in ("text", "cleaned_html", "raw_html")})
-        consider_best(rec)
-        if is_policy_candidate(rec):
-            chosen = rec
-            break
-        if _check_timeout(rec):
-            break
-
-    # 2) Fallback common paths
-    if chosen is None and consecutive_timeouts < max_consecutive_timeouts:
-        for c in fallback_privacy_urls(site_url, site_et):
-            rec = await try_candidate(c)
+    async def evaluate_candidates(batch_candidates: list[LinkCandidate]) -> bool:
+        nonlocal chosen
+        recs = await _gather_batches_in_order(
+            batch_candidates,
+            batch_size=_POLICY_DISCOVERY_BATCH_SIZE,
+            worker=try_candidate,
+        )
+        for rec in recs:
             tried.append({k: rec[k] for k in rec.keys() if k not in ("text", "cleaned_html", "raw_html")})
             consider_best(rec)
             if is_policy_candidate(rec):
                 chosen = rec
-                break
+                return True
             if _check_timeout(rec):
-                break
+                return True
+        return False
+
+    # 1) Try top candidates directly
+    await evaluate_candidates(candidates[:max_candidates])
+
+    # 2) Fallback common paths
+    if chosen is None and consecutive_timeouts < max_consecutive_timeouts:
+        await evaluate_candidates(list(fallback_privacy_urls(site_url, site_et)))
 
     # 3) Legal hub expansion (depth 1): fetch 1-2 legal/terms pages and rescan for privacy links
     if chosen is None and candidates and consecutive_timeouts < max_consecutive_timeouts:
@@ -528,20 +531,20 @@ async def _fetch_best_policy(
                 continue
             consecutive_timeouts = 0  # hub fetch succeeded, reset
             hub_cands = extract_link_candidates(hub_res.cleaned_html, hub_res.url, site_et)
-            for c in hub_cands[:max_candidates]:
-                # mark as hub source
-                c2 = LinkCandidate(
-                    url=c.url, anchor_text=c.anchor_text, score=c.score + 0.2, source="hub",
-                    candidate_etld1=c.candidate_etld1, is_same_site=c.is_same_site
+            hub_batch = [
+                LinkCandidate(
+                    url=c.url,
+                    anchor_text=c.anchor_text,
+                    score=c.score + 0.2,
+                    source="hub",
+                    candidate_etld1=c.candidate_etld1,
+                    is_same_site=c.is_same_site,
                 )
-                rec = await try_candidate(c2)
-                tried.append({k: rec[k] for k in rec.keys() if k not in ("text", "cleaned_html", "raw_html")})
-                consider_best(rec)
-                if is_policy_candidate(rec):
-                    chosen = rec
-                    break
-                if _check_timeout(rec):
-                    break
+                for c in hub_cands[:max_candidates]
+            ]
+            stop = await evaluate_candidates(hub_batch)
+            if stop:
+                break
             if chosen is not None:
                 break
 
@@ -625,6 +628,20 @@ async def _register_policy_artifact(
         return
     async with lock:
         registry.setdefault(norm_url, art_dir)
+
+
+async def _gather_batches_in_order(
+    items: list[Any],
+    *,
+    batch_size: int,
+    worker: Callable[[Any], Awaitable[Any]],
+) -> list[Any]:
+    results: list[Any] = []
+    size = max(1, int(batch_size))
+    for idx in range(0, len(items), size):
+        batch = items[idx: idx + size]
+        results.extend(await asyncio.gather(*(worker(item) for item in batch)))
+    return results
 
 
 async def process_site(
@@ -842,6 +859,42 @@ async def process_site(
                     norm_fp_url, site_art_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
                 )
 
+    if first_party_policy is None:
+        status = "policy_not_found"
+        non_browsable_reason: str | None = None
+        is_nb, reason = _classify_non_browsable(home)
+        if is_nb:
+            status = "non_browsable"
+            non_browsable_reason = reason
+            warn(f"[{etld1(home.url)}] Classified as non-browsable ({reason}).")
+        else:
+            warn(f"[{etld1(home.url)}] Privacy policy not found.")
+        return {
+            "rank": rank,
+            "input": domain_or_url,
+            "site_url": site_url,
+            "final_url": home.url,
+            "site_etld1": etld1(home.url),
+            "status": status,
+            "home_status_code": home.status_code,
+            "home_fetch_mode": home_fetch_mode,
+            "home_fetch_attempts": max(1, len(home_errors) + 1),
+            "first_party_policy": None,
+            "non_browsable_reason": non_browsable_reason,
+            "third_parties": [],
+            "third_party_policy_fetches": [],
+            "error_code": status,
+            "home_fetch_ms": home_fetch_ms,
+            "policy_fetch_ms": policy_fetch_ms,
+            "third_party_extract_ms": 0,
+            "third_party_policy_fetch_ms": 0,
+            "first_party_policy_url_override": manual_policy_url_override,
+            "total_ms": int((time.perf_counter() - t_total) * 1000),
+            "run_id": run_id,
+            "started_at": started_at,
+            "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
+
     # 3) Third-party extraction
     if stage_callback:
         stage_callback("third_party_extract")
@@ -935,10 +988,10 @@ async def process_site(
 
         tp_consecutive_timeouts = 0
         tp_max_consecutive_timeouts = 3
-        for rec in sorted(third_party_records, key=sort_key)[:third_party_policy_max]:
+        async def fetch_third_party_policy(rec: dict[str, Any]) -> dict[str, Any] | None:
             purl = rec.get("policy_url")
             if not purl:
-                continue
+                return None
             norm_tp_url = _normalize_url(purl)
             use_tp_registry = (
                 bool(norm_tp_url)
@@ -963,7 +1016,7 @@ async def process_site(
                 except Exception:
                     tp_ext_data = {}
                 tp_method = tp_ext_data.get("method") or "reused"
-                third_party_policy_fetches.append({
+                return {
                     "third_party_etld1": rec["third_party_etld1"],
                     "policy_url": purl,
                     "fetch_success": True,
@@ -972,71 +1025,86 @@ async def process_site(
                     "text_len_raw": len(tp_text),
                     "extraction_method": tp_method,
                     "error_message": None,
-                })
+                    "_timed_out": False,
+                }
+
+            tp_dir.mkdir(parents=True, exist_ok=True)
+            if third_party_policy_fetcher is not None:
+                res = await _await_crawl_result(
+                    third_party_policy_fetcher(purl),
+                    url=purl,
+                    timeout_s=fetch_timeout_sec,
+                    phase="third_party_policy_fetch",
+                )
             else:
-                tp_dir.mkdir(parents=True, exist_ok=True)
-                if third_party_policy_fetcher is not None:
-                    res = await _await_crawl_result(
-                        third_party_policy_fetcher(purl),
-                        url=purl,
-                        timeout_s=fetch_timeout_sec,
-                        phase="third_party_policy_fetch",
-                    )
-                else:
-                    res = await _await_crawl_result(
-                        client.fetch(
-                            purl,
-                            capture_network=False,
-                            remove_overlays=True,
-                            magic=False,
-                            scan_full_page=_should_scan_full_page_policy(purl),
-                        ),
-                        url=purl,
-                        timeout_s=fetch_timeout_sec,
-                        phase="third_party_policy_fetch",
-                    )
-                tp_text_raw = (res.text or "").strip()
-                tp_llm_cleaned: str | None = None
-                if openai_client is not None and tp_text_raw:
-                    tp_llm_cleaned = await _llm_clean_policy_text(
-                        tp_text_raw, client=openai_client, model=llm_model
-                    )
-                tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
-                tp_base_method = res.text_extraction_method or "fallback"
-                tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
-                if tp_text:
-                    _write_text(tp_dir / "policy.txt", tp_text)
-                    _write_json(
-                        tp_dir / "policy.extraction.json",
-                        {
-                            "method": tp_method,
-                            "base_extraction": tp_base_method,
-                            "llm_model": llm_model if tp_llm_cleaned else None,
-                            "source_url": purl,
-                        },
-                    )
-                if use_tp_registry and tp_text:
-                    await _register_policy_artifact(
-                        norm_tp_url, tp_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
-                    )
-                tp_err = res.error_message or ""
-                if "timed_out" in tp_err:
+                res = await _await_crawl_result(
+                    client.fetch(
+                        purl,
+                        capture_network=False,
+                        remove_overlays=True,
+                        magic=False,
+                        scan_full_page=_should_scan_full_page_policy(purl),
+                    ),
+                    url=purl,
+                    timeout_s=fetch_timeout_sec,
+                    phase="third_party_policy_fetch",
+                )
+            tp_text_raw = (res.text or "").strip()
+            tp_llm_cleaned: str | None = None
+            if openai_client is not None and tp_text_raw:
+                tp_llm_cleaned = await _llm_clean_policy_text(
+                    tp_text_raw, client=openai_client, model=llm_model
+                )
+            tp_text = tp_llm_cleaned if tp_llm_cleaned else tp_text_raw
+            tp_base_method = res.text_extraction_method or "fallback"
+            tp_method = "llm_cleaned" if tp_llm_cleaned else tp_base_method
+            if tp_text:
+                _write_text(tp_dir / "policy.txt", tp_text)
+                _write_json(
+                    tp_dir / "policy.extraction.json",
+                    {
+                        "method": tp_method,
+                        "base_extraction": tp_base_method,
+                        "llm_model": llm_model if tp_llm_cleaned else None,
+                        "source_url": purl,
+                    },
+                )
+            if use_tp_registry and tp_text:
+                await _register_policy_artifact(
+                    norm_tp_url, tp_dir, policy_artifact_registry, policy_artifact_lock  # type: ignore[arg-type]
+                )
+            return {
+                "third_party_etld1": rec["third_party_etld1"],
+                "policy_url": purl,
+                "fetch_success": res.success,
+                "status_code": res.status_code,
+                "text_len": len(tp_text),
+                "text_len_raw": len(tp_text_raw),
+                "extraction_method": tp_method,
+                "error_message": res.error_message,
+                "_timed_out": "timed_out" in (res.error_message or ""),
+            }
+
+        ordered_tp_records = sorted(third_party_records, key=sort_key)[:third_party_policy_max]
+        stop_tp_fetch = False
+        for idx in range(0, len(ordered_tp_records), _TP_POLICY_FETCH_BATCH_SIZE):
+            batch = ordered_tp_records[idx: idx + _TP_POLICY_FETCH_BATCH_SIZE]
+            batch_results = await asyncio.gather(*(fetch_third_party_policy(rec) for rec in batch))
+            for item in batch_results:
+                if item is None:
+                    continue
+                timed_out = bool(item.pop("_timed_out", False))
+                third_party_policy_fetches.append(item)
+                if timed_out:
                     tp_consecutive_timeouts += 1
                 else:
                     tp_consecutive_timeouts = 0
-                third_party_policy_fetches.append({
-                    "third_party_etld1": rec["third_party_etld1"],
-                    "policy_url": purl,
-                    "fetch_success": res.success,
-                    "status_code": res.status_code,
-                    "text_len": len(tp_text),
-                    "text_len_raw": len(tp_text_raw),
-                    "extraction_method": tp_method,
-                    "error_message": res.error_message,
-                })
                 if tp_consecutive_timeouts >= tp_max_consecutive_timeouts:
                     warn(f"[{etld1(site_url)}] Bailing out of third-party policy fetch after {tp_consecutive_timeouts} consecutive timeouts")
+                    stop_tp_fetch = True
                     break
+            if stop_tp_fetch:
+                break
     third_party_policy_fetch_ms = int((time.perf_counter() - t_tp_policy) * 1000)
 
     fetch_method_by_tp = {
@@ -1050,32 +1118,21 @@ async def process_site(
             tp["policy_extraction_method"] = fetch_method_by_tp.get(et)
 
     # 5) Final record
-    status = "ok" if first_party_policy else "policy_not_found"
-    non_browsable_reason: str | None = None
-    if status != "ok":
-        is_nb, reason = _classify_non_browsable(home)
-        if is_nb:
-            status = "non_browsable"
-            non_browsable_reason = reason
-            warn(f"[{etld1(home.url)}] Classified as non-browsable ({reason}).")
-        else:
-            warn(f"[{etld1(home.url)}] Privacy policy not found.")
-
     return {
         "rank": rank,
         "input": domain_or_url,
         "site_url": site_url,
         "final_url": home.url,
         "site_etld1": etld1(home.url),
-        "status": status,
+        "status": "ok",
         "home_status_code": home.status_code,
         "home_fetch_mode": home_fetch_mode,
         "home_fetch_attempts": max(1, len(home_errors) + 1),
         "first_party_policy": first_party_policy,
-        "non_browsable_reason": non_browsable_reason,
+        "non_browsable_reason": None,
         "third_parties": third_party_records,
         "third_party_policy_fetches": third_party_policy_fetches,
-        "error_code": (None if status == "ok" else status),
+        "error_code": None,
         "home_fetch_ms": home_fetch_ms,
         "policy_fetch_ms": policy_fetch_ms,
         "third_party_extract_ms": third_party_extract_ms,

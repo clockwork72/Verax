@@ -7,9 +7,10 @@ from typing import Any, Protocol
 from .hpc_runtime import Paths, utc_now
 
 
-SAFE_SCRAPER_CONCURRENCY = 3
+SAFE_SCRAPER_CONCURRENCY = 6
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20
+SAFE_TP_POLICY_MAX = 12
 
 
 class EventBusLike(Protocol):
@@ -151,7 +152,9 @@ def build_scraper_args(
         "--explorer-out",
         str(paths.explorer_jsonl),
         "--concurrency",
-        str(SAFE_SCRAPER_CONCURRENCY),
+        str(max(1, int(options.get("concurrency") or SAFE_SCRAPER_CONCURRENCY))),
+        "--third-party-policy-max",
+        str(max(1, int(options.get("thirdPartyPolicyMax") or SAFE_TP_POLICY_MAX))),
         "--policy-cache-max-entries",
         str(SAFE_POLICY_CACHE_MAX),
         "--tp-cache-flush-entries",

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from privacy_research_dataset.hpc_commands import (
     SAFE_SCRAPER_CONCURRENCY,
+    SAFE_TP_POLICY_MAX,
     annotator_rate_limit_args,
     build_annotator_args,
     build_default_paths,
@@ -55,6 +56,8 @@ def test_build_scraper_args_preserves_manifest_and_resume_flags(tmp_path):
     assert "--exclude-same-entity" in argv
     concurrency_index = argv.index("--concurrency")
     assert argv[concurrency_index + 1] == str(SAFE_SCRAPER_CONCURRENCY)
+    tp_max_index = argv.index("--third-party-policy-max")
+    assert argv[tp_max_index + 1] == str(SAFE_TP_POLICY_MAX)
     assert manifest["runId"] == "run-42"
     assert manifest["topN"] == 100
     assert manifest["resumeAfterRank"] == 50
@@ -102,6 +105,23 @@ def test_build_annotator_args_caps_low_tpm_models_and_logs_hint(tmp_path):
     assert "--force" in argv
     assert bus.events[0][0] == "annotator:log"
     assert "forcing concurrency 1" in str(bus.events[0][1]["message"])
+
+
+def test_build_scraper_args_honors_runtime_scale_overrides(tmp_path):
+    argv, _manifest, _paths = build_scraper_args(
+        repo_root=tmp_path,
+        options={
+            "sites": ["alpha.example"],
+            "concurrency": 4,
+            "thirdPartyPolicyMax": 7,
+        },
+    )
+
+    concurrency_index = argv.index("--concurrency")
+    tp_max_index = argv.index("--third-party-policy-max")
+
+    assert argv[concurrency_index + 1] == "4"
+    assert argv[tp_max_index + 1] == "7"
 
 
 def test_annotator_rate_limit_args_for_local_model_are_minimal():

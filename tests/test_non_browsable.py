@@ -1,5 +1,10 @@
-from privacy_research_dataset.crawler import _classify_non_browsable
+import asyncio
+
+import pytest
+
+import privacy_research_dataset.crawler as crawler
 from privacy_research_dataset.crawl4ai_client import Crawl4AIResult
+from privacy_research_dataset.policy_finder import LinkCandidate
 
 
 def _res(html: str, text: str | None = None, status_code: int | None = 200) -> Crawl4AIResult:
@@ -17,13 +22,137 @@ def _res(html: str, text: str | None = None, status_code: int | None = 200) -> C
 
 def test_classify_error_page():
     html = "<html><body><h1>403 Forbidden</h1><p>Access Denied</p></body></html>"
-    is_nb, reason = _classify_non_browsable(_res(html))
+    is_nb, reason = crawler._classify_non_browsable(_res(html))
     assert is_nb
     assert reason in {"error_page_text", "http_status_403"}
 
 
 def test_classify_sparse_page():
     html = "<html><body>OK</body></html>"
-    is_nb, reason = _classify_non_browsable(_res(html))
+    is_nb, reason = crawler._classify_non_browsable(_res(html))
     assert is_nb
     assert reason in {"no_links_short_text", "very_sparse_page"}
+
+
+class _FakeClient:
+    page_timeout_ms = 1000
+
+
+@pytest.mark.asyncio
+async def test_process_site_skips_third_party_work_when_policy_missing(monkeypatch, tmp_path):
+    async def fake_fetch_home_with_retry(*args, **kwargs):
+        home = _res(
+            "<html><body><a href='/about'>About</a><a href='/contact'>Contact</a><p>General site content without a privacy policy.</p></body></html>",
+            text="General site content without a privacy policy.",
+        )
+        home.network_requests = [{"url": "https://tracker.example/script.js"}]
+        return home, "browser", 25, []
+
+    async def fake_fetch_best_policy(*args, **kwargs):
+        return {"_chosen_full": None}
+
+    def fail_extract(*args, **kwargs):
+        raise AssertionError("third-party extraction should be skipped")
+
+    monkeypatch.setattr(crawler, "_fetch_home_with_retry", fake_fetch_home_with_retry)
+    monkeypatch.setattr(crawler, "_fetch_best_policy", fake_fetch_best_policy)
+    monkeypatch.setattr(crawler, "_classify_non_browsable", lambda home: (False, None))
+    monkeypatch.setattr(crawler, "third_parties_from_network_logs", fail_extract)
+
+    result = await crawler.process_site(
+        _FakeClient(),
+        "example.com",
+        rank=1,
+        artifacts_dir=tmp_path,
+    )
+
+    assert result["status"] == "policy_not_found"
+    assert result["third_parties"] == []
+    assert result["third_party_policy_fetches"] == []
+    assert result["third_party_extract_ms"] == 0
+    assert result["third_party_policy_fetch_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_process_site_skips_third_party_work_when_non_browsable(monkeypatch, tmp_path):
+    async def fake_fetch_home_with_retry(*args, **kwargs):
+        home = _res("<html><body>Access denied</body></html>", text="Access denied")
+        home.network_requests = [{"url": "https://tracker.example/script.js"}]
+        return home, "browser", 12, []
+
+    async def fake_fetch_best_policy(*args, **kwargs):
+        return {"_chosen_full": None}
+
+    def fail_extract(*args, **kwargs):
+        raise AssertionError("third-party extraction should be skipped")
+
+    monkeypatch.setattr(crawler, "_fetch_home_with_retry", fake_fetch_home_with_retry)
+    monkeypatch.setattr(crawler, "_fetch_best_policy", fake_fetch_best_policy)
+    monkeypatch.setattr(crawler, "_classify_non_browsable", lambda home: (True, "very_sparse_page"))
+    monkeypatch.setattr(crawler, "third_parties_from_network_logs", fail_extract)
+
+    result = await crawler.process_site(
+        _FakeClient(),
+        "example.com",
+        rank=1,
+        artifacts_dir=tmp_path,
+    )
+
+    assert result["status"] == "non_browsable"
+    assert result["non_browsable_reason"] == "very_sparse_page"
+    assert result["third_parties"] == []
+    assert result["third_party_policy_fetches"] == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_best_policy_batches_candidate_fetches(monkeypatch):
+    active = 0
+    max_active = 0
+
+    async def fake_fetcher(url: str) -> Crawl4AIResult:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return Crawl4AIResult(
+            url=url,
+            success=True,
+            status_code=200,
+            raw_html="<html><body>privacy policy text</body></html>",
+            cleaned_html="<html><body>privacy policy text</body></html>",
+            text="Privacy policy " * 80,
+            network_requests=[],
+            error_message=None,
+            text_extraction_method="fake",
+        )
+
+    monkeypatch.setattr(
+        crawler,
+        "extract_link_candidates",
+        lambda html, site_url, site_et: [
+            LinkCandidate(
+                url=f"https://example.com/privacy-{idx}",
+                anchor_text="Privacy",
+                score=10.0,
+                source="home",
+                candidate_etld1="example.com",
+                is_same_site=True,
+            )
+            for idx in range(3)
+        ],
+    )
+    monkeypatch.setattr(crawler, "policy_likeliness_score", lambda text: 10.0)
+    monkeypatch.setattr(crawler, "fallback_privacy_urls", lambda site_url, site_et: [])
+    monkeypatch.setattr(crawler, "extract_legal_hub_urls", lambda candidates, limit=2: [])
+
+    result = await crawler._fetch_best_policy(
+        _FakeClient(),
+        "https://example.com",
+        "<html></html>",
+        fetch_timeout_sec=1.0,
+        policy_fetcher=fake_fetcher,
+    )
+
+    assert result["_chosen_full"] is not None
+    assert max_active >= 2
