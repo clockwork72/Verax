@@ -507,6 +507,7 @@ class CatalogStore:
         }
 
     def _upsert_run_bundle(self, conn: Any, run: CatalogRunBundle) -> None:
+        self._replace_stale_run_for_out_dir(conn, out_dir=run.out_dir, run_id=run.run_id)
         self._execute(
             conn,
             """
@@ -541,6 +542,29 @@ class CatalogStore:
                 run.expected_site_count,
             ),
         )
+
+    def _replace_stale_run_for_out_dir(self, conn: Any, *, out_dir: str, run_id: str) -> None:
+        existing = self._fetchone(
+            conn,
+            "SELECT run_id FROM catalog_runs WHERE out_dir = ?",
+            (out_dir,),
+        )
+        existing_run_id = str(existing.get("run_id") or "").strip() if existing else ""
+        if not existing_run_id or existing_run_id == run_id:
+            return
+        self._delete_run_records(conn, run_id=existing_run_id)
+
+    def _delete_run_records(self, conn: Any, *, run_id: str) -> None:
+        for table in (
+            "catalog_site_search",
+            "catalog_site_category_rollups",
+            "catalog_site_policies",
+            "catalog_site_services",
+            "catalog_sites",
+            "catalog_ingestion_site_errors",
+            "catalog_runs",
+        ):
+            self._execute(conn, f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
 
     def _upsert_site_bundle(self, conn: Any, bundle: CatalogSiteBundle) -> None:
         self._execute(

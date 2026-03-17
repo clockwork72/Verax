@@ -12,7 +12,7 @@ import pytest
 import privacy_research_dataset.catalog_store as catalog_store_module
 from privacy_research_dataset.catalog_ingest import CatalogSyncer, build_site_bundle, build_run_bundle
 from privacy_research_dataset.catalog_store import CatalogStore
-from privacy_research_dataset.catalog_types import CatalogQueryRequest
+from privacy_research_dataset.catalog_types import CatalogQueryRequest, CatalogRunBundle, CatalogSiteBundle
 
 
 @pytest.fixture()
@@ -483,3 +483,91 @@ def test_postgres_connect_uses_direct_connection_without_pool(monkeypatch):
     assert calls == [("postgresql://scraper:test@127.0.0.1:55432/scraper", catalog_store_module.dict_row)]
     assert fake_conn.committed is True
     assert fake_conn.closed is True
+
+
+def test_upsert_run_bundle_replaces_stale_run_when_out_dir_is_reused(store: CatalogStore):
+    run1 = CatalogRunBundle(
+        run_id="run-old",
+        out_dir="outputs/unified",
+        started_at="2026-03-16T10:00:00Z",
+        updated_at="2026-03-16T10:05:00Z",
+        status="completed",
+        source_kind="csv",
+        dataset_csv="data/old.csv",
+        manifest_json=None,
+        summary_json=None,
+        state_json=None,
+        expected_site_count=1,
+    )
+    site1 = CatalogSiteBundle(
+        run_id="run-old",
+        out_dir="outputs/unified",
+        site_etld1="old.example",
+        rank=1,
+        input_value="old.example",
+        site_url="https://old.example",
+        final_url="https://old.example",
+        main_category="Technology",
+        status="ok",
+        non_browsable_reason=None,
+        home_status_code=200,
+        home_fetch_mode="browser",
+        home_fetch_attempts=1,
+        home_fetch_ms=100,
+        policy_fetch_ms=100,
+        third_party_extract_ms=50,
+        third_party_policy_fetch_ms=50,
+        total_ms=300,
+        first_party_policy_url_override=None,
+    )
+    run2 = CatalogRunBundle(
+        run_id="run-new",
+        out_dir="outputs/unified",
+        started_at="2026-03-16T11:00:00Z",
+        updated_at="2026-03-16T11:05:00Z",
+        status="running",
+        source_kind="csv",
+        dataset_csv="data/new.csv",
+        manifest_json=None,
+        summary_json=None,
+        state_json=None,
+        expected_site_count=1,
+    )
+    site2 = CatalogSiteBundle(
+        run_id="run-new",
+        out_dir="outputs/unified",
+        site_etld1="new.example",
+        rank=1,
+        input_value="new.example",
+        site_url="https://new.example",
+        final_url="https://new.example",
+        main_category="News & Media",
+        status="ok",
+        non_browsable_reason=None,
+        home_status_code=200,
+        home_fetch_mode="browser",
+        home_fetch_attempts=1,
+        home_fetch_ms=120,
+        policy_fetch_ms=80,
+        third_party_extract_ms=30,
+        third_party_policy_fetch_ms=20,
+        total_ms=250,
+        first_party_policy_url_override=None,
+    )
+
+    store.upsert_run_bundle(run1)
+    store.upsert_site_bundle(site1)
+    store.refresh_derived(run_id=run1.run_id)
+
+    store.upsert_run_bundle(run2)
+    store.upsert_site_bundle(site2)
+    store.refresh_derived(run_id=run2.run_id)
+
+    with store.connect() as conn:
+        runs = store._fetchall(conn, "SELECT run_id, out_dir FROM catalog_runs ORDER BY run_id")
+        sites = store._fetchall(conn, "SELECT run_id, site_etld1 FROM catalog_sites ORDER BY run_id, site_etld1")
+        search_rows = store._fetchall(conn, "SELECT run_id, site_etld1 FROM catalog_site_search ORDER BY run_id, site_etld1")
+
+    assert runs == [{"run_id": "run-new", "out_dir": "outputs/unified"}]
+    assert sites == [{"run_id": "run-new", "site_etld1": "new.example"}]
+    assert search_rows == [{"run_id": "run-new", "site_etld1": "new.example"}]
