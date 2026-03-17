@@ -31,6 +31,13 @@ export type LauncherState = {
   launcherActionHint: string
 }
 
+function maxFinite(...values: Array<number | null | undefined>): number {
+  return values.reduce<number>((max, value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return max
+    return Math.max(max, value)
+  }, 0)
+}
+
 function normalizeSiteKey(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -55,8 +62,15 @@ export function buildDatasetState({
   resultsData: ResultRecord[] | null
   runManifest: RunManifest | null
 }): DatasetState {
-  const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? runManifest?.expectedTotalSites ?? 0)
-  const persistedProcessedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+  const totalSites = maxFinite(
+    summaryData?.total_sites,
+    stateData?.total_sites,
+    runManifest?.expectedTotalSites,
+  )
+  const persistedProcessedSites = maxFinite(
+    summaryData?.processed_sites,
+    stateData?.processed_sites,
+  )
   const siteKeys = new Set<string>()
   let lastSuccessfulRank = typeof summaryData?.last_successful_rank === 'number'
     ? summaryData.last_successful_rank

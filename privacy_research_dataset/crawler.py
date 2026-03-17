@@ -59,6 +59,7 @@ _NON_BROWSABLE_PATTERNS = [
 _POLICY_SCAN_FULL_PAGE_DOMAINS = ("onetrust.com", "cookielaw.org", "cookiepro.com")
 _POLICY_DISCOVERY_BATCH_SIZE = 3
 _TP_POLICY_FETCH_BATCH_SIZE = 4
+_LOW_VALUE_POLICY_PATH_TOKENS = ("sitemap", "robots.txt", "/feed", "/rss")
 
 # ---------------------------------------------------------------------------
 # LLM-based semantic policy cleaner
@@ -186,6 +187,30 @@ def _should_scan_full_page_policy(url: str | None) -> bool:
     if not host:
         return False
     return any(host == d or host.endswith(f".{d}") for d in _POLICY_SCAN_FULL_PAGE_DOMAINS)
+
+
+def _is_low_value_policy_candidate(candidate_url: str, site_url: str) -> bool:
+    try:
+        candidate = urlparse(candidate_url)
+        site = urlparse(site_url)
+    except Exception:
+        return False
+    path = (candidate.path or "/").lower()
+    if candidate.hostname and site.hostname and candidate.hostname.lower() == site.hostname.lower() and path in {"", "/"}:
+        return True
+    if path.endswith(".xml"):
+        return True
+    return any(token in path for token in _LOW_VALUE_POLICY_PATH_TOKENS)
+
+
+def _homepage_looks_like_policy(url: str, text: str, *, score: float) -> bool:
+    if not text:
+        return False
+    text_lower = text.lower()
+    path = (urlparse(url).path or "/").lower()
+    has_policy_path = any(token in path for token in ("privacy", "policy", "notice", "datenschutz"))
+    has_policy_phrase = "privacy policy" in text_lower or "privacy notice" in text_lower
+    return len(text) >= 1000 and score >= 8.0 and (has_policy_path or has_policy_phrase)
 
 def _safe_dirname(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in s)[:200]
@@ -404,7 +429,11 @@ async def _fetch_best_policy(
 ) -> dict[str, Any]:
     site_et = etld1(site_url) or ""
 
-    candidates = extract_link_candidates(home_cleaned_html, site_url, site_et)
+    candidates = [
+        candidate
+        for candidate in extract_link_candidates(home_cleaned_html, site_url, site_et)
+        if not _is_low_value_policy_candidate(candidate.url, site_url)
+    ]
     tried: list[dict[str, Any]] = []
     chosen: dict[str, Any] | None = None
     best_fallback: dict[str, Any] | None = None
@@ -779,7 +808,7 @@ async def process_site(
         # If the homepage itself looks like a privacy policy, accept it.
         home_text = (home.text or "").strip()
         home_score = policy_likeliness_score(home_text)
-        if home_score >= 3.0 and len(home_text) >= 300:
+        if _homepage_looks_like_policy(home.url, home_text, score=home_score):
             chosen_full = {
                 "url": home.url,
                 "status_code": home.status_code,
@@ -986,9 +1015,33 @@ async def process_site(
             p = r.get("prevalence")
             return (-(p if isinstance(p, (int, float)) else -1.0), r["third_party_etld1"])
 
+        policy_fetch_plans: list[dict[str, Any]] = []
+        policy_groups: dict[str, dict[str, Any]] = {}
+        for rec in third_party_records:
+            purl = rec.get("policy_url")
+            if not isinstance(purl, str) or not purl.strip():
+                continue
+            normalized_policy_url = _normalize_url(purl)
+            if not normalized_policy_url:
+                continue
+            group = policy_groups.get(normalized_policy_url)
+            if group is None:
+                group = {
+                    "normalized_policy_url": normalized_policy_url,
+                    "leader": rec,
+                    "members": [rec],
+                }
+                policy_groups[normalized_policy_url] = group
+                policy_fetch_plans.append(group)
+                continue
+            group["members"].append(rec)
+            if sort_key(rec) < sort_key(group["leader"]):
+                group["leader"] = rec
+
         tp_consecutive_timeouts = 0
         tp_max_consecutive_timeouts = 3
-        async def fetch_third_party_policy(rec: dict[str, Any]) -> dict[str, Any] | None:
+        async def fetch_third_party_policy(plan: dict[str, Any]) -> dict[str, Any] | None:
+            rec = plan["leader"]
             purl = rec.get("policy_url")
             if not purl:
                 return None
@@ -1025,6 +1078,7 @@ async def process_site(
                     "text_len_raw": len(tp_text),
                     "extraction_method": tp_method,
                     "error_message": None,
+                    "_members": [member["third_party_etld1"] for member in plan["members"]],
                     "_timed_out": False,
                 }
 
@@ -1082,19 +1136,25 @@ async def process_site(
                 "text_len_raw": len(tp_text_raw),
                 "extraction_method": tp_method,
                 "error_message": res.error_message,
+                "_members": [member["third_party_etld1"] for member in plan["members"]],
                 "_timed_out": "timed_out" in (res.error_message or ""),
             }
 
-        ordered_tp_records = sorted(third_party_records, key=sort_key)[:third_party_policy_max]
+        ordered_tp_plans = sorted(policy_fetch_plans, key=lambda plan: sort_key(plan["leader"]))[:third_party_policy_max]
         stop_tp_fetch = False
-        for idx in range(0, len(ordered_tp_records), _TP_POLICY_FETCH_BATCH_SIZE):
-            batch = ordered_tp_records[idx: idx + _TP_POLICY_FETCH_BATCH_SIZE]
-            batch_results = await asyncio.gather(*(fetch_third_party_policy(rec) for rec in batch))
+        for idx in range(0, len(ordered_tp_plans), _TP_POLICY_FETCH_BATCH_SIZE):
+            batch = ordered_tp_plans[idx: idx + _TP_POLICY_FETCH_BATCH_SIZE]
+            batch_results = await asyncio.gather(*(fetch_third_party_policy(plan) for plan in batch))
             for item in batch_results:
                 if item is None:
                     continue
+                member_etlds = item.pop("_members", [item.get("third_party_etld1")])
                 timed_out = bool(item.pop("_timed_out", False))
-                third_party_policy_fetches.append(item)
+                for member_etld in member_etlds:
+                    third_party_policy_fetches.append({
+                        **item,
+                        "third_party_etld1": member_etld,
+                    })
                 if timed_out:
                     tp_consecutive_timeouts += 1
                 else:

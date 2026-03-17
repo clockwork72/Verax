@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
 from privacy_research_dataset.annotation_state import write_annotation_status
-from privacy_research_dataset.hpc_artifacts import build_annotation_stats_response, build_run_list_response
+from privacy_research_dataset.hpc_artifacts import (
+    DEFAULT_JSONL_LIMIT,
+    build_annotation_stats_response,
+    build_run_list_response,
+    parse_jsonl,
+    resolve_jsonl_window,
+)
 from privacy_research_dataset.hpc_service import Paths
 
 
@@ -106,9 +111,32 @@ def test_build_run_list_response_sorts_latest_runs_and_filters_noise(tmp_path):
     noise = outputs / "misc"
     noise.mkdir()
 
-    payload = asyncio.run(build_run_list_response(service, "outputs")).to_dict()
+    payload = build_run_list_response(service, "outputs").to_dict()
 
     assert payload["ok"] is True
     assert [run["runId"] for run in payload["runs"]] == ["run-new", "run-old"]
     assert [run["folder"] for run in payload["runs"]] == ["output_new", "output_old"]
     assert all(run["folder"] != "misc" for run in payload["runs"])
+
+
+def test_parse_jsonl_respects_offset_and_limit():
+    raw = '\n'.join([
+        '{"site":"a.com"}',
+        '{"site":"b.com"}',
+        '{"site":"c.com"}',
+        '{"site":"d.com"}',
+    ])
+
+    payload = parse_jsonl(raw, limit=2, offset=1)
+
+    assert payload == [{"site": "b.com"}, {"site": "c.com"}]
+
+
+def test_resolve_jsonl_window_applies_default_limit_and_offset_floor():
+    limit, offset = resolve_jsonl_window(None, "-9")
+    assert limit == DEFAULT_JSONL_LIMIT
+    assert offset == 0
+
+    capped_limit, capped_offset = resolve_jsonl_window("999999", "4")
+    assert capped_limit >= DEFAULT_JSONL_LIMIT
+    assert capped_offset == 4

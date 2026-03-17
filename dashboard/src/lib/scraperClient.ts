@@ -30,9 +30,14 @@ type AuditWorkspaceState = {
   urlOverrides: Record<string, string>
 }
 
+const DEFAULT_EXPLORER_LIMIT = 500
+const DEFAULT_RESULTS_LIMIT = 250
+const MAX_SMART_RESULTS_LIMIT = 1500
+
 export type ReadWorkspaceSnapshotOptions = {
   outDir: string
   explorerLimit?: number
+  resultsLimit?: number
   includeExplorer?: boolean
   includeResults?: boolean
   includeAudit?: boolean
@@ -194,6 +199,13 @@ function asCountMap(value: unknown): Record<string, number> {
   )
 }
 
+function maxFinite(...values: Array<number | null | undefined>): number {
+  return values.reduce<number>((max, value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return max
+    return Math.max(max, value)
+  }, 0)
+}
+
 function normalizeRunSummary(raw: unknown): RunSummary | null {
   const summary = asObject(raw)
   if (!summary) return null
@@ -332,12 +344,30 @@ function computeSnapshotProgress(
   hasAnyResults: boolean,
   derivedProcessedSites = 0,
 ) {
-  const processedSites = Math.max(Number(summary?.processed_sites ?? state?.processed_sites ?? 0), derivedProcessedSites)
-  const totalSites = Number(summary?.total_sites ?? state?.total_sites ?? 0)
+  const processedSites = Math.max(
+    maxFinite(summary?.processed_sites, state?.processed_sites),
+    derivedProcessedSites,
+  )
+  const totalSites = maxFinite(summary?.total_sites, state?.total_sites)
   const progress = totalSites > 0
     ? Math.min(100, (processedSites / Math.max(1, totalSites)) * 100)
     : hasAnyResults ? 100 : 0
   return { processedSites, totalSites, progress }
+}
+
+function resolveResultsLimit(
+  summary: RunSummary | null,
+  state: RunState | null,
+  explicitLimit?: number,
+): number {
+  if (typeof explicitLimit === 'number' && Number.isFinite(explicitLimit) && explicitLimit > 0) {
+    return Math.floor(explicitLimit)
+  }
+  const processedSites = maxFinite(summary?.processed_sites, state?.processed_sites)
+  if (processedSites <= 0) {
+    return DEFAULT_RESULTS_LIMIT
+  }
+  return Math.min(MAX_SMART_RESULTS_LIMIT, Math.max(DEFAULT_RESULTS_LIMIT, Math.floor(processedSites)))
 }
 
 export async function readBridgeStatus(): Promise<{ ok: boolean; data?: HpcBridgeStatus; error?: string }> {
@@ -514,7 +544,8 @@ export async function readRunManifest(outDir?: string): Promise<JsonPathResponse
 
 export async function readWorkspaceSnapshot({
   outDir,
-  explorerLimit = 500,
+  explorerLimit = DEFAULT_EXPLORER_LIMIT,
+  resultsLimit,
   includeExplorer = false,
   includeResults = false,
   includeAudit = false,
@@ -569,14 +600,15 @@ export async function readWorkspaceSnapshot({
   }
 
   if (includeExplorer) {
-    const explorerResult = await scraper.readExplorer(`${outDir}/explorer.jsonl`, explorerLimit)
+    const explorerResult = await scraper.readExplorer(`${outDir}/explorer.jsonl`, explorerLimit, 0)
     const explorer = explorerResult?.ok ? sanitizeExplorer(explorerResult.data) : []
     snapshot.explorer = explorer
     snapshot.hasAnyResults = snapshot.hasAnyResults || explorer.length > 0
   }
 
   if (includeResults && scraper.readResults) {
-    const resultsResult = await scraper.readResults(`${outDir}/results.jsonl`)
+    const boundedResultsLimit = resolveResultsLimit(summary, state, resultsLimit)
+    const resultsResult = await scraper.readResults(`${outDir}/results.jsonl`, boundedResultsLimit, 0)
     const results = resultsResult?.ok ? sanitizeResults(resultsResult.data) : []
     snapshot.results = results
     snapshot.hasAnyResults = snapshot.hasAnyResults || results.length > 0

@@ -60,6 +60,8 @@ type LauncherViewProps = {
   running: boolean
   scraperActive?: boolean
   progress: number
+  progressProcessedSites?: number
+  progressTotalSites?: number
   resultsReady: boolean
   onViewResults: () => void
   logs?: string[]
@@ -115,6 +117,8 @@ export function LauncherView({
   running,
   scraperActive = running,
   progress,
+  progressProcessedSites = 0,
+  progressTotalSites = 0,
   resultsReady,
   onViewResults,
   logs,
@@ -220,6 +224,13 @@ export function LauncherView({
     .sort((a, b) => a.site.localeCompare(b.site))
   const tokensIn  = runtimeState.tokensIn
   const tokensOut = runtimeState.tokensOut
+  const effectiveProgressTotalSites = progressTotalSites > 0 ? progressTotalSites : (scraperActive ? Number(topN || 0) || 0 : 0)
+  const effectiveProgressProcessedSites = effectiveProgressTotalSites > 0
+    ? Math.min(progressProcessedSites, effectiveProgressTotalSites)
+    : progressProcessedSites
+  const progressSiteSummary = effectiveProgressTotalSites > 0
+    ? `${effectiveProgressProcessedSites} / ${effectiveProgressTotalSites} sites`
+    : null
 
   return (
     <>
@@ -416,6 +427,9 @@ export function LauncherView({
             {etaText && scraperActive && (
               <span className="text-[11px] text-[var(--muted-text)]">ETA {etaText}</span>
             )}
+            {progressSiteSummary && (
+              <span className="text-[11px] text-[var(--muted-text)]">{progressSiteSummary}</span>
+            )}
           </BentoCard>
         )}
       </BentoGrid>
@@ -438,7 +452,11 @@ export function LauncherView({
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[12px] text-[var(--muted-text)]">
-                    {progress.toFixed(0)}% · {topN} sites{lastDatasetRank ? ` · Dataset rank #${lastDatasetRank}` : ''} · {etaText ? `ETA ${etaText}` : 'ETA --'}
+                    {progress.toFixed(0)}%
+                    {progressSiteSummary ? ` · ${progressSiteSummary}` : effectiveProgressTotalSites > 0 ? ` · ${effectiveProgressTotalSites} sites` : ''}
+                    {lastDatasetRank ? ` · Dataset rank #${lastDatasetRank}` : ''}
+                    {' · '}
+                    {etaText ? `ETA ${etaText}` : 'ETA --'}
                   </span>
                   {resumeMode && (annotationStats?.annotated_sites ?? 0) > 0 && (
                     <span className="text-[12px] text-[var(--color-primary)]">

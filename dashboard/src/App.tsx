@@ -459,6 +459,8 @@ function App() {
             running={running}
             scraperActive={scraperActive}
             progress={progress}
+            progressProcessedSites={datasetState.processedSites}
+            progressTotalSites={datasetState.totalSites || (scraperActive ? Math.max(currentTargetTotal, requestedTargetTotal) : 0)}
             resultsReady={resultsMetrics.resultsReady}
             onViewResults={() => setActiveNav('results')}
             logs={logs}

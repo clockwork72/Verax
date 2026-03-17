@@ -25,20 +25,48 @@ from .hpc_contracts import (
     ThirdPartyCacheStatsResponse,
 )
 
+DEFAULT_JSONL_LIMIT = 250
+MAX_JSONL_LIMIT = 2000
 
-def parse_jsonl(raw: str, limit: int | None = None) -> list[Any]:
+
+def parse_jsonl(raw: str, limit: int, offset: int = 0) -> list[Any]:
     out: list[Any] = []
+    seen = 0
     for line in raw.splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if seen < offset:
+            seen += 1
             continue
         try:
             out.append(json.loads(stripped))
         except json.JSONDecodeError:
             out.append({"_error": "invalid_json", "raw": stripped})
-        if limit and len(out) >= limit:
+        seen += 1
+        if len(out) >= limit:
             break
     return out
+
+
+def resolve_jsonl_window(
+    limit_raw: str | None,
+    offset_raw: str | None,
+    *,
+    default_limit: int = DEFAULT_JSONL_LIMIT,
+) -> tuple[int, int]:
+    try:
+        limit = int(limit_raw or "0")
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        limit = default_limit
+    limit = min(limit, MAX_JSONL_LIMIT)
+    try:
+        offset = max(0, int(offset_raw or "0"))
+    except (TypeError, ValueError):
+        offset = 0
+    return limit, offset
 
 
 class ArtifactService(Protocol):
@@ -87,7 +115,7 @@ async def build_json_file_response(target: Path, reader) -> JsonPathResponse:
     return JsonPathResponse(ok=True, data=await reader(target), path=str(target))
 
 
-async def build_run_list_response(service: ArtifactService, base_out_dir: str | None) -> RunListResponse:
+def build_run_list_response(service: ArtifactService, base_out_dir: str | None) -> RunListResponse:
     base = base_out_dir or "outputs"
     root = (service.repo_root / base).resolve()
     if not root.exists():
@@ -220,19 +248,19 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
 
     async def handle_read_explorer(request: web.Request) -> web.Response:
         target = service.resolve_repo_path(request.query.get("filePath"), service.last_paths.explorer_jsonl)
-        limit = int(request.query.get("limit", "0") or "0") or None
+        limit, offset = resolve_jsonl_window(request.query.get("limit"), request.query.get("offset"))
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        data = parse_jsonl(await service.read_text_file(target), limit) if target.suffix == ".jsonl" else await service.read_json_file(target)
+        data = parse_jsonl(await service.read_text_file(target), limit, offset) if target.suffix == ".jsonl" else await service.read_json_file(target)
         return web.json_response(JsonPathResponse(ok=True, data=data, path=str(target)).to_dict())
 
     async def handle_read_results(request: web.Request) -> web.Response:
         target = service.resolve_repo_path(request.query.get("filePath"), service.last_paths.results_jsonl)
-        limit = int(request.query.get("limit", "0") or "0") or None
+        limit, offset = resolve_jsonl_window(request.query.get("limit"), request.query.get("offset"))
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
         return web.json_response(
-            JsonPathResponse(ok=True, data=parse_jsonl(await service.read_text_file(target), limit), path=str(target)).to_dict()
+            JsonPathResponse(ok=True, data=parse_jsonl(await service.read_text_file(target), limit, offset), path=str(target)).to_dict()
         )
 
     async def handle_read_artifact_text(request: web.Request) -> web.Response:

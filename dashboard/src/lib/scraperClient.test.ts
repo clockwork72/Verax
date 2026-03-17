@@ -320,6 +320,61 @@ describe('scraperClient', () => {
     expect(snapshot.progress).toBe(40)
   })
 
+  it('prefers state counters when they are ahead of the persisted summary', async () => {
+    installScraperMock({
+      readSummary: async () => ({
+        ok: true,
+        data: {
+          ...baseSummary,
+          processed_sites: 270,
+          total_sites: 1000,
+        },
+      }),
+      readState: async () => ({
+        ok: true,
+        data: {
+          ...baseState,
+          processed_sites: 360,
+          total_sites: 1200,
+        },
+      }),
+    })
+
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: 'outputs/unified',
+    })
+
+    expect(snapshot.processedSites).toBe(360)
+    expect(snapshot.totalSites).toBe(1200)
+    expect(snapshot.progress).toBe(30)
+  })
+
+  it('passes a smart bounded results limit to artifact reads', async () => {
+    const readResultsCalls: Array<{ limit?: number; offset?: number }> = []
+    installScraperMock({
+      readSummary: async () => ({
+        ok: true,
+        data: {
+          ...baseSummary,
+          processed_sites: 1425,
+          total_sites: 4000,
+        },
+      }),
+      readState: async () => ({ ok: true, data: { ...baseState, processed_sites: 1425, total_sites: 4000 } }),
+      readResults: async (_path?: string, limit?: number, offset?: number) => {
+        readResultsCalls.push({ limit, offset })
+        return { ok: true, data: [{ site_etld1: 'docker.com' }] }
+      },
+    })
+
+    await readWorkspaceSnapshot({
+      outDir: 'outputs/unified',
+      includeResults: true,
+    })
+
+    expect(readResultsCalls).toEqual([{ limit: 1425, offset: 0 }])
+  })
+
   it('reads run listings and folder sizes through the client layer', async () => {
     installScraperMock({
       listRuns: async () => ({

@@ -40,6 +40,30 @@ const SITE_STAGE_LABELS: Record<string, { label: string; index: number }> = {
   third_party_policy_fetch: { label: '3P policies',      index: 3 },
 }
 
+function maxFinite(...values: Array<number | null | undefined>): number {
+  return values.reduce<number>((max, value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return max
+    return Math.max(max, value)
+  }, 0)
+}
+
+function currentScrapeCounters(summaryData: RunSummary | null, stateData: RunState | null) {
+  return {
+    processedSites: maxFinite(summaryData?.processed_sites, stateData?.processed_sites),
+    totalSites: maxFinite(summaryData?.total_sites, stateData?.total_sites),
+  }
+}
+
+function newestEtaTimestamp(...timestamps: Array<string | undefined>) {
+  let newest: number | null = null
+  for (const value of timestamps) {
+    const parsed = parseEtaTimestamp(value)
+    if (parsed === null) continue
+    newest = newest === null ? parsed : Math.max(newest, parsed)
+  }
+  return newest
+}
+
 type UseAppRuntimeArgs = {
   activeNav: NavId
   annotateRunning: boolean
@@ -333,8 +357,7 @@ export function useAppRuntime({
       if (!running) setEtaText('')
       return
     }
-    const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? 0)
-    const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
+    const { processedSites, totalSites } = currentScrapeCounters(summaryData, stateData)
     if (totalSites <= 0) {
       setEtaText('')
       return
@@ -356,14 +379,9 @@ export function useAppRuntime({
 
   useEffect(() => {
     if (!running) return
-    const totalSites = Number(summaryData?.total_sites ?? stateData?.total_sites ?? 0)
+    const { processedSites, totalSites } = currentScrapeCounters(summaryData, stateData)
     if (totalSites <= 0) return
-    const processedSites = Number(summaryData?.processed_sites ?? stateData?.processed_sites ?? 0)
-    const timestampMs = (
-      parseEtaTimestamp(summaryData?.updated_at)
-      ?? parseEtaTimestamp(stateData?.updated_at)
-      ?? Date.now()
-    )
+    const timestampMs = newestEtaTimestamp(summaryData?.updated_at, stateData?.updated_at) ?? Date.now()
     pushEtaSample(processedSites, totalSites, timestampMs)
   }, [
     running,
@@ -399,14 +417,11 @@ export function useAppRuntime({
           || activeNav === 'annotations'
           || activeNav === 'consistency'
         )
-        const needsResultsData = (
-          activeNav === 'audit'
-        )
         const snapshot = await readWorkspaceSnapshot({
           outDir,
           includeFolderSize: false,
           includeExplorer: needsExplorerData,
-          includeResults: needsResultsData,
+          includeResults: false,
           includeAudit: activeNav === 'audit',
           includeAnnotation: annotateRunning || activeNav === 'annotations',
         })
@@ -514,7 +529,24 @@ export function useAppRuntime({
 
   useEffect(() => {
     if (activeNav !== 'audit') return
-    void loadAuditWorkspace()
+    let inFlight = false
+    const refresh = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        await loadAuditWorkspace()
+      } finally {
+        inFlight = false
+      }
+    }
+    void refresh()
+    const interval = setInterval(() => {
+      void refresh()
+    }, 15_000)
+    return () => {
+      inFlight = false
+      clearInterval(interval)
+    }
   }, [activeNav, loadAuditWorkspace])
 
   useEffect(() => {
