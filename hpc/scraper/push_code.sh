@@ -64,6 +64,10 @@ for dir in "${SYNC_DIRS[@]}"; do
     -e "ssh ${SSH_OPTS[*]}" \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
+    --exclude 'node_modules' \
+    --exclude 'dist' \
+    --exclude 'build' \
+    --exclude '.vite' \
     "${ROOT_DIR}/${dir}/" "${SSH_HOST}:${REMOTE_REPO}/${dir}/"
 done
 
