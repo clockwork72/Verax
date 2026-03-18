@@ -12,6 +12,8 @@ require_scraper_ssh_host
 CREATED_SSH_MASTER=0
 
 SYNC_DIRS=(
+  "dashboard"
+  "tests"
   "privacy_research_dataset"
   "scripts"
   "hpc"
@@ -27,8 +29,6 @@ SYNC_FILES=(
 )
 
 REMOTE_PRUNE_DIRS=(
-  "dashboard"
-  "tests"
   "tracker-radar"
   "trackerdb"
   "privacy_research_dataset.egg-info"
