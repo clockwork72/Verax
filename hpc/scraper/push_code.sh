@@ -29,6 +29,10 @@ SYNC_FILES=(
 )
 
 REMOTE_PRUNE_DIRS=(
+  "dashboard/node_modules"
+  "dashboard/dist"
+  "dashboard/build"
+  "dashboard/.vite"
   "tracker-radar"
   "trackerdb"
   "privacy_research_dataset.egg-info"
