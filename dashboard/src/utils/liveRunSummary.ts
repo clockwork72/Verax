@@ -94,6 +94,14 @@ function serviceKeyFromThirdParty(tp: NormalizedThirdParty): string {
   return normalizedPolicyUrl || ''
 }
 
+function uniqueCountKeyFromThirdParty(tp: NormalizedThirdParty): string {
+  const normalizedPolicyUrl = normalizePolicyUrl(tp.policyUrl)
+  if (normalizedPolicyUrl) return normalizedPolicyUrl
+  if (tp.domain) return tp.domain
+  if (tp.entity) return `entity:${tp.entity.trim().toLowerCase()}`
+  return ''
+}
+
 function resultThirdParties(record: ResultRecord): NormalizedThirdParty[] {
   const thirdParties = Array.isArray(record.third_parties) ? record.third_parties : []
   return thirdParties
@@ -243,30 +251,30 @@ export function deriveLiveRunSummary(
 
     for (const tp of thirdParties) {
       totalThirdPartyOccurrences += 1
-      const domainKey = tp.domain || serviceKeyFromThirdParty(tp)
-      if (domainKey) uniqueDomains.add(domainKey)
+      const uniqueKey = uniqueCountKeyFromThirdParty(tp)
+      if (uniqueKey) uniqueDomains.add(uniqueKey)
 
       const mapped = tp.radarMapped || tp.trackerdbMapped || Boolean(tp.entity || tp.policyUrl || tp.prevalence || tp.categories.length > 0)
       if (mapped) {
         mappedOccurrences += 1
-        if (domainKey) uniqueMappedDomains.add(domainKey)
+        if (uniqueKey) uniqueMappedDomains.add(uniqueKey)
       } else {
         unmappedOccurrences += 1
-        if (domainKey) uniqueUnmappedDomains.add(domainKey)
+        if (uniqueKey) uniqueUnmappedDomains.add(uniqueKey)
       }
 
       if (mapped && !tp.policyUrl) {
         noPolicyUrlOccurrences += 1
-      } else if (mapped && tp.policyUrl && domainKey) {
-        uniquePolicyDomains.add(domainKey)
+      } else if (mapped && tp.policyUrl && uniqueKey) {
+        uniquePolicyDomains.add(uniqueKey)
       }
 
       if (tp.radarMapped) {
         radarMappedOccurrences += 1
-        if (domainKey) uniqueRadarDomains.add(domainKey)
+        if (uniqueKey) uniqueRadarDomains.add(uniqueKey)
       } else if (tp.trackerdbMapped) {
         trackerdbMappedOccurrences += 1
-        if (domainKey) uniqueTrackerdbDomains.add(domainKey)
+        if (uniqueKey) uniqueTrackerdbDomains.add(uniqueKey)
       }
 
       const serviceKey = serviceKeyFromThirdParty(tp)

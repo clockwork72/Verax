@@ -183,7 +183,7 @@ export function ResultsView({
   // ── Key metric cards (top row) ──────────────────────────────────
   const keyMetrics = [
     { label: 'Sites processed', value: effectiveSummary?.processed_sites ?? metrics.totalSitesProcessed, suffix: '', info: 'Sites that finished processing (any final status).' },
-    { label: '3P services', value: thirdPartyDetected, suffix: '', info: 'Unique third-party eTLD+1 domains observed.' },
+    { label: '3P services', value: thirdPartyDetected, suffix: '', info: 'Unique third-party services, deduplicated by policy URL when available and domain otherwise.' },
     { label: 'Success rate', value: successRate, suffix: '%', info: 'Sites where a first-party policy was found.' },
     { label: 'Mapped 3P', value: uniqueMapped, suffix: '', info: 'Unique third-party domains matched in a mapping index.' },
   ]
@@ -287,7 +287,7 @@ export function ResultsView({
           </div>
           <div className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
             {[
-              { label: 'Unique detected', value: thirdPartyDetected, info: 'Unique third-party eTLD+1 domains observed.' },
+              { label: 'Unique detected', value: thirdPartyDetected, info: 'Unique third-party services, deduplicated by policy URL when available and domain otherwise.' },
               { label: 'With policy URL', value: uniqueWithPolicy, info: 'Mapped services providing a policy URL.' },
               {
                 label: 'Without policy URL',

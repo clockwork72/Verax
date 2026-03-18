@@ -90,6 +90,52 @@ describe('deriveLiveRunSummary', () => {
     ])
   })
 
+  it('dedupes unique service counts by shared policy URL across domains', () => {
+    const summary = deriveLiveRunSummary([
+      {
+        site_etld1: 'example.com',
+        status: 'ok',
+        policy_is_english: true,
+        third_parties: [
+          {
+            third_party_etld1: 'google-analytics.com',
+            entity: 'Google',
+            categories: ['analytics'],
+            policy_url: 'https://policies.google.com/privacy?hl=en&gl=us',
+            tracker_radar_source_domain_file: 'domains/google-analytics.com.json',
+          },
+          {
+            third_party_etld1: 'doubleclick.net',
+            entity: 'Google',
+            categories: ['advertising'],
+            policy_url: 'https://policies.google.com/privacy?hl=en&gl=us',
+            tracker_radar_source_domain_file: 'domains/doubleclick.net.json',
+          },
+        ],
+      },
+    ], null)
+
+    expect(summary).not.toBeNull()
+    expect(summary?.third_party).toEqual({
+      total: 2,
+      unique: 1,
+      mapped: 2,
+      unique_mapped: 1,
+      unique_with_policy: 1,
+      unmapped: 0,
+      no_policy_url: 0,
+    })
+    expect(summary?.mapping).toEqual({
+      mode: null,
+      radar_mapped: 2,
+      trackerdb_mapped: 0,
+      unmapped: 0,
+      unique_radar_mapped: 1,
+      unique_trackerdb_mapped: 0,
+      unique_unmapped: 0,
+    })
+  })
+
   it('falls back to explorer data when result records are unavailable', () => {
     const sites: ExplorerSite[] = [
       {

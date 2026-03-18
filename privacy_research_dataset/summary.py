@@ -57,6 +57,20 @@ def _third_party_service_key(tp: dict[str, Any]) -> str:
     return ""
 
 
+def _third_party_unique_count_key(tp: dict[str, Any]) -> str:
+    """Return a stable key for unique-service counts in summaries."""
+    policy_url = tp.get("policy_url")
+    if isinstance(policy_url, str) and policy_url.strip():
+        return _normalize_policy_url(policy_url)
+    domain = tp.get("third_party_etld1")
+    if isinstance(domain, str) and domain.strip():
+        return domain.strip().lower()
+    entity = tp.get("entity")
+    if isinstance(entity, str) and entity.strip():
+        return f"entity:{entity.strip().lower()}"
+    return ""
+
+
 @dataclass
 class SummaryBuilder:
     run_id: str
@@ -69,17 +83,17 @@ class SummaryBuilder:
     last_successful_site: str | None = None
     status_counts: Counter = field(default_factory=Counter)
     third_party_total: int = 0
-    third_party_unique_domains: set = field(default_factory=set)
-    third_party_unique_mapped_domains: set = field(default_factory=set)
-    third_party_unique_policy_domains: set = field(default_factory=set)
+    third_party_unique_services: set = field(default_factory=set)
+    third_party_unique_mapped_services: set = field(default_factory=set)
+    third_party_unique_policy_services: set = field(default_factory=set)
     third_party_mapped: int = 0
     third_party_unmapped: int = 0
     third_party_no_policy_url: int = 0
     third_party_radar_mapped: int = 0
     third_party_trackerdb_mapped: int = 0
-    third_party_unique_radar_domains: set = field(default_factory=set)
-    third_party_unique_trackerdb_domains: set = field(default_factory=set)
-    third_party_unique_unmapped_domains: set = field(default_factory=set)
+    third_party_unique_radar_services: set = field(default_factory=set)
+    third_party_unique_trackerdb_services: set = field(default_factory=set)
+    third_party_unique_unmapped_services: set = field(default_factory=set)
     english_policy_count: int = 0
     site_category_counts: Counter = field(default_factory=Counter)
     category_counts: Counter = field(default_factory=Counter)
@@ -88,9 +102,9 @@ class SummaryBuilder:
     entity_prevalence_sum: dict[str, float] = field(default_factory=dict)
     entity_prevalence_max: dict[str, float] = field(default_factory=dict)
     entity_categories: dict[str, Counter] = field(default_factory=dict)
-    figure_third_party_unique_domains: set = field(default_factory=set)
-    figure_third_party_unique_mapped_domains: set = field(default_factory=set)
-    figure_third_party_unique_policy_domains: set = field(default_factory=set)
+    figure_third_party_unique_services: set = field(default_factory=set)
+    figure_third_party_unique_mapped_services: set = field(default_factory=set)
+    figure_third_party_unique_policy_services: set = field(default_factory=set)
     figure_website_category_counts: Counter = field(default_factory=Counter)
     figure_category_counts: Counter = field(default_factory=Counter)
     figure_category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
@@ -130,9 +144,9 @@ class SummaryBuilder:
             if not isinstance(tp, dict):
                 continue
             self.third_party_total += 1
-            domain = tp.get("third_party_etld1")
-            if isinstance(domain, str) and domain:
-                self.third_party_unique_domains.add(domain)
+            unique_key = _third_party_unique_count_key(tp)
+            if unique_key:
+                self.third_party_unique_services.add(unique_key)
             mapped = bool(
                 tp.get("tracker_radar_source_domain_file")
                 or tp.get("entity")
@@ -142,28 +156,28 @@ class SummaryBuilder:
             )
             if mapped:
                 self.third_party_mapped += 1
-                if isinstance(domain, str) and domain:
-                    self.third_party_unique_mapped_domains.add(domain)
+                if unique_key:
+                    self.third_party_unique_mapped_services.add(unique_key)
             else:
                 self.third_party_unmapped += 1
 
             if mapped and not tp.get("policy_url"):
                 self.third_party_no_policy_url += 1
             elif mapped and tp.get("policy_url"):
-                if isinstance(domain, str) and domain:
-                    self.third_party_unique_policy_domains.add(domain)
+                if unique_key:
+                    self.third_party_unique_policy_services.add(unique_key)
 
             if tp.get("tracker_radar_source_domain_file"):
                 self.third_party_radar_mapped += 1
-                if isinstance(domain, str) and domain:
-                    self.third_party_unique_radar_domains.add(domain)
+                if unique_key:
+                    self.third_party_unique_radar_services.add(unique_key)
             elif tp.get("trackerdb_source_pattern_file") or tp.get("trackerdb_source_org_file"):
                 self.third_party_trackerdb_mapped += 1
-                if isinstance(domain, str) and domain:
-                    self.third_party_unique_trackerdb_domains.add(domain)
+                if unique_key:
+                    self.third_party_unique_trackerdb_services.add(unique_key)
             else:
-                if isinstance(domain, str) and domain:
-                    self.third_party_unique_unmapped_domains.add(domain)
+                if unique_key:
+                    self.third_party_unique_unmapped_services.add(unique_key)
 
             service_key = _third_party_service_key(tp)
             normalized_cats = {
@@ -215,9 +229,9 @@ class SummaryBuilder:
             for tp in third_parties:
                 if not isinstance(tp, dict):
                     continue
-                domain = tp.get("third_party_etld1")
-                if isinstance(domain, str) and domain:
-                    self.figure_third_party_unique_domains.add(domain)
+                unique_key = _third_party_unique_count_key(tp)
+                if unique_key:
+                    self.figure_third_party_unique_services.add(unique_key)
                 mapped = bool(
                     tp.get("tracker_radar_source_domain_file")
                     or tp.get("entity")
@@ -225,10 +239,10 @@ class SummaryBuilder:
                     or tp.get("prevalence")
                     or (tp.get("categories") or [])
                 )
-                if mapped and isinstance(domain, str) and domain:
-                    self.figure_third_party_unique_mapped_domains.add(domain)
-                if mapped and tp.get("policy_url") and isinstance(domain, str) and domain:
-                    self.figure_third_party_unique_policy_domains.add(domain)
+                if mapped and unique_key:
+                    self.figure_third_party_unique_mapped_services.add(unique_key)
+                if mapped and tp.get("policy_url") and unique_key:
+                    self.figure_third_party_unique_policy_services.add(unique_key)
 
                 service_key = _third_party_service_key(tp)
                 normalized_cats = {
@@ -337,10 +351,10 @@ class SummaryBuilder:
             "status_counts": dict(self.status_counts),
             "third_party": {
                 "total": self.third_party_total,
-                "unique": len(self.third_party_unique_domains),
+                "unique": len(self.third_party_unique_services),
                 "mapped": self.third_party_mapped,
-                "unique_mapped": len(self.third_party_unique_mapped_domains),
-                "unique_with_policy": len(self.third_party_unique_policy_domains),
+                "unique_mapped": len(self.third_party_unique_mapped_services),
+                "unique_with_policy": len(self.third_party_unique_policy_services),
                 "unmapped": self.third_party_unmapped,
                 "no_policy_url": self.third_party_no_policy_url,
             },
@@ -351,9 +365,9 @@ class SummaryBuilder:
                 "radar_mapped": self.third_party_radar_mapped,
                 "trackerdb_mapped": self.third_party_trackerdb_mapped,
                 "unmapped": max(0, self.third_party_total - self.third_party_radar_mapped - self.third_party_trackerdb_mapped),
-                "unique_radar_mapped": len(self.third_party_unique_radar_domains),
-                "unique_trackerdb_mapped": len(self.third_party_unique_trackerdb_domains),
-                "unique_unmapped": len(self.third_party_unique_unmapped_domains),
+                "unique_radar_mapped": len(self.third_party_unique_radar_services),
+                "unique_trackerdb_mapped": len(self.third_party_unique_trackerdb_services),
+                "unique_unmapped": len(self.third_party_unique_unmapped_services),
             },
             "categories": categories,
             "entities": entities,
@@ -386,7 +400,7 @@ class SummaryBuilder:
                 "service_category_breakdown": breakdown,
             })
 
-        third_party_with_policy_urls = len(self.figure_third_party_unique_policy_domains)
+        third_party_with_policy_urls = len(self.figure_third_party_unique_policy_services)
 
         return {
             "run_id": self.run_id,
@@ -394,10 +408,10 @@ class SummaryBuilder:
             "dataset_overview": {
                 "total_sites_targeted": int(self.total_sites),
                 "sites_successfully_processed": int(self.english_policy_count),
-                "unique_3p_services_detected": len(self.figure_third_party_unique_domains),
-                "mapped_3p_services": len(self.figure_third_party_unique_mapped_domains),
-                "mapping_coverage_pct": round((len(self.figure_third_party_unique_mapped_domains) / max(1, len(self.figure_third_party_unique_domains))) * 100.0, 4)
-                if self.figure_third_party_unique_domains else 0.0,
+                "unique_3p_services_detected": len(self.figure_third_party_unique_services),
+                "mapped_3p_services": len(self.figure_third_party_unique_mapped_services),
+                "mapping_coverage_pct": round((len(self.figure_third_party_unique_mapped_services) / max(1, len(self.figure_third_party_unique_services))) * 100.0, 4)
+                if self.figure_third_party_unique_services else 0.0,
                 "third_parties_with_policy_urls": third_party_with_policy_urls,
             },
             "distribution_profiles": {

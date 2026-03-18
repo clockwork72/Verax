@@ -64,6 +64,30 @@ def test_category_count_still_increments_for_distinct_services():
     assert categories.get("Analytics") == 2
 
 
+def test_summary_unique_service_counts_dedupe_shared_policy_urls():
+    sb = SummaryBuilder(run_id="run-3b", total_sites=2)
+
+    sb.update(_result_with_tp({
+        "third_party_etld1": "google-analytics.com",
+        "policy_url": "https://policies.google.com/privacy?hl=en&gl=us",
+        "categories": ["Analytics"],
+        "tracker_radar_source_domain_file": "domains/google-analytics.com.json",
+    }))
+    sb.update(_result_with_tp({
+        "third_party_etld1": "doubleclick.net",
+        "policy_url": "https://policies.google.com/privacy?hl=en&gl=us",
+        "categories": ["Advertising"],
+        "tracker_radar_source_domain_file": "domains/doubleclick.net.json",
+    }))
+
+    summary = sb.to_summary()
+    assert summary["third_party"]["total"] == 2
+    assert summary["third_party"]["unique"] == 1
+    assert summary["third_party"]["unique_mapped"] == 1
+    assert summary["third_party"]["unique_with_policy"] == 1
+    assert summary["mapping"]["unique_radar_mapped"] == 1
+
+
 def test_summary_does_not_include_heatmap():
     sb = SummaryBuilder(run_id="run-4", total_sites=1)
     sb.update({"status": "ok", "main_category": "Technology", "third_parties": []})
@@ -193,3 +217,37 @@ def test_figure_data_is_scoped_to_english_policy_sites():
             "share_pct": 100.0,
         }
     ]
+
+
+def test_figure_data_unique_service_counts_dedupe_shared_policy_urls():
+    sb = SummaryBuilder(run_id="run-6", total_sites=1)
+
+    sb.update({
+        "status": "ok",
+        "main_category": "Technology",
+        "policy_is_english": True,
+        "third_parties": [
+            {
+                "third_party_etld1": "google-analytics.com",
+                "policy_url": "https://policies.google.com/privacy?hl=en&gl=us",
+                "categories": ["analytics"],
+                "entity": "Google",
+            },
+            {
+                "third_party_etld1": "doubleclick.net",
+                "policy_url": "https://policies.google.com/privacy?hl=en&gl=us",
+                "categories": ["advertising"],
+                "entity": "Google",
+            },
+        ],
+    })
+
+    figure_data = sb.to_figure_data()
+    assert figure_data["dataset_overview"] == {
+        "total_sites_targeted": 1,
+        "sites_successfully_processed": 1,
+        "unique_3p_services_detected": 1,
+        "mapped_3p_services": 1,
+        "mapping_coverage_pct": 100.0,
+        "third_parties_with_policy_urls": 1,
+    }
