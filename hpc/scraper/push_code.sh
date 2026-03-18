@@ -28,11 +28,14 @@ SYNC_FILES=(
   "trackerdb_index.json"
 )
 
-REMOTE_PRUNE_DIRS=(
+PRE_SYNC_PRUNE_DIRS=(
   "dashboard/node_modules"
   "dashboard/dist"
   "dashboard/build"
   "dashboard/.vite"
+)
+
+REMOTE_PRUNE_DIRS=(
   "tracker-radar"
   "trackerdb"
   "privacy_research_dataset.egg-info"
@@ -62,6 +65,13 @@ else
   CREATED_SSH_MASTER=1
 fi
 ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc 'mkdir -p ${remote_repo_q} ${remote_root_q}/logs ${remote_root_q}/runtime ${remote_repo_q}/outputs'"
+
+pre_prune_cmd="set -euo pipefail"
+for dir in "${PRE_SYNC_PRUNE_DIRS[@]}"; do
+  pre_prune_cmd="${pre_prune_cmd}; rm -rf ${remote_repo_q}/${dir}"
+done
+
+ssh "${SSH_OPTS[@]}" "${SSH_HOST}" "bash -lc '${pre_prune_cmd}'"
 
 for dir in "${SYNC_DIRS[@]}"; do
   rsync -az --delete \
