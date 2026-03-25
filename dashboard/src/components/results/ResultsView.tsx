@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from 'framer-motion'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   AnnotationSiteRecord,
   ResultRecord,
@@ -86,6 +86,7 @@ export function ResultsView({
   mappingMode,
   annotationStats,
 }: ResultsViewProps) {
+  const [catalogQualifiedSiteCount, setCatalogQualifiedSiteCount] = useState<number | null>(null)
   const fallbackThirdParty = { total: 0, mapped: 0, unmapped: 0, no_policy_url: 0, unique: 0, unique_mapped: 0, unique_with_policy: 0 }
   const fallbackMapping: RunMappingSummary = { mode: null, radar_mapped: 0, trackerdb_mapped: 0, unmapped: 0 }
 
@@ -118,7 +119,10 @@ export function ResultsView({
   const radarNoPolicy = thirdParty.no_policy_url ?? 0
   const uniqueWithoutPolicy = Math.max(0, uniqueMapped - (uniqueWithPolicy ?? 0))
   const englishPolicyCount = effectiveSummary?.english_policy_count ?? null
-  const qualifiedSiteCount = effectiveSummary?.qualified_site_count ?? null
+  const persistedQualifiedSiteCount = typeof effectiveSummary?.qualified_site_count === 'number'
+    ? effectiveSummary.qualified_site_count
+    : null
+  const qualifiedSiteCount = persistedQualifiedSiteCount ?? catalogQualifiedSiteCount
   const siteCategories: RunSummaryCategory[] = effectiveSummary?.site_categories ?? []
 
   const rawCategories: RunSummaryCategory[] = effectiveSummary?.categories ?? []
@@ -180,6 +184,40 @@ export function ResultsView({
   const targetSites = typeof summary?.total_sites === 'number' ? summary.total_sites : Number(topN) || effectiveSummary?.processed_sites || metrics.totalSitesProcessed
   const processedForCoverage = effectiveSummary?.processed_sites ?? 0
   const successRate = effectiveSummary?.success_rate ?? metrics.successRate
+
+  useEffect(() => {
+    if (persistedQualifiedSiteCount !== null) {
+      setCatalogQualifiedSiteCount(null)
+      return
+    }
+    const runId = typeof summary?.run_id === 'string' && summary.run_id.trim()
+      ? summary.run_id.trim()
+      : null
+    if (!runId || !window.scraper?.catalogQuery) {
+      setCatalogQualifiedSiteCount(null)
+      return
+    }
+    let cancelled = false
+    void window.scraper.catalogQuery({
+      runIds: [runId],
+      siteStatuses: ['ok'],
+      firstPartyEnglish: true,
+      firstPartyWordCountMin: 100,
+      requiresThirdPartyEnglishPolicy: true,
+      limit: 1,
+      offset: 0,
+    }).then((response) => {
+      if (cancelled) return
+      setCatalogQualifiedSiteCount(response?.ok ? Number(response.total || 0) : null)
+    }).catch(() => {
+      if (!cancelled) {
+        setCatalogQualifiedSiteCount(null)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [persistedQualifiedSiteCount, summary?.run_id])
 
   // ── Key metric cards (top row) ──────────────────────────────────
   const keyMetrics = [
