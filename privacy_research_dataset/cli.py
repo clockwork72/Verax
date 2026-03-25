@@ -85,6 +85,67 @@ def _has_third_party_policy(site_art_dir: "Path") -> bool:
     return False
 
 
+def _word_count(text: str) -> int:
+    return len(re.findall(r"\b\S+\b", text))
+
+
+def _site_policy_metrics(site_art_dir: "Path") -> tuple[int, int]:
+    first_party_word_count = 0
+    policy_txt = site_art_dir / "policy.txt"
+    if policy_txt.exists() and policy_txt.stat().st_size > 0:
+        try:
+            first_party_word_count = _word_count(policy_txt.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            first_party_word_count = 0
+
+    third_party_with_english_policy_count = 0
+    tp_root = site_art_dir / "third_party"
+    if tp_root.is_dir():
+        for child in tp_root.iterdir():
+            if not child.is_dir():
+                continue
+            tp_policy = child / "policy.txt"
+            if not tp_policy.exists() or tp_policy.stat().st_size <= 0:
+                continue
+            try:
+                tp_text = tp_policy.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            if tp_text.strip() and _is_english(tp_text):
+                third_party_with_english_policy_count += 1
+
+    return first_party_word_count, third_party_with_english_policy_count
+
+
+def _enrich_record_with_policy_metrics(rec: dict[str, Any], artifacts_dir: Path) -> dict[str, Any]:
+    site_key = rec.get("site_etld1") or rec.get("input")
+    if not isinstance(site_key, str) or not site_key.strip():
+        return rec
+    site_art_dir = artifacts_dir / site_key
+    if not site_art_dir.exists():
+        return rec
+
+    first_party_word_count, third_party_with_english_policy_count = _site_policy_metrics(site_art_dir)
+    enriched = {
+        **rec,
+        "first_party_policy_word_count": first_party_word_count,
+        "third_party_with_english_policy_count": third_party_with_english_policy_count,
+        "qualified_site": (
+            rec.get("status") == "ok"
+            and bool(rec.get("policy_is_english"))
+            and first_party_word_count >= 100
+            and third_party_with_english_policy_count > 0
+        ),
+    }
+    first_party_policy = enriched.get("first_party_policy")
+    if isinstance(first_party_policy, dict):
+        enriched["first_party_policy"] = {
+            **first_party_policy,
+            "word_count": first_party_word_count,
+        }
+    return enriched
+
+
 # ---------------------------
 # Prefilter defaults
 # ---------------------------
@@ -1208,14 +1269,15 @@ def _build_summary_builder_from_records(
     sb = SummaryBuilder(**builder_kwargs)
     for rec in records:
         site_key = rec.get("site_etld1") or rec.get("input")
+        enriched = rec
         if (
             isinstance(site_key, str)
             and site_key in english_policy_sites
             and "policy_is_english" not in rec
         ):
-            sb.update({**rec, "policy_is_english": True})
-        else:
-            sb.update(rec)
+            enriched = {**rec, "policy_is_english": True}
+        enriched = _enrich_record_with_policy_metrics(enriched, artifacts_dir)
+        sb.update(enriched)
     return sb
 
 
@@ -1239,16 +1301,19 @@ def _build_outputs_from_results(
     )
     for rec in records:
         site_key = rec.get("site_etld1") or rec.get("input")
+        enriched = rec
         if (
             isinstance(site_key, str)
             and site_key in english_policy_sites
             and "policy_is_english" not in rec
         ):
             enriched = {**rec, "policy_is_english": True}
+        enriched = _enrich_record_with_policy_metrics(enriched, artifacts_dir)
+        if enriched.get("policy_is_english"):
             english_records.append(enriched)
         else:
             if rec.get("policy_is_english"):
-                english_records.append(rec)
+                english_records.append(enriched)
     result = sb.to_summary()
     figure_data = sb.to_figure_data()
     # If records don't carry policy_is_english (older runs), scan artifacts directly.
@@ -2082,6 +2147,7 @@ async def _run(args: argparse.Namespace) -> None:
                             )
                         except Exception:
                             result["policy_is_english"] = False
+                    result = _enrich_record_with_policy_metrics(result, Path(args.artifacts_dir))
 
                 warehouse_sync_pending = False
                 outbox_result_offset: int | None = None

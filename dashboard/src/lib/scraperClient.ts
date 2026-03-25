@@ -229,6 +229,7 @@ function normalizeRunSummary(raw: unknown): RunSummary | null {
       no_policy_url: asNumber(asObject(summary.third_party)?.no_policy_url),
     },
     english_policy_count: asNumber(summary.english_policy_count, 0),
+    qualified_site_count: asNumber(summary.qualified_site_count, 0),
     site_categories: Array.isArray(summary.site_categories)
       ? summary.site_categories
           .map((item) => asObject(item))

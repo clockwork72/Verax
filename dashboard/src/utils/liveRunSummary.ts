@@ -21,6 +21,7 @@ export type LiveRunSummary = {
   categories: RunSummaryCategory[]
   entities: RunSummaryEntity[]
   english_policy_count: number
+   qualified_site_count: number
 }
 
 export function resolveRunSummary(
@@ -44,6 +45,7 @@ export function resolveRunSummary(
     status_counts: liveSummary.status_counts,
     third_party: liveSummary.third_party,
     english_policy_count: liveSummary.english_policy_count,
+    qualified_site_count: liveSummary.qualified_site_count,
     site_categories: liveSummary.site_categories,
     mapping: {
       ...liveSummary.mapping,
@@ -213,6 +215,7 @@ export function deriveLiveRunSummary(
   let processedSites = 0
   let okSites = 0
   let englishPolicyCount = 0
+  let qualifiedSiteCount = 0
   let totalThirdPartyOccurrences = 0
   let mappedOccurrences = 0
   let unmappedOccurrences = 0
@@ -237,6 +240,34 @@ export function deriveLiveRunSummary(
     if (status === 'ok') okSites += 1
     if ('policy_is_english' in site && (site as ResultRecord).policy_is_english) {
       englishPolicyCount += 1
+    }
+    const explicitQualified = 'qualified_site' in site && typeof (site as ResultRecord).qualified_site === 'boolean'
+      ? Boolean((site as ResultRecord).qualified_site)
+      : null
+    if (explicitQualified === true) {
+      qualifiedSiteCount += 1
+    } else if (finalResultRecords.size > 0) {
+      const resultSite = site as ResultRecord
+      const firstPartyWordCount = (
+        typeof resultSite.first_party_policy?.word_count === 'number'
+          ? resultSite.first_party_policy.word_count
+          : typeof resultSite.first_party_policy_word_count === 'number'
+            ? resultSite.first_party_policy_word_count
+            : 0
+      )
+      const thirdPartyWithEnglishPolicyCount = (
+        typeof resultSite.third_party_with_english_policy_count === 'number'
+          ? resultSite.third_party_with_english_policy_count
+          : 0
+      )
+      if (
+        status === 'ok'
+        && Boolean(resultSite.policy_is_english)
+        && firstPartyWordCount >= 100
+        && thirdPartyWithEnglishPolicyCount > 0
+      ) {
+        qualifiedSiteCount += 1
+      }
     }
     const mainCategory = finalResultRecords.size > 0
       ? (typeof (site as ResultRecord).main_category === 'string' ? (site as ResultRecord).main_category : null)
@@ -335,5 +366,6 @@ export function deriveLiveRunSummary(
     categories: finalizeCategories(categoryCounts),
     entities: finalizeEntities(entityCounts, entityPrevalenceSums, entityPrevalenceMax, entityCategories),
     english_policy_count: englishPolicyCount,
+    qualified_site_count: qualifiedSiteCount,
   }
 }

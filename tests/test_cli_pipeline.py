@@ -188,6 +188,7 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
     summary = json.loads(Path(args.summary_out).read_text(encoding="utf-8"))
     assert summary["status_counts"] == {"ok": 1}
     assert summary["site_categories"] == [{"name": "Technology", "count": 1}]
+    assert summary["qualified_site_count"] == 0
 
     figure_data = json.loads((tmp_path / "results.figure_data.json").read_text(encoding="utf-8"))
     assert figure_data["dataset_overview"] == {

@@ -118,6 +118,7 @@ export function ResultsView({
   const radarNoPolicy = thirdParty.no_policy_url ?? 0
   const uniqueWithoutPolicy = Math.max(0, uniqueMapped - (uniqueWithPolicy ?? 0))
   const englishPolicyCount = effectiveSummary?.english_policy_count ?? null
+  const qualifiedSiteCount = effectiveSummary?.qualified_site_count ?? null
   const siteCategories: RunSummaryCategory[] = effectiveSummary?.site_categories ?? []
 
   const rawCategories: RunSummaryCategory[] = effectiveSummary?.categories ?? []
@@ -247,6 +248,7 @@ export function ResultsView({
               { label: 'Sites processed', value: effectiveSummary?.processed_sites ?? metrics.totalSitesProcessed, info: 'Count of sites that finished (any final status).' },
               { label: 'Target sites', value: targetSites, info: 'Sites scheduled for this run.' },
               { label: 'English policies', value: englishPolicyCount, info: 'Sites with English-language policy detected.' },
+              { label: 'Qualified sites', value: qualifiedSiteCount, info: 'Sites with an English first-party policy of at least 100 words and at least one third-party service with an English policy.' },
               { label: 'Success rate', value: null, display: `${successRate}%`, info: 'Policy found / processed.' },
             ].map((s) => (
               <div key={s.label} className="rounded-lg border border-[var(--border-soft)] bg-black/15 px-3 py-2">

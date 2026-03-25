@@ -110,6 +110,37 @@ def test_summary_tracks_last_processed_and_successful_rank():
     assert summary["last_successful_site"] == "beta.example"
 
 
+def test_summary_counts_only_qualified_english_sites():
+    sb = SummaryBuilder(run_id="run-4c", total_sites=3)
+
+    sb.update({
+        "status": "ok",
+        "policy_is_english": True,
+        "first_party_policy_word_count": 180,
+        "third_party_with_english_policy_count": 2,
+        "third_parties": [],
+    })
+    sb.update({
+        "status": "ok",
+        "policy_is_english": True,
+        "first_party_policy_word_count": 90,
+        "third_party_with_english_policy_count": 3,
+        "third_parties": [],
+    })
+    sb.update({
+        "status": "ok",
+        "policy_is_english": True,
+        "first_party_policy_word_count": 220,
+        "third_party_with_english_policy_count": 0,
+        "third_parties": [],
+    })
+
+    summary = sb.to_summary()
+
+    assert summary["english_policy_count"] == 3
+    assert summary["qualified_site_count"] == 1
+
+
 def test_figure_data_is_scoped_to_english_policy_sites():
     sb = SummaryBuilder(run_id="run-5", total_sites=3)
 

@@ -178,6 +178,7 @@ export type RunSummary = {
   status_counts: RunSummaryStatusCounts
   third_party: RunThirdPartySummary
   english_policy_count?: number
+  qualified_site_count?: number
   site_categories?: RunSummaryCategory[]
   mapping: RunMappingSummary
   categories: RunSummaryCategory[]
@@ -239,6 +240,7 @@ export type FirstPartyPolicyRecord = {
   url?: string | null
   extraction_method?: string | null
   text_len?: number | null
+  word_count?: number | null
 }
 
 export type ThirdPartyResultRecord = {

@@ -51,6 +51,7 @@ describe('deriveLiveRunSummary', () => {
     expect(summary?.processed_sites).toBe(2)
     expect(summary?.success_rate).toBe(50)
     expect(summary?.english_policy_count).toBe(1)
+    expect(summary?.qualified_site_count).toBe(0)
     expect(summary?.third_party).toEqual({
       total: 4,
       unique: 3,
@@ -96,6 +97,11 @@ describe('deriveLiveRunSummary', () => {
         site_etld1: 'example.com',
         status: 'ok',
         policy_is_english: true,
+        first_party_policy: {
+          word_count: 200,
+        },
+        third_party_with_english_policy_count: 1,
+        qualified_site: true,
         third_parties: [
           {
             third_party_etld1: 'google-analytics.com',
@@ -116,6 +122,7 @@ describe('deriveLiveRunSummary', () => {
     ], null)
 
     expect(summary).not.toBeNull()
+    expect(summary?.qualified_site_count).toBe(1)
     expect(summary?.third_party).toEqual({
       total: 2,
       unique: 1,
@@ -197,6 +204,7 @@ describe('deriveLiveRunSummary', () => {
         trackerdb_mapped: 0,
         unmapped: 0,
       },
+      qualified_site_count: 0,
       site_categories: [],
       categories: [],
       entities: [],

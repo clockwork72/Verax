@@ -95,6 +95,7 @@ class SummaryBuilder:
     third_party_unique_trackerdb_services: set = field(default_factory=set)
     third_party_unique_unmapped_services: set = field(default_factory=set)
     english_policy_count: int = 0
+    qualified_site_count: int = 0
     site_category_counts: Counter = field(default_factory=Counter)
     category_counts: Counter = field(default_factory=Counter)
     category_service_pairs_seen: set[tuple[str, str]] = field(default_factory=set)
@@ -276,6 +277,25 @@ class SummaryBuilder:
                     if category in _SERVICE_CATEGORY_ORDER:
                         row_counts[category] += 1
 
+        first_party_word_count = result.get("first_party_policy_word_count")
+        if not isinstance(first_party_word_count, int):
+            first_party = result.get("first_party_policy")
+            if isinstance(first_party, dict):
+                candidate = first_party.get("word_count")
+                first_party_word_count = candidate if isinstance(candidate, int) else 0
+            else:
+                first_party_word_count = 0
+        third_party_with_english_policy_count = result.get("third_party_with_english_policy_count")
+        if not isinstance(third_party_with_english_policy_count, int):
+            third_party_with_english_policy_count = 0
+        if (
+            status == "ok"
+            and bool(result.get("policy_is_english"))
+            and first_party_word_count >= 100
+            and third_party_with_english_policy_count > 0
+        ):
+            self.qualified_site_count += 1
+
         self.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     @staticmethod
@@ -359,6 +379,7 @@ class SummaryBuilder:
                 "no_policy_url": self.third_party_no_policy_url,
             },
             "english_policy_count": self.english_policy_count,
+            "qualified_site_count": self.qualified_site_count,
             "site_categories": site_categories,
             "mapping": {
                 "mode": self.mapping_mode,
