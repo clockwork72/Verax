@@ -9,6 +9,10 @@ Before using these scripts, set at least:
 
 Recommended: copy `hpc/scraper/local.env.example` to `hpc/scraper/local.env`. That file is gitignored and sourced automatically by the helper scripts.
 
+If your cluster exposes Python or Apptainer through environment modules, also set
+`SCRAPER_PYTHON_MODULE` and `SCRAPER_APPTAINER_MODULE`. Slurm batch shells often
+do not inherit the same module setup as an interactive login shell.
+
 ---
 
 ## Table of contents
@@ -245,6 +249,7 @@ hpc/scraper/validate_cpu_bridge.sh --json
 | `/api/status` returns `idle` when a run should be active | Run finished or orchestrator restarted | Check `outputs/<run>/summary.json`; resubmit if needed |
 | Annotation model `/health` unreachable locally (step 5 skipped) | Model is on a different node — this is normal | Export `SCRAPER_LLM_BASE_URL` if you need to override |
 | `remote python runtime fail` | venv missing or broken | `ssh "${SCRAPER_SSH_HOST}" 'hpc/scraper/install_remote.sh'` |
+| `Missing apptainer in PATH` in the Slurm log | Batch shell did not load the cluster Apptainer module | Export `SCRAPER_APPTAINER_MODULE=<your module name>` and resubmit |
 | Slurm job in `PENDING` forever | No GPU partition slots | Check `squeue` on cluster; wait or contact cluster admin |
 | Dashboard stuck after tunnel reconnect | Bridge reconnect re-seeding not triggered | Refresh the dashboard page |
 
@@ -351,6 +356,8 @@ Host- and cluster-specific variables intentionally use placeholders in the track
 | `SCRAPER_REMOTE_ROOT` | `/path/to/your/hpc/scraper` | Base directory on the cluster |
 | `SCRAPER_REPO_ROOT` | `${SCRAPER_REMOTE_ROOT}/repo` | Cloned repo root on the remote |
 | `SCRAPER_OUTPUTS_ROOT` | `${SCRAPER_REPO_ROOT}/outputs` | Remote outputs root |
+| `SCRAPER_PYTHON_MODULE` | `Python/3.12.3-GCCcore-13.3.0` | Optional environment module loaded by install / Slurm |
+| `SCRAPER_APPTAINER_MODULE` | unset | Optional Apptainer/Singularity module loaded by install / Slurm |
 | `SCRAPER_LOCAL_OUTPUTS_ROOT` | `${ROOT_DIR}/outputs/hpc` | Local destination for `pull_run.sh` |
 | `SCRAPER_PYTHON` | `${SCRAPER_REMOTE_ROOT}/.venv/bin/python` | Python interpreter on the remote |
 | `SCRAPER_LLM_BASE_URL` | auto-detected | Annotation model OpenAI-compatible base URL |

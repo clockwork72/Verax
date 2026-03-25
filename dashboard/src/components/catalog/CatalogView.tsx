@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import type {
   CatalogBucket,
@@ -84,6 +84,31 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
   const [thirdPartyDomain, setThirdPartyDomain] = useState('')
   const [entity, setEntity] = useState('')
   const [sort, setSort] = useState('third_party_count_desc')
+  const deferredThirdPartyDomain = useDeferredValue(thirdPartyDomain)
+  const deferredEntity = useDeferredValue(entity)
+  const queryKey = useMemo(() => JSON.stringify({
+    siteStatuses,
+    siteCategoriesAny,
+    firstPartyEnglish,
+    firstPartyWordCountMin,
+    requiresThirdPartyPolicy,
+    requiresThirdPartyEnglishPolicy,
+    thirdPartyCategoriesAny,
+    thirdPartyDomain: deferredThirdPartyDomain.trim(),
+    entity: deferredEntity.trim(),
+    sort,
+  }), [
+    deferredEntity,
+    deferredThirdPartyDomain,
+    firstPartyEnglish,
+    firstPartyWordCountMin,
+    requiresThirdPartyEnglishPolicy,
+    requiresThirdPartyPolicy,
+    siteCategoriesAny,
+    siteStatuses,
+    sort,
+    thirdPartyCategoriesAny,
+  ])
 
   const request: CatalogQueryRequest = {
     siteStatuses,
@@ -93,8 +118,8 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
     requiresThirdPartyPolicy: requiresThirdPartyPolicy ? true : undefined,
     requiresThirdPartyEnglishPolicy: requiresThirdPartyEnglishPolicy ? true : undefined,
     thirdPartyCategoriesAny,
-    thirdPartyDomain: thirdPartyDomain.trim() || undefined,
-    entity: entity.trim() || undefined,
+    thirdPartyDomain: deferredThirdPartyDomain.trim() || undefined,
+    entity: deferredEntity.trim() || undefined,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
     sort,
@@ -137,7 +162,11 @@ export function CatalogView({ bridgeReady }: CatalogViewProps) {
   useEffect(() => {
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeReady, page, sort])
+  }, [bridgeReady, page, queryKey])
+
+  useEffect(() => {
+    setPage(0)
+  }, [queryKey])
 
   const statusCounts = bucketMap(facets?.statuses)
   const serviceCounts = bucketMap(facets?.serviceCategories)

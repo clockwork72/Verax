@@ -300,10 +300,17 @@ class TestFacets:
 class TestMetrics:
     def test_metrics(self, populated_store: CatalogStore) -> None:
         m = populated_store.metrics()
+        qualified = populated_store.query_catalog(CatalogQueryRequest(
+            site_statuses=["ok"],
+            first_party_english=True,
+            first_party_word_count_min=100,
+            requires_third_party_english_policy=True,
+        ))
         assert m["ok"] is True
         assert m["runs"] == 1
         assert m["sites"] == 5
         assert m["englishFirstPartyPolicies"] == 3
+        assert m["qualifiedEnglishSites"] == qualified["total"]
         assert m["quality"]["successRate"] > 0
         assert len(m["statusBreakdown"]) >= 1
         assert len(m["categoryBreakdown"]) >= 1

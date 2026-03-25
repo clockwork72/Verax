@@ -11,6 +11,36 @@
 set -euo pipefail
 
 PLACEHOLDER_REMOTE_ROOT="/path/to/your/hpc/scraper"
+ensure_module_command() {
+  if command -v module >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for candidate in \
+    /etc/profile.d/modules.sh \
+    /usr/share/Modules/init/bash \
+    /etc/profile.d/lmod.sh \
+    /usr/share/lmod/lmod/init/bash
+  do
+    if [ -f "${candidate}" ]; then
+      # shellcheck disable=SC1090
+      source "${candidate}" >/dev/null 2>&1 || true
+      if command -v module >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+  done
+
+  if command -v modulecmd >/dev/null 2>&1; then
+    eval "$(modulecmd bash autoinit 2>/dev/null)" || true
+    if command -v module >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SUBMIT_REPO_ROOT="${SLURM_SUBMIT_DIR:-}"
@@ -49,6 +79,8 @@ SCRAPER_PYTHON="${SCRAPER_PYTHON:-}"
 if is_placeholder_path "${SCRAPER_PYTHON}"; then
   SCRAPER_PYTHON="${SCRAPER_REMOTE_ROOT}/.venv/bin/python"
 fi
+SCRAPER_PYTHON_MODULE="${SCRAPER_PYTHON_MODULE:-}"
+SCRAPER_APPTAINER_MODULE="${SCRAPER_APPTAINER_MODULE:-}"
 SCRAPER_PLAYWRIGHT_BROWSERS="${SCRAPER_PLAYWRIGHT_BROWSERS:-${SCRAPER_RUNTIME_ROOT}/playwright-browsers}"
 SCRAPER_CLUSTER_FQDN="${SCRAPER_CLUSTER_FQDN:-login.your-hpc.example}"
 
@@ -64,9 +96,28 @@ mkdir -p "${SCRAPER_REMOTE_ROOT}/logs" "${SCRAPER_RUNTIME_ROOT}" "${SCRAPER_OUTP
 # the cluster's default per-process soft limit.
 ulimit -n 4096 >/dev/null 2>&1 || true
 
+if [ -n "${SCRAPER_PYTHON_MODULE}" ] || [ -n "${SCRAPER_APPTAINER_MODULE}" ]; then
+  if ! ensure_module_command; then
+    echo "Requested cluster modules, but the module command is unavailable in this batch shell." >&2
+    exit 1
+  fi
+  if [ -n "${SCRAPER_PYTHON_MODULE}" ]; then
+    module load "${SCRAPER_PYTHON_MODULE}"
+  fi
+  if [ -n "${SCRAPER_APPTAINER_MODULE}" ]; then
+    module load "${SCRAPER_APPTAINER_MODULE}"
+  fi
+fi
+
 if [ ! -x "${SCRAPER_PYTHON}" ]; then
   echo "Missing runtime python at ${SCRAPER_PYTHON}" >&2
   echo "Run ${SCRAPER_REPO_ROOT}/hpc/scraper/install_remote.sh first." >&2
+  exit 1
+fi
+
+if ! command -v apptainer >/dev/null 2>&1; then
+  echo "Missing apptainer in PATH for orchestrator startup." >&2
+  echo "Export SCRAPER_APPTAINER_MODULE to your cluster's module name, or load it before sbatch." >&2
   exit 1
 fi
 
@@ -92,6 +143,7 @@ Outputs root: ${SCRAPER_OUTPUTS_ROOT}
 Service port: ${SCRAPER_SERVICE_PORT}
 Database port: ${SCRAPER_DB_PORT}
 Open files limit: $(ulimit -n)
+Apptainer: $(command -v apptainer)
 
 Local tunnel command:
 ssh -t -L ${SCRAPER_SERVICE_PORT}:localhost:${SCRAPER_SERVICE_PORT} ${user}@${cluster_fqdn} \\

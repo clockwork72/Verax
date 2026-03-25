@@ -24,6 +24,15 @@ from .catalog_outbox import aggregate_outputs_status
 from .catalog_query import build_order_by, build_site_match_query
 from .catalog_types import CatalogQueryRequest, CatalogRunBundle, CatalogSiteBundle
 
+QUALIFIED_SITES_REQUEST = CatalogQueryRequest(
+    site_statuses=["ok"],
+    first_party_english=True,
+    first_party_word_count_min=100,
+    requires_third_party_english_policy=True,
+    limit=1,
+    offset=0,
+)
+
 log = logging.getLogger(__name__)
 
 _SQLITE_LOCK = threading.Lock()
@@ -389,6 +398,7 @@ class CatalogStore:
             "warehouse_last_success_at": None,
             "mode": "file_ledger_dual_write",
         }
+        qualified_query = build_site_match_query(QUALIFIED_SITES_REQUEST)
         with self.connect() as conn:
             runs = self._fetchone(conn, "SELECT COUNT(*) AS count FROM catalog_runs")
             sites = self._fetchone(conn, "SELECT COUNT(*) AS count FROM catalog_sites")
@@ -401,12 +411,8 @@ class CatalogStore:
             )
             qualified = self._fetchone(
                 conn,
-                """
-                SELECT COUNT(*) AS count
-                FROM catalog_site_search
-                WHERE first_party_policy_is_english = 1
-                  AND third_party_with_english_policy_count > 0
-                """,
+                f"SELECT COUNT(*) AS count FROM ({qualified_query.sql}) s",
+                qualified_query.params,
             )
             dedup = self._fetchone(
                 conn,

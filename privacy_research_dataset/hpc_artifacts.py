@@ -49,6 +49,27 @@ def parse_jsonl(raw: str, limit: int, offset: int = 0) -> list[Any]:
     return out
 
 
+def read_jsonl_window(path: Path, limit: int, offset: int = 0) -> list[Any]:
+    out: list[Any] = []
+    seen = 0
+    with path.open("r", encoding="utf-8") as fh:
+      for line in fh:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if seen < offset:
+                seen += 1
+                continue
+            try:
+                out.append(json.loads(stripped))
+            except json.JSONDecodeError:
+                out.append({"_error": "invalid_json", "raw": stripped})
+            seen += 1
+            if len(out) >= limit:
+                break
+    return out
+
+
 def resolve_jsonl_window(
     limit_raw: str | None,
     offset_raw: str | None,
@@ -251,7 +272,11 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         limit, offset = resolve_jsonl_window(request.query.get("limit"), request.query.get("offset"))
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
-        data = parse_jsonl(await service.read_text_file(target), limit, offset) if target.suffix == ".jsonl" else await service.read_json_file(target)
+        data = (
+            await service.run_fs_job(read_jsonl_window, target, limit, offset)
+            if target.suffix == ".jsonl"
+            else await service.read_json_file(target)
+        )
         return web.json_response(JsonPathResponse(ok=True, data=data, path=str(target)).to_dict())
 
     async def handle_read_results(request: web.Request) -> web.Response:
@@ -260,7 +285,11 @@ def artifact_routes(service: ArtifactService) -> list[web.RouteDef]:
         if not target.exists():
             return web.json_response(JsonPathResponse(ok=False, error="not_found", path=str(target)).to_dict())
         return web.json_response(
-            JsonPathResponse(ok=True, data=parse_jsonl(await service.read_text_file(target), limit, offset), path=str(target)).to_dict()
+            JsonPathResponse(
+                ok=True,
+                data=await service.run_fs_job(read_jsonl_window, target, limit, offset),
+                path=str(target),
+            ).to_dict()
         )
 
     async def handle_read_artifact_text(request: web.Request) -> web.Response:

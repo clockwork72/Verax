@@ -3,6 +3,8 @@ import { useCallback } from 'react'
 import { listRunRecords, readFolderSize, readWorkspaceSnapshot, writeAuditState, type WorkspaceSnapshot } from './scraperClient'
 import type { ApplyWorkspaceSnapshotOptions, WorkspaceDataUpdate } from './useWorkspaceData'
 
+const DATABASE_LOAD_RESULTS_PREVIEW_LIMIT = 250
+
 type UseWorkspaceControllerArgs = {
   outDir: string
   runsRoot: string
@@ -83,9 +85,11 @@ export function useWorkspaceController({
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
       includeFolderSize: true,
+      includeResults: true,
       includeAudit: true,
       includeManifest: true,
       includeAnnotation: true,
+      resultsLimit: DATABASE_LOAD_RESULTS_PREVIEW_LIMIT,
     })
     if (snapshot.missingOutputDir) {
       await handleMissingOutputDir(targetDir)
@@ -96,7 +100,6 @@ export function useWorkspaceController({
     }
     updateWorkspaceData({
       explorerData: null,
-      resultsData: null,
     })
     const loadedTargetTotal = resolveSnapshotTargetTotal(snapshot)
     if (loadedTargetTotal !== null) {

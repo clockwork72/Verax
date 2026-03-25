@@ -417,11 +417,13 @@ export function useAppRuntime({
           || activeNav === 'annotations'
           || activeNav === 'consistency'
         )
+        const needsResultsData = activeNav === 'results'
         const snapshot = await readWorkspaceSnapshot({
           outDir,
           includeFolderSize: false,
           includeExplorer: needsExplorerData,
-          includeResults: false,
+          includeResults: needsResultsData,
+          resultsLimit: needsResultsData ? 250 : undefined,
           includeAudit: activeNav === 'audit',
           includeAnnotation: annotateRunning || activeNav === 'annotations',
         })

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import time
 import uuid
@@ -325,6 +326,11 @@ class PostgresRuntime:
         return f"postgresql://scraper:{self.password}@127.0.0.1:{self.port}/scraper"
 
     async def start(self) -> None:
+        if shutil.which("apptainer") is None:
+            raise RuntimeError(
+                "apptainer_not_found: load Apptainer/Singularity in the batch environment "
+                "or export SCRAPER_APPTAINER_MODULE before starting the orchestrator"
+            )
         self.runtime_root.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)

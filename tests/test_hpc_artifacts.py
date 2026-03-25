@@ -9,6 +9,7 @@ from privacy_research_dataset.hpc_artifacts import (
     build_annotation_stats_response,
     build_run_list_response,
     parse_jsonl,
+    read_jsonl_window,
     resolve_jsonl_window,
 )
 from privacy_research_dataset.hpc_service import Paths
@@ -128,6 +129,23 @@ def test_parse_jsonl_respects_offset_and_limit():
     ])
 
     payload = parse_jsonl(raw, limit=2, offset=1)
+
+    assert payload == [{"site": "b.com"}, {"site": "c.com"}]
+
+
+def test_read_jsonl_window_reads_only_requested_slice(tmp_path):
+    path = tmp_path / "results.jsonl"
+    path.write_text(
+        '\n'.join([
+            '{"site":"a.com"}',
+            '{"site":"b.com"}',
+            '{"site":"c.com"}',
+            '{"site":"d.com"}',
+        ]) + '\n',
+        encoding="utf-8",
+    )
+
+    payload = read_jsonl_window(path, limit=2, offset=1)
 
     assert payload == [{"site": "b.com"}, {"site": "c.com"}]
 

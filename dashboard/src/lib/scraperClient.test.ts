@@ -375,6 +375,28 @@ describe('scraperClient', () => {
     expect(readResultsCalls).toEqual([{ limit: 1425, offset: 0 }])
   })
 
+  it('treats bounded results as enough to hydrate a loaded workspace when summary files are absent', async () => {
+    installScraperMock({
+      readSummary: async () => ({ ok: false, error: 'not_found' }),
+      readState: async () => ({ ok: false, error: 'not_found' }),
+      readResults: async () => ({
+        ok: true,
+        data: [{ site_etld1: 'docker.com', rank: 1 }, { site_etld1: 'openai.com', rank: 2 }],
+      }),
+    })
+
+    const snapshot = await readWorkspaceSnapshot({
+      outDir: 'outputs/unified',
+      includeResults: true,
+      resultsLimit: 2,
+    })
+
+    expect(snapshot.hasAnyResults).toBe(true)
+    expect(snapshot.results).toEqual([{ site_etld1: 'docker.com', rank: 1 }, { site_etld1: 'openai.com', rank: 2 }])
+    expect(snapshot.processedSites).toBe(2)
+    expect(snapshot.progress).toBe(100)
+  })
+
   it('reads run listings and folder sizes through the client layer', async () => {
     installScraperMock({
       listRuns: async () => ({
