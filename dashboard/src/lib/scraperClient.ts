@@ -566,9 +566,39 @@ export async function readWorkspaceSnapshot({
     }
   }
 
+  const folderSizePromise = includeFolderSize
+    ? scraper.getFolderSize(outDir)
+    : Promise.resolve(null)
+  const summaryPromise = scraper.readSummary(`${outDir}/results.summary.json`)
+  const statePromise = scraper.readState(`${outDir}/run_state.json`)
+  const auditPromise = includeAudit && scraper.readAuditState
+    ? scraper.readAuditState(outDir)
+    : Promise.resolve(null)
+  const manifestPromise = includeManifest && scraper.readRunManifest
+    ? scraper.readRunManifest(outDir)
+    : Promise.resolve(null)
+  const annotationPromise = includeAnnotation
+    ? readAnnotationStats(`${outDir}/artifacts`)
+    : Promise.resolve(null)
+
   let folderBytes: number | null | undefined
+  const [
+    size,
+    summaryResult,
+    stateResult,
+    auditResult,
+    manifestResult,
+    annotationStats,
+  ] = await Promise.all([
+    folderSizePromise,
+    summaryPromise,
+    statePromise,
+    auditPromise,
+    manifestPromise,
+    annotationPromise,
+  ])
+
   if (includeFolderSize) {
-    const size = await scraper.getFolderSize(outDir)
     if (!size?.ok && size?.error === 'not_found') {
       return {
         summary: null,
@@ -584,8 +614,6 @@ export async function readWorkspaceSnapshot({
     folderBytes = size?.ok && typeof size.bytes === 'number' ? size.bytes : null
   }
 
-  const summaryResult = await scraper.readSummary(`${outDir}/results.summary.json`)
-  const stateResult = await scraper.readState(`${outDir}/run_state.json`)
   const summary = summaryResult?.ok ? normalizeRunSummary(summaryResult.data) : null
   const state = stateResult?.ok ? normalizeRunState(stateResult.data) : null
 
@@ -614,8 +642,7 @@ export async function readWorkspaceSnapshot({
     snapshot.hasAnyResults = snapshot.hasAnyResults || results.length > 0
   }
 
-  if (includeAudit && scraper.readAuditState) {
-    const auditResult = await scraper.readAuditState(outDir)
+  if (includeAudit) {
     snapshot.auditState = auditResult?.ok && auditResult.data
       ? {
           verifiedSites: Array.isArray(auditResult.data.verifiedSites) ? auditResult.data.verifiedSites : [],
@@ -624,13 +651,11 @@ export async function readWorkspaceSnapshot({
       : EMPTY_AUDIT_STATE
   }
 
-  if (includeManifest && scraper.readRunManifest) {
-    const manifestResult = await scraper.readRunManifest(outDir)
+  if (includeManifest) {
     snapshot.runManifest = manifestResult?.ok ? normalizeRunManifest(manifestResult.data) : null
   }
 
   if (includeAnnotation) {
-    const annotationStats = await readAnnotationStats(`${outDir}/artifacts`)
     snapshot.annotationStats = annotationStats
     snapshot.annotationRunState = annotationStats
       ? annotationRunStateFromStats(annotationStats)

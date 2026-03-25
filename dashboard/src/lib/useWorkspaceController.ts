@@ -1,6 +1,14 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
-import { listRunRecords, readFolderSize, readWorkspaceSnapshot, writeAuditState, type WorkspaceSnapshot } from './scraperClient'
+import { annotationRunStateFromStats, emptyAnnotationRunState } from './annotationRunState'
+import {
+  listRunRecords,
+  readAnnotationStats,
+  readFolderSize,
+  readWorkspaceSnapshot,
+  writeAuditState,
+  type WorkspaceSnapshot,
+} from './scraperClient'
 import type { ApplyWorkspaceSnapshotOptions, WorkspaceDataUpdate } from './useWorkspaceData'
 
 const DATABASE_LOAD_RESULTS_PREVIEW_LIMIT = 250
@@ -36,6 +44,8 @@ export function useWorkspaceController({
   setOutDir,
   setTopN,
 }: UseWorkspaceControllerArgs) {
+  const loadRequestIdRef = useRef(0)
+
   const refreshRuns = useCallback(async (baseDir: string = runsRoot) => {
     updateWorkspaceData({ runRecords: await listRunRecords(baseDir) })
     const size = await readFolderSize(outDir)
@@ -81,31 +91,60 @@ export function useWorkspaceController({
   }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, running])
 
   const loadOutDir = useCallback(async (dirOverride?: string) => {
-    const targetDir = dirOverride || outDir
+    const targetDir = (dirOverride || outDir).trim()
+    const requestId = loadRequestIdRef.current + 1
+    loadRequestIdRef.current = requestId
+
+    if (dirOverride) {
+      setOutDir(targetDir)
+    }
+    updateWorkspaceData({
+      explorerData: null,
+      folderBytes: null,
+      annotationStats: null,
+      annotationRunState: emptyAnnotationRunState(),
+    })
+
     const snapshot = await readWorkspaceSnapshot({
       outDir: targetDir,
-      includeFolderSize: true,
       includeResults: true,
       includeAudit: true,
       includeManifest: true,
-      includeAnnotation: true,
       resultsLimit: DATABASE_LOAD_RESULTS_PREVIEW_LIMIT,
     })
+    if (requestId !== loadRequestIdRef.current) {
+      return
+    }
     if (snapshot.missingOutputDir) {
       await handleMissingOutputDir(targetDir)
       return
     }
-    if (dirOverride) {
-      setOutDir(dirOverride)
-    }
-    updateWorkspaceData({
-      explorerData: null,
-    })
     const loadedTargetTotal = resolveSnapshotTargetTotal(snapshot)
     if (loadedTargetTotal !== null) {
       setTopN(String(loadedTargetTotal))
     }
     applyWorkspaceSnapshot(snapshot)
+
+    void (async () => {
+      const [size, annotationStats] = await Promise.all([
+        readFolderSize(targetDir),
+        readAnnotationStats(`${targetDir}/artifacts`),
+      ])
+      if (requestId !== loadRequestIdRef.current) {
+        return
+      }
+      if (!size.ok && size.error === 'not_found') {
+        await handleMissingOutputDir(targetDir)
+        return
+      }
+      updateWorkspaceData({
+        folderBytes: size.ok && typeof size.bytes === 'number' ? size.bytes : null,
+        annotationStats: annotationStats ?? null,
+        annotationRunState: annotationStats
+          ? annotationRunStateFromStats(annotationStats)
+          : emptyAnnotationRunState(),
+      })
+    })()
   }, [applyWorkspaceSnapshot, handleMissingOutputDir, outDir, setOutDir, setTopN, updateWorkspaceData])
 
   const persistAuditState = useCallback(async (
