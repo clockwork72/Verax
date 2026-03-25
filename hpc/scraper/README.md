@@ -114,6 +114,10 @@ The live scraper now reuses one shared Crawl4AI browser client per run and scale
 its default crawl parallelism from the Slurm CPU allocation instead of staying
 fixed at `4/4`.
 
+Resume launches that use `upsertBySite=true` now skip the expensive startup
+summary replay over the full historical `results.jsonl`; exact reporting is
+rebuilt on the next site write instead.
+
 Current default scaling:
 - `SLURM_CPUS_PER_TASK=24` → scraper concurrency `8`, browser fetch concurrency `12`
 - `SLURM_CPUS_PER_TASK=32` → scraper concurrency `10`, browser fetch concurrency `16`

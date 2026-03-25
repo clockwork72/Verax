@@ -1747,13 +1747,25 @@ async def _run(args: argparse.Namespace) -> None:
             Path(str(args.state_file)) if getattr(args, "state_file", None) else None,
         )
         if not args.force and out_path.exists():
-            summary = _build_summary_builder_from_results(
-                out_path,
-                run_id=run_id,
-                mapping_mode=mapping_mode,
-                total_sites_override=target_total_sites,
-                started_at_hint=existing_summary_hint,
-            )
+            if args.upsert_by_site:
+                # Upsert mode already rebuilds the exact reporting outputs from
+                # results.jsonl after each site write, so replaying the entire
+                # historical results file here only delays resume startup.
+                summary = SummaryBuilder(
+                    run_id=run_id,
+                    total_sites=target_total_sites,
+                    mapping_mode=mapping_mode,
+                    started_at=existing_summary_hint or datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                )
+                log("Upsert mode: skipping startup summary replay; reporting will rebuild on the next site write.")
+            else:
+                summary = _build_summary_builder_from_results(
+                    out_path,
+                    run_id=run_id,
+                    mapping_mode=mapping_mode,
+                    total_sites_override=target_total_sites,
+                    started_at_hint=existing_summary_hint,
+                )
         else:
             summary = SummaryBuilder(
                 run_id=run_id,

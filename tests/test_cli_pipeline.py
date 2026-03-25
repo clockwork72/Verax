@@ -519,3 +519,52 @@ def test_run_pipeline_times_out_site_worker(tmp_path, monkeypatch):
 
     summary = json.loads(Path(args.summary_out).read_text(encoding="utf-8"))
     assert summary["status_counts"] == {"exception": 1}
+
+
+def test_run_pipeline_skips_startup_summary_replay_for_upsert_runs(tmp_path, monkeypatch):
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=1)
+    args.upsert_by_site = True
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps({
+        "rank": 1,
+        "input": "cached.example",
+        "site_etld1": "cached.example",
+        "status": "ok",
+        "run_id": "older-run",
+    }) + "\n", encoding="utf-8")
+    Path(args.summary_out).write_text(json.dumps({"started_at": "2026-03-25T00:00:00Z"}), encoding="utf-8")
+    Path(args.state_file).write_text(json.dumps({"started_at": "2026-03-25T00:00:00Z"}), encoding="utf-8")
+
+    async def fake_prefilter(args, records):
+        return list(records)
+
+    async def fake_process_site(client, site, **kwargs):
+        site_dir = Path(kwargs["artifacts_dir"]) / site
+        site_dir.mkdir(parents=True, exist_ok=True)
+        (site_dir / "policy.txt").write_text("Primary policy", encoding="utf-8")
+        return {
+            "rank": kwargs["rank"],
+            "input": site,
+            "site_etld1": site,
+            "main_category": "Technology",
+            "status": "ok",
+            "third_parties": [],
+            "run_id": "test-run",
+        }
+
+    def fail_if_replayed(*args, **kwargs):
+        raise AssertionError("startup summary replay should be skipped for upsert runs")
+
+    FakeCrawl4AIClient.instances.clear()
+    monkeypatch.setattr(cli, "_load_input_sites", lambda args: [{"rank": 2, "site": "alpha.example"}])
+    monkeypatch.setattr(cli, "_prefilter_sites", fake_prefilter)
+    monkeypatch.setattr(cli, "Crawl4AIClient", FakeCrawl4AIClient)
+    monkeypatch.setattr(cli, "process_site", fake_process_site)
+    monkeypatch.setattr(cli, "_build_summary_builder_from_results", fail_if_replayed)
+
+    asyncio.run(cli._run(args))
+
+    results = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
+    assert any(record["site_etld1"] == "alpha.example" for record in results)
