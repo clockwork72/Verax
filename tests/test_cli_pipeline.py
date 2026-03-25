@@ -489,6 +489,7 @@ def test_run_pipeline_times_out_site_worker(tmp_path, monkeypatch):
         return list(records)
 
     async def slow_process_site(client, site, **kwargs):
+        kwargs["stage_callback"]("policy_discovery")
         await asyncio.sleep(0.05)
         return {
             "rank": kwargs["rank"],
@@ -509,6 +510,12 @@ def test_run_pipeline_times_out_site_worker(tmp_path, monkeypatch):
     results = [json.loads(line) for line in Path(args.out).read_text(encoding="utf-8").splitlines()]
     assert results[0]["status"] == "exception"
     assert "site_timed_out" in results[0]["error_message"]
+    assert results[0]["error_code"] == "site_timeout"
+    assert results[0]["error_stage"] == "policy_discovery"
+    assert results[0]["site_etld1"] == "alpha.example"
+    assert isinstance(results[0]["total_ms"], int) and results[0]["total_ms"] >= 0
+    assert isinstance(results[0]["started_at"], str) and results[0]["started_at"]
+    assert isinstance(results[0]["ended_at"], str) and results[0]["ended_at"]
 
     summary = json.loads(Path(args.summary_out).read_text(encoding="utf-8"))
     assert summary["status_counts"] == {"exception": 1}

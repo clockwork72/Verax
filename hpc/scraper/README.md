@@ -117,6 +117,7 @@ fixed at `4/4`.
 Current default scaling:
 - `SLURM_CPUS_PER_TASK=24` → scraper concurrency `8`, browser fetch concurrency `12`
 - `SLURM_CPUS_PER_TASK=32` → scraper concurrency `10`, browser fetch concurrency `16`
+- HPC launches now also default to `--page-timeout-ms 20000`, `--fetch-timeout-sec 45`, and `--site-timeout-sec 240`
 - smaller allocations scale down automatically
 - explicit API/UI overrides still win when provided
 
@@ -277,6 +278,7 @@ hpc/scraper/validate_cpu_bridge.sh --json
 | Slurm job in `PENDING` forever | No GPU partition slots | Check `squeue` on cluster; wait or contact cluster admin |
 | Dashboard stuck after tunnel reconnect | Bridge reconnect re-seeding not triggered | Refresh the dashboard page |
 | Log shows `Future exception was never retrieved` with a Playwright navigation timeout | Crawl4AI leaked an internal navigation future | Current runtime suppresses this known noise; if it still appears after redeploy, capture the exact site and log snippet |
+| Site ends as `error_code=site_timeout` | The site got stuck in `home_fetch`, `policy_discovery`, `third_party_extract`, or `third_party_policy_fetch` long enough to hit the per-site cap | Check the `error_stage` field in `results.jsonl` and tune `pageTimeoutMs` / `fetchTimeoutSec` / `siteTimeoutSec` if you need a different tradeoff |
 
 ### Step 4 — Manual bridge probe
 

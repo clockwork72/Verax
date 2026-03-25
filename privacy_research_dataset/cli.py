@@ -2019,6 +2019,9 @@ async def _run(args: argparse.Namespace) -> None:
         async def worker(rec: dict[str, Any]) -> None:
                 rank = rec["rank"]
                 site = rec["site"]
+                site_started_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+                site_started_monotonic = time.perf_counter()
+                current_stage: str | None = None
 
                 cached_result = done_records.get(site)
                 if cached_result is not None:
@@ -2114,6 +2117,19 @@ async def _run(args: argparse.Namespace) -> None:
                     "rank": rank,
                     "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
                 })
+
+                def on_stage(stage: str) -> None:
+                    nonlocal current_stage
+                    current_stage = stage
+                    emit_event({
+                        "type": "site_stage",
+                        "run_id": run_id,
+                        "site": site,
+                        "rank": rank,
+                        "stage": stage,
+                        "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    })
+
                 site_timeout_sec = max(0.001, float(getattr(args, "site_timeout_sec", 300.0) or 300.0))
                 try:
                     result = await asyncio.wait_for(
@@ -2137,14 +2153,7 @@ async def _run(args: argparse.Namespace) -> None:
                             policy_artifact_registry=policy_artifact_registry,
                             policy_artifact_lock=policy_artifact_lock,
                             fetch_timeout_sec=float(getattr(args, "fetch_timeout_sec", 60.0) or 60.0),
-                            stage_callback=lambda stage: emit_event({
-                                "type": "site_stage",
-                                "run_id": run_id,
-                                "site": site,
-                                "rank": rank,
-                                "stage": stage,
-                                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                            }),
+                            stage_callback=on_stage,
                         ),
                         timeout=site_timeout_sec,
                     )
@@ -2153,21 +2162,31 @@ async def _run(args: argparse.Namespace) -> None:
                     result = {
                         "rank": rank,
                         "input": site,
+                        "site_etld1": site,
                         "main_category": rec.get("main_category"),
                         "status": "exception",
                         "error_message": f"site_timed_out_after_{site_timeout_sec:.1f}s",
                         "error_code": "site_timeout",
+                        "error_stage": current_stage,
+                        "total_ms": int((time.perf_counter() - site_started_monotonic) * 1000),
                         "run_id": run_id,
+                        "started_at": site_started_at,
+                        "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                     }
                 except Exception as e:
                     warn(f"Unhandled error for {site}: {e}")
                     result = {
                         "rank": rank,
                         "input": site,
+                        "site_etld1": site,
                         "main_category": rec.get("main_category"),
                         "status": "exception",
                         "error_message": str(e),
+                        "error_stage": current_stage,
+                        "total_ms": int((time.perf_counter() - site_started_monotonic) * 1000),
                         "run_id": run_id,
+                        "started_at": site_started_at,
+                        "ended_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                     }
 
                 if rec.get("main_category") and not result.get("main_category"):

@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from privacy_research_dataset.hpc_commands import (
+    DEFAULT_HPC_FETCH_TIMEOUT_SEC,
+    DEFAULT_HPC_PAGE_TIMEOUT_MS,
+    DEFAULT_HPC_SITE_TIMEOUT_SEC,
     SAFE_BROWSER_FETCH_CONCURRENCY,
     SAFE_SCRAPER_CONCURRENCY,
     SAFE_TP_POLICY_MAX,
@@ -59,8 +62,14 @@ def test_build_scraper_args_preserves_manifest_and_resume_flags(tmp_path):
     assert "--exclude-same-entity" in argv
     concurrency_index = argv.index("--concurrency")
     browser_fetch_index = argv.index("--browser-fetch-concurrency")
+    page_timeout_index = argv.index("--page-timeout-ms")
+    fetch_timeout_index = argv.index("--fetch-timeout-sec")
+    site_timeout_index = argv.index("--site-timeout-sec")
     assert argv[concurrency_index + 1] == str(SAFE_SCRAPER_CONCURRENCY)
     assert argv[browser_fetch_index + 1] == str(SAFE_BROWSER_FETCH_CONCURRENCY)
+    assert argv[page_timeout_index + 1] == str(DEFAULT_HPC_PAGE_TIMEOUT_MS)
+    assert argv[fetch_timeout_index + 1] == str(DEFAULT_HPC_FETCH_TIMEOUT_SEC)
+    assert argv[site_timeout_index + 1] == str(DEFAULT_HPC_SITE_TIMEOUT_SEC)
     tp_max_index = argv.index("--third-party-policy-max")
     assert argv[tp_max_index + 1] == str(SAFE_TP_POLICY_MAX)
     assert manifest["runId"] == "run-42"
@@ -149,9 +158,15 @@ def test_build_scraper_args_uses_detected_slurm_cpus(monkeypatch, tmp_path):
 
     concurrency_index = argv.index("--concurrency")
     browser_fetch_index = argv.index("--browser-fetch-concurrency")
+    page_timeout_index = argv.index("--page-timeout-ms")
+    fetch_timeout_index = argv.index("--fetch-timeout-sec")
+    site_timeout_index = argv.index("--site-timeout-sec")
 
     assert argv[concurrency_index + 1] == "8"
     assert argv[browser_fetch_index + 1] == "12"
+    assert argv[page_timeout_index + 1] == str(DEFAULT_HPC_PAGE_TIMEOUT_MS)
+    assert argv[fetch_timeout_index + 1] == str(DEFAULT_HPC_FETCH_TIMEOUT_SEC)
+    assert argv[site_timeout_index + 1] == str(DEFAULT_HPC_SITE_TIMEOUT_SEC)
 
 
 def test_build_scraper_args_accepts_timeout_overrides(tmp_path):

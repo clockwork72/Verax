@@ -12,6 +12,9 @@ SAFE_BROWSER_FETCH_CONCURRENCY = 4
 SAFE_POLICY_CACHE_MAX = 1600
 SAFE_TP_CACHE_FLUSH = 20
 SAFE_TP_POLICY_MAX = 12
+DEFAULT_HPC_PAGE_TIMEOUT_MS = 20_000
+DEFAULT_HPC_FETCH_TIMEOUT_SEC = 45.0
+DEFAULT_HPC_SITE_TIMEOUT_SEC = 240.0
 
 
 class EventBusLike(Protocol):
@@ -189,6 +192,9 @@ def build_scraper_args(
             or recommended_browser_fetch_concurrency(scraper_concurrency=scraper_concurrency)
         ),
     )
+    page_timeout_ms = max(1, int(options.get("pageTimeoutMs") or DEFAULT_HPC_PAGE_TIMEOUT_MS))
+    fetch_timeout_sec = max(0.001, float(options.get("fetchTimeoutSec") or DEFAULT_HPC_FETCH_TIMEOUT_SEC))
+    site_timeout_sec = max(0.001, float(options.get("siteTimeoutSec") or DEFAULT_HPC_SITE_TIMEOUT_SEC))
     args = [
         "-m",
         "privacy_research_dataset.cli",
@@ -215,13 +221,13 @@ def build_scraper_args(
         str(SAFE_POLICY_CACHE_MAX),
         "--tp-cache-flush-entries",
         str(SAFE_TP_CACHE_FLUSH),
+        "--page-timeout-ms",
+        str(page_timeout_ms),
+        "--fetch-timeout-sec",
+        str(fetch_timeout_sec),
+        "--site-timeout-sec",
+        str(site_timeout_sec),
     ]
-    if options.get("pageTimeoutMs") is not None:
-        args.extend(["--page-timeout-ms", str(max(1, int(options["pageTimeoutMs"])))])
-    if options.get("fetchTimeoutSec") is not None:
-        args.extend(["--fetch-timeout-sec", str(max(0.001, float(options["fetchTimeoutSec"])))])
-    if options.get("siteTimeoutSec") is not None:
-        args.extend(["--site-timeout-sec", str(max(0.001, float(options["siteTimeoutSec"])))])
     sites = options.get("sites") or []
     if sites:
         for site in sites:
