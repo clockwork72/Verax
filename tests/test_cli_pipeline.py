@@ -227,6 +227,38 @@ def test_run_pipeline_emits_stage_events_and_updates_tp_cache(tmp_path, monkeypa
     assert artifacts_ok_link.is_symlink()
 
 
+def test_run_pipeline_reuses_one_browser_client_across_multiple_sites(tmp_path, monkeypatch):
+    _install_pipeline_mocks(
+        monkeypatch,
+        sites=[
+            {"rank": 1, "site": "alpha.example"},
+            {"rank": 2, "site": "beta.example"},
+        ],
+        tmp_path=tmp_path,
+    )
+    args = _build_args(tmp_path, emit_events=False, tp_cache_flush_entries=10)
+
+    asyncio.run(cli._run(args))
+
+    assert len(FakeCrawl4AIClient.instances) == 1
+
+
+def test_should_suppress_asyncio_exception_matches_leaked_navigation_timeout():
+    leaked_timeout = {
+        "message": "Future exception was never retrieved",
+        "exception": TimeoutError(
+            'Timeout 15000ms exceeded.\nCall log:\n - navigating to "https://example.com/", waiting until "domcontentloaded"\n'
+        ),
+    }
+    unrelated = {
+        "message": "Task exception was never retrieved",
+        "exception": RuntimeError("boom"),
+    }
+
+    assert cli._should_suppress_asyncio_exception(leaked_timeout) is True
+    assert cli._should_suppress_asyncio_exception(unrelated) is False
+
+
 def test_run_pipeline_flushes_tp_cache_on_shutdown(tmp_path, monkeypatch):
     _install_pipeline_mocks(
         monkeypatch,
@@ -327,7 +359,7 @@ def test_load_tp_disk_cache_compacts_legacy_duplicates(tmp_path):
     assert cache["https://shared.example/privacy/"]["text"] == "Policy text"
 
 
-def test_run_pipeline_uses_site_scoped_crawl_clients(tmp_path, monkeypatch):
+def test_run_pipeline_keeps_shared_client_when_processing_sites_concurrently(tmp_path, monkeypatch):
     _install_pipeline_mocks(
         monkeypatch,
         sites=[
@@ -341,12 +373,8 @@ def test_run_pipeline_uses_site_scoped_crawl_clients(tmp_path, monkeypatch):
 
     asyncio.run(cli._run(args))
 
-    assert len(FakeCrawl4AIClient.instances) == 2
-    fetch_call_sets = sorted((tuple(client.fetch_calls) for client in FakeCrawl4AIClient.instances), key=len)
-    assert fetch_call_sets == [
-        (),
-        ("https://shared.example/privacy",),
-    ]
+    assert len(FakeCrawl4AIClient.instances) == 1
+    assert FakeCrawl4AIClient.instances[0].fetch_calls == ["https://shared.example/privacy"]
 
 
 def test_run_pipeline_uses_post_prefilter_total_sites(tmp_path, monkeypatch, capsys):

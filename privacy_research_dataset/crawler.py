@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 import shutil
+from contextlib import suppress
 from datetime import datetime, timezone
 import time
 from pathlib import Path
@@ -261,11 +262,20 @@ async def _await_crawl_result(
     timeout_s: float,
     phase: str,
 ) -> Crawl4AIResult:
+    task = asyncio.create_task(awaitable)
     try:
-        return await asyncio.wait_for(awaitable, timeout=timeout_s)
+        return await asyncio.wait_for(task, timeout=timeout_s)
     except asyncio.TimeoutError:
+        task.cancel()
+        with suppress(Exception):
+            await task
         warn(f"{phase} timed out after {timeout_s:.1f}s for {url}")
         return _timeout_result(url, timeout_s=timeout_s, phase=phase)
+    except Exception:
+        if task.done():
+            with suppress(Exception):
+                task.result()
+        raise
 
 
 async def _fetch_home_with_retry(

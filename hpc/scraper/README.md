@@ -108,6 +108,30 @@ hpc/scraper/validate_cpu_bridge.sh
 
 Expected: `Summary: 6 ok, 0 failed, 0-1 skipped` (annotation model step may be skipped if on a different node).
 
+### Performance tuning
+
+The live scraper now reuses one shared Crawl4AI browser client per run and scales
+its default crawl parallelism from the Slurm CPU allocation instead of staying
+fixed at `4/4`.
+
+Current default scaling:
+- `SLURM_CPUS_PER_TASK=24` → scraper concurrency `8`, browser fetch concurrency `12`
+- `SLURM_CPUS_PER_TASK=32` → scraper concurrency `10`, browser fetch concurrency `16`
+- smaller allocations scale down automatically
+- explicit API/UI overrides still win when provided
+
+If you want more throughput from the HPC job itself, request more resources via
+`SCRAPER_SBATCH_EXTRA_ARGS` in `hpc/scraper/local.env`:
+
+```bash
+export SCRAPER_SBATCH_EXTRA_ARGS="--account=<acct> --cpus-per-task=32 --mem=112G \
+  --output=/path/to/logs/orchestrator_%j.out --error=/path/to/logs/orchestrator_%j.err"
+```
+
+`sbatch` command-line arguments override the defaults baked into
+`orchestrator.slurm`, so this is the supported way to ask for more CPU or RAM
+without editing the batch script.
+
 ---
 
 ## 4. Reattach after tunnel loss
@@ -252,6 +276,7 @@ hpc/scraper/validate_cpu_bridge.sh --json
 | `Missing apptainer in PATH` in the Slurm log | Batch shell did not load the cluster Apptainer module | Export `SCRAPER_APPTAINER_MODULE=<your module name>` and resubmit |
 | Slurm job in `PENDING` forever | No GPU partition slots | Check `squeue` on cluster; wait or contact cluster admin |
 | Dashboard stuck after tunnel reconnect | Bridge reconnect re-seeding not triggered | Refresh the dashboard page |
+| Log shows `Future exception was never retrieved` with a Playwright navigation timeout | Crawl4AI leaked an internal navigation future | Current runtime suppresses this known noise; if it still appears after redeploy, capture the exact site and log snippet |
 
 ### Step 4 — Manual bridge probe
 
@@ -358,6 +383,7 @@ Host- and cluster-specific variables intentionally use placeholders in the track
 | `SCRAPER_OUTPUTS_ROOT` | `${SCRAPER_REPO_ROOT}/outputs` | Remote outputs root |
 | `SCRAPER_PYTHON_MODULE` | `Python/3.12.3-GCCcore-13.3.0` | Optional environment module loaded by install / Slurm |
 | `SCRAPER_APPTAINER_MODULE` | unset | Optional Apptainer/Singularity module loaded by install / Slurm |
+| `SCRAPER_SBATCH_EXTRA_ARGS` | unset | Extra `sbatch` flags. Use this for cluster-specific account/partition settings and to request more CPU/RAM (for example `--cpus-per-task=32 --mem=112G`). |
 | `SCRAPER_LOCAL_OUTPUTS_ROOT` | `${ROOT_DIR}/outputs/hpc` | Local destination for `pull_run.sh` |
 | `SCRAPER_PYTHON` | `${SCRAPER_REMOTE_ROOT}/.venv/bin/python` | Python interpreter on the remote |
 | `SCRAPER_LLM_BASE_URL` | auto-detected | Annotation model OpenAI-compatible base URL |

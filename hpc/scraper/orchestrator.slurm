@@ -3,9 +3,11 @@
 #SBATCH --partition=compute
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-# 6 concurrent site workers plus the aiohttp control plane, browser helpers,
-# and JSON / artifact processing headroom.
-#SBATCH --cpus-per-task=24
+# 32 CPUs gives enough headroom for the aiohttp control plane, a shared
+# browser-backed scraper with higher fetch parallelism, Postgres, and artifact IO.
+# Cluster policy currently maps each CPU core to ~3.5 GB RAM, so request 112 GB.
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=112G
 #SBATCH --time=20:00:00
 
 set -euo pipefail

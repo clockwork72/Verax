@@ -13,7 +13,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, TypeVar
 from urllib.parse import urlparse, urlunparse
 
 import aiohttp
@@ -274,6 +274,43 @@ async def _filter_records_bounded(
 
     kept.sort(key=lambda pair: pair[0])
     return [record for _, record in kept]
+
+
+def _should_suppress_asyncio_exception(context: dict[str, Any]) -> bool:
+    message = str(context.get("message") or "")
+    if "Future exception was never retrieved" not in message:
+        return False
+    exc = context.get("exception")
+    if exc is None:
+        return False
+    detail = str(exc)
+    return (
+        "Timeout" in exc.__class__.__name__
+        and 'navigating to "' in detail
+        and 'waiting until "domcontentloaded"' in detail
+    )
+
+
+@asynccontextmanager
+async def _suppress_known_asyncio_noise() -> AsyncIterator[dict[str, int]]:
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    suppressed = {"crawl4ai_navigation_timeout": 0}
+
+    def handler(active_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        if _should_suppress_asyncio_exception(context):
+            suppressed["crawl4ai_navigation_timeout"] += 1
+            return
+        if previous_handler is not None:
+            previous_handler(active_loop, context)
+            return
+        active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+    try:
+        yield suppressed
+    finally:
+        loop.set_exception_handler(previous_handler)
 
 
 @asynccontextmanager
@@ -2079,39 +2116,38 @@ async def _run(args: argparse.Namespace) -> None:
                 })
                 site_timeout_sec = max(0.001, float(getattr(args, "site_timeout_sec", 300.0) or 300.0))
                 try:
-                    async with _new_client() as client:
-                        result = await asyncio.wait_for(
-                            process_site(
-                                client,
-                                site,
-                                rank=rank,
-                                artifacts_dir=args.artifacts_dir,
-                                tracker_radar=tracker_radar,
-                                trackerdb=trackerdb,
-                                fetch_third_party_policies=not args.no_third_party_policy_fetch,
-                                third_party_policy_max=args.third_party_policy_max,
-                                third_party_engine=args.third_party_engine,
-                                run_id=run_id,
-                                exclude_same_entity=bool(args.exclude_same_entity),
-                                first_party_policy_url_override=(args.policy_url_override or None),
-                                first_party_policy_fetcher=lambda url: fetch_policy_cached(client, url),
-                                third_party_policy_fetcher=lambda url: fetch_policy_cached(client, url),
-                                openai_client=openai_client,
-                                llm_model=args.llm_model,
-                                policy_artifact_registry=policy_artifact_registry,
-                                policy_artifact_lock=policy_artifact_lock,
-                                fetch_timeout_sec=float(getattr(args, "fetch_timeout_sec", 60.0) or 60.0),
-                                stage_callback=lambda stage: emit_event({
-                                    "type": "site_stage",
-                                    "run_id": run_id,
-                                    "site": site,
-                                    "rank": rank,
-                                    "stage": stage,
-                                    "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
-                                }),
-                            ),
-                            timeout=site_timeout_sec,
-                        )
+                    result = await asyncio.wait_for(
+                        process_site(
+                            shared_client,
+                            site,
+                            rank=rank,
+                            artifacts_dir=args.artifacts_dir,
+                            tracker_radar=tracker_radar,
+                            trackerdb=trackerdb,
+                            fetch_third_party_policies=not args.no_third_party_policy_fetch,
+                            third_party_policy_max=args.third_party_policy_max,
+                            third_party_engine=args.third_party_engine,
+                            run_id=run_id,
+                            exclude_same_entity=bool(args.exclude_same_entity),
+                            first_party_policy_url_override=(args.policy_url_override or None),
+                            first_party_policy_fetcher=lambda url: fetch_policy_cached(shared_client, url),
+                            third_party_policy_fetcher=lambda url: fetch_policy_cached(shared_client, url),
+                            openai_client=openai_client,
+                            llm_model=args.llm_model,
+                            policy_artifact_registry=policy_artifact_registry,
+                            policy_artifact_lock=policy_artifact_lock,
+                            fetch_timeout_sec=float(getattr(args, "fetch_timeout_sec", 60.0) or 60.0),
+                            stage_callback=lambda stage: emit_event({
+                                "type": "site_stage",
+                                "run_id": run_id,
+                                "site": site,
+                                "rank": rank,
+                                "stage": stage,
+                                "timestamp": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                            }),
+                        ),
+                        timeout=site_timeout_sec,
+                    )
                 except asyncio.TimeoutError:
                     warn(f"Timed out processing {site} after {site_timeout_sec:.1f}s")
                     result = {
@@ -2285,13 +2321,21 @@ async def _run(args: argparse.Namespace) -> None:
                 if result.get("status") != "ok":
                     warn(f"FAILED {site}: {result.get('status')}")
 
-        await _run_bounded(
-            sites,
-            concurrency=max(1, int(args.concurrency)),
-            worker=worker,
-        )
-        async with tp_cache_write_lock:
-            await _flush_tp_cache_locked(force=True)
+        async with _new_client() as shared_client:
+            async with _suppress_known_asyncio_noise() as suppressed_asyncio_noise:
+                await _run_bounded(
+                    sites,
+                    concurrency=max(1, int(args.concurrency)),
+                    worker=worker,
+                )
+            if args.verbose and suppressed_asyncio_noise["crawl4ai_navigation_timeout"] > 0:
+                log(
+                    "Suppressed "
+                    f"{suppressed_asyncio_noise['crawl4ai_navigation_timeout']} leaked Crawl4AI "
+                    "navigation timeout future(s)."
+                )
+            async with tp_cache_write_lock:
+                await _flush_tp_cache_locked(force=True)
 
         current_stage = "finalize"
         if args.explorer_out and not explorer_is_jsonl:

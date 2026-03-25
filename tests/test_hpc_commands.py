@@ -10,6 +10,8 @@ from privacy_research_dataset.hpc_commands import (
     build_annotator_args,
     build_default_paths,
     build_scraper_args,
+    recommended_browser_fetch_concurrency,
+    recommended_scraper_concurrency,
 )
 
 
@@ -128,6 +130,44 @@ def test_build_scraper_args_honors_runtime_scale_overrides(tmp_path):
     assert argv[concurrency_index + 1] == "4"
     assert argv[browser_fetch_index + 1] == "3"
     assert argv[tp_max_index + 1] == "7"
+
+
+def test_recommended_hpc_concurrency_scales_with_allocated_cpus():
+    assert recommended_scraper_concurrency(24) == 8
+    assert recommended_browser_fetch_concurrency(24, scraper_concurrency=8) == 12
+    assert recommended_scraper_concurrency(32) == 10
+    assert recommended_browser_fetch_concurrency(32, scraper_concurrency=10) == 16
+
+
+def test_build_scraper_args_uses_detected_slurm_cpus(monkeypatch, tmp_path):
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "24")
+
+    argv, _manifest, _paths = build_scraper_args(
+        repo_root=tmp_path,
+        options={"sites": ["alpha.example"]},
+    )
+
+    concurrency_index = argv.index("--concurrency")
+    browser_fetch_index = argv.index("--browser-fetch-concurrency")
+
+    assert argv[concurrency_index + 1] == "8"
+    assert argv[browser_fetch_index + 1] == "12"
+
+
+def test_build_scraper_args_accepts_timeout_overrides(tmp_path):
+    argv, _manifest, _paths = build_scraper_args(
+        repo_root=tmp_path,
+        options={
+            "sites": ["alpha.example"],
+            "pageTimeoutMs": 25000,
+            "fetchTimeoutSec": 45,
+            "siteTimeoutSec": 180,
+        },
+    )
+
+    assert "--page-timeout-ms" in argv and "25000" in argv
+    assert "--fetch-timeout-sec" in argv and "45.0" in argv
+    assert "--site-timeout-sec" in argv and "180.0" in argv
 
 
 def test_annotator_rate_limit_args_for_local_model_are_minimal():

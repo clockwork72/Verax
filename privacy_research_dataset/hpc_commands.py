@@ -19,6 +19,48 @@ class EventBusLike(Protocol):
         ...
 
 
+def _positive_int_env(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def detected_scraper_cpus() -> int | None:
+    return (
+        _positive_int_env("SCRAPER_CPUS_PER_TASK")
+        or _positive_int_env("SLURM_CPUS_PER_TASK")
+        or _positive_int_env("SCRAPER_CPUS")
+    )
+
+
+def recommended_scraper_concurrency(allocated_cpus: int | None = None) -> int:
+    cpus = allocated_cpus if allocated_cpus and allocated_cpus > 0 else detected_scraper_cpus()
+    if cpus is None:
+        return SAFE_SCRAPER_CONCURRENCY
+    return max(1, min(10, max(2, cpus // 3)))
+
+
+def recommended_browser_fetch_concurrency(
+    allocated_cpus: int | None = None,
+    *,
+    scraper_concurrency: int | None = None,
+) -> int:
+    cpus = allocated_cpus if allocated_cpus and allocated_cpus > 0 else detected_scraper_cpus()
+    if scraper_concurrency is None:
+        scraper_concurrency = recommended_scraper_concurrency(cpus)
+    if cpus is None:
+        return max(SAFE_BROWSER_FETCH_CONCURRENCY, int(scraper_concurrency))
+    return max(
+        int(scraper_concurrency),
+        min(20, max(int(scraper_concurrency) + 2, cpus // 2)),
+    )
+
+
 def normalize_model_key(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
@@ -136,6 +178,17 @@ def build_scraper_args(
     options: dict[str, Any],
 ) -> tuple[list[str], dict[str, Any], Paths]:
     paths = build_default_paths(repo_root, options.get("outDir"))
+    scraper_concurrency = max(
+        1,
+        int(options.get("concurrency") or recommended_scraper_concurrency()),
+    )
+    browser_fetch_concurrency = max(
+        1,
+        int(
+            options.get("browserFetchConcurrency")
+            or recommended_browser_fetch_concurrency(scraper_concurrency=scraper_concurrency)
+        ),
+    )
     args = [
         "-m",
         "privacy_research_dataset.cli",
@@ -153,9 +206,9 @@ def build_scraper_args(
         "--explorer-out",
         str(paths.explorer_jsonl),
         "--concurrency",
-        str(max(1, int(options.get("concurrency") or SAFE_SCRAPER_CONCURRENCY))),
+        str(scraper_concurrency),
         "--browser-fetch-concurrency",
-        str(max(1, int(options.get("browserFetchConcurrency") or SAFE_BROWSER_FETCH_CONCURRENCY))),
+        str(browser_fetch_concurrency),
         "--third-party-policy-max",
         str(max(1, int(options.get("thirdPartyPolicyMax") or SAFE_TP_POLICY_MAX))),
         "--policy-cache-max-entries",
@@ -163,6 +216,12 @@ def build_scraper_args(
         "--tp-cache-flush-entries",
         str(SAFE_TP_CACHE_FLUSH),
     ]
+    if options.get("pageTimeoutMs") is not None:
+        args.extend(["--page-timeout-ms", str(max(1, int(options["pageTimeoutMs"])))])
+    if options.get("fetchTimeoutSec") is not None:
+        args.extend(["--fetch-timeout-sec", str(max(0.001, float(options["fetchTimeoutSec"])))])
+    if options.get("siteTimeoutSec") is not None:
+        args.extend(["--site-timeout-sec", str(max(0.001, float(options["siteTimeoutSec"])))])
     sites = options.get("sites") or []
     if sites:
         for site in sites:

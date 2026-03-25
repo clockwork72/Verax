@@ -46,6 +46,12 @@ type ScraperStartOptions = {
   expectedTotalSites?: number
   upsertBySite?: boolean
   excludeSameEntity?: boolean
+  concurrency?: number
+  browserFetchConcurrency?: number
+  thirdPartyPolicyMax?: number
+  pageTimeoutMs?: number
+  fetchTimeoutSec?: number
+  siteTimeoutSec?: number
 }
 
 type ScraperRerunSiteOptions = {
